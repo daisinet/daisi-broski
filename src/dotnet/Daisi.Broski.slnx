@@ -5,5 +5,6 @@
   <Project Path="Daisi.Broski.Cli/Daisi.Broski.Cli.csproj" />
   <Project Path="Daisi.Broski.Engine/Daisi.Broski.Engine.csproj" />
   <Project Path="Daisi.Broski.Ipc/Daisi.Broski.Ipc.csproj" />
+  <Project Path="Daisi.Broski.Sandbox/Daisi.Broski.Sandbox.csproj" />
   <Project Path="Daisi.Broski/Daisi.Broski.csproj" />
 </Solution>

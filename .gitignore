@@ -417,3 +417,12 @@ FodyWeavers.xsd
 *.msm
 *.msp
 src/Daisi.Llogos.WebGpu/test/*.gguf
+
+# Exceptions to upstream VS .gitignore rules
+# ------------------------------------------
+# The `[Ww][Ii][Nn]32/` rule above is meant to exclude legacy Win32
+# platform build-output directories, but it also matches our
+# intentional `Win32/` source folder that holds P/Invoke declarations.
+# Re-include it here so NativeMethods.cs and friends are tracked.
+!src/dotnet/Daisi.Broski/Win32/
+!src/dotnet/Daisi.Broski/Win32/**

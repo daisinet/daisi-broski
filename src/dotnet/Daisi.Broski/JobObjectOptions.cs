@@ -1,4 +1,4 @@
-namespace Daisi.Broski.Sandbox;
+namespace Daisi.Broski;
 
 /// <summary>
 /// Configuration for a new <see cref="JobObject"/>. Every option

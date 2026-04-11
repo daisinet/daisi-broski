@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
-using Daisi.Broski.Sandbox;
+using Daisi.Broski;
 using Xunit;
 
-namespace Daisi.Broski.Engine.Tests.Sandbox;
+namespace Daisi.Broski.Engine.Tests.Host;
 
 /// <summary>
 /// Tests for <see cref="JobObject"/>. Windows-only — every test skips

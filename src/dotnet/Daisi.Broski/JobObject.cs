@@ -1,9 +1,9 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using Daisi.Broski.Sandbox.Win32;
+using Daisi.Broski.Win32;
 
-namespace Daisi.Broski.Sandbox;
+namespace Daisi.Broski;
 
 /// <summary>
 /// Managed wrapper around a Win32 Job Object. The kernel-enforced
