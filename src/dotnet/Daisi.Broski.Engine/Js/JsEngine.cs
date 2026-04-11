@@ -118,6 +118,15 @@ public sealed class JsEngine
     public JsObject PromisePrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// <c>URLSearchParams.prototype</c> — installed by
+    /// <c>BuiltinUrl</c>. Exposed so <see cref="JsUrl"/>
+    /// can lazily construct its <c>searchParams</c> view
+    /// with the right prototype when script reads
+    /// <c>url.searchParams</c>.
+    /// </summary>
+    public JsObject UrlSearchParamsPrototype { get; internal set; } = null!;
+
+    /// <summary>
     /// Module cache keyed by resolved URL. Populated and
     /// read by <see cref="ImportModule"/>. A module is
     /// inserted into the cache as soon as it is created
