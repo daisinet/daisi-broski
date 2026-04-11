@@ -9,7 +9,7 @@
 
 **Phase 0, 1, 3a, and 4 are complete. Phase 3b has started** with block-scoped `let`/`const` as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
 
-**Combined test suite: 1045/1045 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1 + 21 JS arrows 3b-2 + 25 JS templates 3b-3 + 38 JS destructuring 3b-4 + 42 JS defaults/rest/spread 3b-5 + 28 JS classes 3b-6 + 24 JS iterators/for-of 3b-7a + 21 JS generators 3b-7b + 35 JS collections 3b-8 + 27 JS promises 3b-9 + 25 JS async/await 3b-10 + 38 JS typed arrays 3b-11 + 19 JS modules 3b-12 + 21 JS destructuring polish 3b-13).
+**Combined test suite: 1054/1054 passing.**
 
 What works today from a clean clone:
 

@@ -116,7 +116,160 @@ internal static class BuiltinPromise
         ctor.SetNonEnumerable("race", new JsFunction("race", (vm, thisVal, args) =>
             PromiseRace(vm, engine, args.Count > 0 ? args[0] : JsValue.Undefined)));
 
+        // ES2020 Promise.allSettled — always fulfills with an
+        // array of status descriptors: {status, value} or
+        // {status, reason}. Never rejects.
+        ctor.SetNonEnumerable("allSettled", new JsFunction("allSettled", (vm, thisVal, args) =>
+            PromiseAllSettled(vm, engine, args.Count > 0 ? args[0] : JsValue.Undefined)));
+
+        // ES2021 Promise.any — fulfills with the first input
+        // to fulfill; only rejects (with an AggregateError-
+        // shaped object) when every input rejects.
+        ctor.SetNonEnumerable("any", new JsFunction("any", (vm, thisVal, args) =>
+            PromiseAny(vm, engine, args.Count > 0 ? args[0] : JsValue.Undefined)));
+
+        // ES2018 Promise.prototype.finally(onFinally) — runs
+        // the callback regardless of settlement kind and
+        // passes the original settlement through.
+        proto.SetNonEnumerable("finally", new JsFunction("finally", (vm, thisVal, args) =>
+        {
+            var p = RequirePromise(thisVal, "Promise.prototype.finally");
+            var cb = args.Count > 0 && args[0] is JsFunction fn ? fn : null;
+            // onFulfilled: call cb(), then return the value.
+            var onF = new JsFunction("<finally-onF>", (vm2, t, a) =>
+            {
+                if (cb is not null) vm2.InvokeJsFunction(cb, JsValue.Undefined, Array.Empty<object?>());
+                return a.Count > 0 ? a[0] : JsValue.Undefined;
+            });
+            // onRejected: call cb(), then re-throw the reason
+            // so it propagates down the chain.
+            var onR = new JsFunction("<finally-onR>", (vm2, t, a) =>
+            {
+                if (cb is not null) vm2.InvokeJsFunction(cb, JsValue.Undefined, Array.Empty<object?>());
+                JsThrow.Raise(a.Count > 0 ? a[0] : JsValue.Undefined);
+                return JsValue.Undefined; // unreachable
+            });
+            return p.Then(onF, onR);
+        }));
+
         engine.Globals["Promise"] = ctor;
+    }
+
+    private static JsPromise PromiseAllSettled(JsVM vm, JsEngine engine, object? iterable)
+    {
+        var result = new JsPromise(engine);
+        var inputs = CollectIterable(vm, iterable, out var errorThrown);
+        if (errorThrown is not null)
+        {
+            result.Reject(errorThrown);
+            return result;
+        }
+
+        if (inputs.Count == 0)
+        {
+            result.Resolve(new JsArray { Prototype = engine.ArrayPrototype });
+            return result;
+        }
+
+        var statuses = new object?[inputs.Count];
+        int remaining = inputs.Count;
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            int idx = i;
+            JsPromise inner = inputs[i] is JsPromise p ? p : ResolveValue(engine, inputs[i]);
+            inner.Then(
+                new JsFunction("<allSettled-onF>", (t, a) =>
+                {
+                    var desc = new JsObject { Prototype = engine.ObjectPrototype };
+                    desc.Set("status", "fulfilled");
+                    desc.Set("value", a.Count > 0 ? a[0] : JsValue.Undefined);
+                    statuses[idx] = desc;
+                    remaining--;
+                    if (remaining == 0)
+                    {
+                        var arr = new JsArray { Prototype = engine.ArrayPrototype };
+                        foreach (var s in statuses) arr.Elements.Add(s);
+                        result.Resolve(arr);
+                    }
+                    return JsValue.Undefined;
+                }),
+                new JsFunction("<allSettled-onR>", (t, a) =>
+                {
+                    var desc = new JsObject { Prototype = engine.ObjectPrototype };
+                    desc.Set("status", "rejected");
+                    desc.Set("reason", a.Count > 0 ? a[0] : JsValue.Undefined);
+                    statuses[idx] = desc;
+                    remaining--;
+                    if (remaining == 0)
+                    {
+                        var arr = new JsArray { Prototype = engine.ArrayPrototype };
+                        foreach (var s in statuses) arr.Elements.Add(s);
+                        result.Resolve(arr);
+                    }
+                    return JsValue.Undefined;
+                }));
+        }
+        return result;
+    }
+
+    private static JsPromise PromiseAny(JsVM vm, JsEngine engine, object? iterable)
+    {
+        var result = new JsPromise(engine);
+        var inputs = CollectIterable(vm, iterable, out var errorThrown);
+        if (errorThrown is not null)
+        {
+            result.Reject(errorThrown);
+            return result;
+        }
+
+        if (inputs.Count == 0)
+        {
+            result.Reject(MakeAggregateError(engine, "All promises were rejected", Array.Empty<object?>()));
+            return result;
+        }
+
+        var errors = new object?[inputs.Count];
+        int remaining = inputs.Count;
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            int idx = i;
+            JsPromise inner = inputs[i] is JsPromise p ? p : ResolveValue(engine, inputs[i]);
+            inner.Then(
+                new JsFunction("<any-onF>", (t, a) =>
+                {
+                    result.Resolve(a.Count > 0 ? a[0] : JsValue.Undefined);
+                    return JsValue.Undefined;
+                }),
+                new JsFunction("<any-onR>", (t, a) =>
+                {
+                    errors[idx] = a.Count > 0 ? a[0] : JsValue.Undefined;
+                    remaining--;
+                    if (remaining == 0)
+                    {
+                        result.Reject(MakeAggregateError(
+                            engine,
+                            "All promises were rejected",
+                            errors));
+                    }
+                    return JsValue.Undefined;
+                }));
+        }
+        return result;
+    }
+
+    private static JsObject MakeAggregateError(JsEngine engine, string message, IReadOnlyList<object?> errors)
+    {
+        // Minimal AggregateError shape — Error-like with a
+        // message + errors array. We don't yet have a full
+        // AggregateError prototype; this matches what real
+        // code usually tests for.
+        var err = new JsObject { Prototype = engine.ErrorPrototype };
+        err.Set("name", "AggregateError");
+        err.Set("message", message);
+        var arr = new JsArray { Prototype = engine.ArrayPrototype };
+        foreach (var e in errors) arr.Elements.Add(e);
+        err.Set("errors", arr);
+        return err;
     }
 
     private static JsPromise RequirePromise(object? thisVal, string name)
