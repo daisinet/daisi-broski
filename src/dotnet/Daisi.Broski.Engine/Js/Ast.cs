@@ -362,6 +362,137 @@ public sealed class FunctionDeclaration : Statement
 }
 
 // ---------------------------------------------------------------------------
+// ES2015 classes
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// Kind of a <see cref="MethodDefinition"/> — the class
+/// body's constructor method, a regular prototype method, or
+/// (in future slices) a getter/setter accessor. Phase 3b-6
+/// only accepts <see cref="Constructor"/> and
+/// <see cref="Method"/>.
+/// </summary>
+public enum MethodDefinitionKind
+{
+    Constructor,
+    Method,
+    Get,
+    Set,
+}
+
+/// <summary>
+/// One method entry inside a <see cref="ClassBody"/>. The
+/// value is always a synthesized <see cref="FunctionExpression"/>
+/// — the parser builds it from the <c>name(params){body}</c>
+/// source. <see cref="IsStatic"/> is set for <c>static method()</c>
+/// entries; they install on the class function itself
+/// rather than on <c>class.prototype</c>.
+/// </summary>
+public sealed class MethodDefinition : JsNode
+{
+    public Identifier Key { get; }
+    public FunctionExpression Value { get; }
+    public MethodDefinitionKind Kind { get; }
+    public bool IsStatic { get; }
+
+    public MethodDefinition(
+        int start,
+        int end,
+        Identifier key,
+        FunctionExpression value,
+        MethodDefinitionKind kind,
+        bool isStatic) : base(start, end)
+    {
+        Key = key;
+        Value = value;
+        Kind = kind;
+        IsStatic = isStatic;
+    }
+}
+
+/// <summary>
+/// Body of a class declaration or class expression — a list
+/// of method definitions. Semicolons between methods are
+/// allowed and ignored per spec.
+/// </summary>
+public sealed class ClassBody : JsNode
+{
+    public IReadOnlyList<MethodDefinition> Methods { get; }
+
+    public ClassBody(int start, int end, IReadOnlyList<MethodDefinition> methods) : base(start, end)
+    {
+        Methods = methods;
+    }
+}
+
+/// <summary>
+/// ES2015 class declaration — <c>class Foo [extends Bar]
+/// { methods }</c>. Compiled as a block-scoped binding (like
+/// <c>let</c>) whose initializer runs the class-assembly
+/// bytecode.
+/// </summary>
+public sealed class ClassDeclaration : Statement
+{
+    public Identifier Id { get; }
+    public Expression? SuperClass { get; }
+    public ClassBody Body { get; }
+
+    public ClassDeclaration(
+        int start,
+        int end,
+        Identifier id,
+        Expression? superClass,
+        ClassBody body) : base(start, end)
+    {
+        Id = id;
+        SuperClass = superClass;
+        Body = body;
+    }
+}
+
+/// <summary>
+/// ES2015 class expression — <c>class [Name] [extends Bar]
+/// { methods }</c>. Produces the class function value;
+/// the optional <see cref="Id"/> is visible inside the
+/// class body for self-reference (deferred; treated as
+/// anonymous in this slice).
+/// </summary>
+public sealed class ClassExpression : Expression
+{
+    public Identifier? Id { get; }
+    public Expression? SuperClass { get; }
+    public ClassBody Body { get; }
+
+    public ClassExpression(
+        int start,
+        int end,
+        Identifier? id,
+        Expression? superClass,
+        ClassBody body) : base(start, end)
+    {
+        Id = id;
+        SuperClass = superClass;
+        Body = body;
+    }
+}
+
+/// <summary>
+/// The <c>super</c> primary expression. Only legal as:
+/// <list type="bullet">
+/// <item>the callee of a <see cref="CallExpression"/>
+///   (<c>super(args)</c>, a super-constructor call) inside a
+///   derived-class constructor</item>
+/// <item>the <c>object</c> of a <see cref="MemberExpression"/>
+///   (<c>super.method(args)</c>) inside any class method</item>
+/// </list>
+/// All other uses are rejected at compile time.
+/// </summary>
+public sealed class Super : Expression
+{
+    public Super(int start, int end) : base(start, end) { }
+}
+
+// ---------------------------------------------------------------------------
 // Operator expressions
 // ---------------------------------------------------------------------------
 

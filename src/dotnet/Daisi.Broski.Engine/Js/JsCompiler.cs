@@ -231,6 +231,11 @@ public sealed class JsCompiler
                 _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
                 _chunk.Emit(OpCode.Pop);
             }
+            else if (stmt is ClassDeclaration cd)
+            {
+                int idx = _chunk.AddName(cd.Id.Name);
+                _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+            }
         }
 
         foreach (var stmt in program.Body)
@@ -316,6 +321,13 @@ public sealed class JsCompiler
                 _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
                 _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
                 _chunk.Emit(OpCode.Pop);
+            }
+            else if (stmt is ClassDeclaration cd)
+            {
+                // Classes are block-scoped and start in the TDZ
+                // until the declaration statement runs.
+                int idx = _chunk.AddName(cd.Id.Name);
+                _chunk.EmitWithU16(OpCode.DeclareLet, idx);
             }
         }
     }
@@ -628,6 +640,19 @@ public sealed class JsCompiler
 
             case FunctionDeclaration:
                 // Already emitted during the hoisting pass.
+                return;
+
+            case ClassDeclaration cd:
+                // Build the class value on the stack, then store
+                // it under the declared name. The name was
+                // pre-declared by HoistBlockScopedDeclarations so
+                // the StoreGlobal here lifts it out of the TDZ.
+                CompileClassAssembly(cd.Id.Name, cd.SuperClass, cd.Body);
+                {
+                    int nameIdx = _chunk.AddName(cd.Id.Name);
+                    _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                    _chunk.Emit(OpCode.Pop);
+                }
                 return;
 
             case ReturnStatement rs:
@@ -1125,6 +1150,18 @@ public sealed class JsCompiler
             case TemplateLiteral tl:
                 CompileTemplateLiteral(tl);
                 return;
+            case ClassExpression ce2:
+                CompileClassAssembly(ce2.Id?.Name, ce2.SuperClass, ce2.Body);
+                return;
+            case Super sup:
+                // Bare `super` by itself is not valid — only as
+                // the object of a member access or as the callee
+                // of a call. Those cases are intercepted by
+                // CompileCall / member access compilation. Any
+                // other reference is a compile-time error.
+                throw new JsCompileException(
+                    "'super' must be followed by a member access or call",
+                    sup.Start);
 
             default:
                 throw new JsCompileException(
@@ -1442,7 +1479,17 @@ public sealed class JsCompiler
 
     private void CompileMemberRead(MemberExpression m)
     {
-        CompileExpression(m.Object);
+        // `super.foo` / `super[k]` as an expression (not a call
+        // callee): emit LoadSuper in place of the object value,
+        // then do the normal property resolution.
+        if (m.Object is Super)
+        {
+            _chunk.Emit(OpCode.LoadSuper);
+        }
+        else
+        {
+            CompileExpression(m.Object);
+        }
         if (m.Computed)
         {
             CompileExpression(m.Property);
@@ -1543,6 +1590,43 @@ public sealed class JsCompiler
     /// </summary>
     private void CompileCall(CallExpression ce)
     {
+        // ES2015 super-call forms. These need special stack
+        // setup because `this` must be the caller's `this`,
+        // not whatever `super` resolves to.
+        //
+        //   super(args)       → load super (=parent.prototype),
+        //                       read its `constructor`, bind
+        //                       caller's `this`, then call with
+        //                       the args.
+        //   super.foo(args)   → load super, read `foo` off it,
+        //                       bind caller's `this`, call.
+        if (ce.Callee is Super)
+        {
+            _chunk.Emit(OpCode.LoadSuper);
+            int ctorIdx = _chunk.AddName("constructor");
+            _chunk.EmitWithU16(OpCode.GetProperty, ctorIdx);
+            _chunk.Emit(OpCode.LoadThis);
+            EmitArgsAndDispatchCall(ce);
+            return;
+        }
+        if (ce.Callee is MemberExpression superMember && superMember.Object is Super)
+        {
+            _chunk.Emit(OpCode.LoadSuper);
+            if (superMember.Computed)
+            {
+                CompileExpression(superMember.Property);
+                _chunk.Emit(OpCode.GetPropertyComputed);
+            }
+            else
+            {
+                int nameIdx = _chunk.AddName(((Identifier)superMember.Property).Name);
+                _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+            }
+            _chunk.Emit(OpCode.LoadThis);
+            EmitArgsAndDispatchCall(ce);
+            return;
+        }
+
         // Emit the `[fn, this]` header the same way for both
         // the normal and the spread path.
         if (ce.Callee is MemberExpression m)
@@ -1567,6 +1651,19 @@ public sealed class JsCompiler
             _chunk.Emit(OpCode.PushUndefined);
         }
 
+        EmitArgsAndDispatchCall(ce);
+    }
+
+    /// <summary>
+    /// Emit the argument list and dispatch opcode for a call
+    /// whose <c>[fn, this]</c> prefix is already on the stack.
+    /// Chooses between <see cref="OpCode.Call"/> (fixed arity,
+    /// fast path) and <see cref="OpCode.CallSpread"/> (runtime
+    /// flattened) based on whether any argument is a spread
+    /// element.
+    /// </summary>
+    private void EmitArgsAndDispatchCall(CallExpression ce)
+    {
         bool hasSpread = HasSpreadArgument(ce.Arguments);
         if (!hasSpread)
         {
@@ -1582,9 +1679,6 @@ public sealed class JsCompiler
             _chunk.EmitWithU8(OpCode.Call, ce.Arguments.Count);
             return;
         }
-
-        // Spread path: build the args array at runtime and
-        // hand it to CallSpread.
         EmitSpreadArgsArray(ce.Arguments);
         _chunk.Emit(OpCode.CallSpread);
     }
@@ -1655,6 +1749,189 @@ public sealed class JsCompiler
             fe.End - fe.Start);
         int idx = _chunk.AddConstant(template);
         _chunk.EmitWithU16(OpCode.MakeFunction, idx);
+    }
+
+    // -------------------------------------------------------------------
+    // Classes (ES2015)
+    // -------------------------------------------------------------------
+    //
+    // Lowering strategy:
+    //
+    //   1. If there's an `extends` clause, evaluate the parent
+    //      expression, leaving it on the stack.
+    //   2. Materialize the constructor function. If the class
+    //      body has no `constructor()` entry, synthesize one —
+    //      an empty body for non-extending classes, or a
+    //      pass-through `function(...args){super(...args)}`
+    //      for extending classes (which is itself compiled
+    //      through this file, including the super-call lowering).
+    //   3. For `extends`: Swap so parent is on top of class,
+    //      then `SetupSubclass` wires the prototype chain and
+    //      pops the parent. `LinkConstructorSuper` copies the
+    //      chained prototype into the constructor's
+    //      HomeSuper slot.
+    //   4. Duplicate the class on the stack so method
+    //      installation opcodes can consume the top copy while
+    //      leaving one for the final store.
+    //   5. For each non-constructor method, materialize it and
+    //      use `InstallMethod` / `InstallStaticMethod` to
+    //      install it as non-enumerable on `class.prototype` or
+    //      `class`. These opcodes also set the method's
+    //      HomeSuper from the chained prototype.
+    //   6. Pop the duplicate. The single remaining class value
+    //      is left on TOS — the caller (class declaration
+    //      statement or class expression in an expression
+    //      position) does whatever storage it needs.
+    //
+    /// <summary>
+    /// Emit the class-assembly sequence for a class
+    /// declaration or class expression. Leaves the final
+    /// class value on top of the stack.
+    /// </summary>
+    private void CompileClassAssembly(
+        string? className,
+        Expression? superClass,
+        ClassBody body)
+    {
+        // Locate user-provided constructor, if any.
+        MethodDefinition? userCtor = null;
+        foreach (var m in body.Methods)
+        {
+            if (m.Kind == MethodDefinitionKind.Constructor && !m.IsStatic)
+            {
+                if (userCtor is not null)
+                {
+                    throw new JsCompileException(
+                        "A class may only have one constructor",
+                        m.Start);
+                }
+                userCtor = m;
+            }
+            else if (m.Kind != MethodDefinitionKind.Method)
+            {
+                throw new JsCompileException(
+                    "Getter / setter class methods are not supported in this slice",
+                    m.Start);
+            }
+        }
+
+        // Build the constructor template. When no user
+        // constructor is given, synthesize one:
+        //   with extends:  constructor(...args){ super(...args); }
+        //   without:       constructor(){}
+        FunctionExpression ctorFn;
+        if (userCtor is not null)
+        {
+            ctorFn = userCtor.Value;
+        }
+        else
+        {
+            ctorFn = BuildDefaultConstructor(superClass is not null, body.Start, body.End);
+        }
+
+        // 1. Evaluate parent expression (if any).
+        bool hasExtends = superClass is not null;
+        if (hasExtends)
+        {
+            CompileExpression(superClass!);
+        }
+
+        // 2. Materialize constructor function. For extending
+        //    classes, it needs the parent's prototype chain
+        //    hooked up before super() resolves — but since the
+        //    call-time lookup of HomeSuper is lazy, we can link
+        //    the prototype chain after MakeFunction.
+        var ctorTemplate = CompileFunctionTemplate(
+            name: className,
+            paramNodes: ctorFn.Params,
+            body: ctorFn.Body,
+            sourceLength: body.End - body.Start);
+        int templateIdx = _chunk.AddConstant(ctorTemplate);
+        _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
+
+        // Stack: [Parent, ClassFn]   if extends
+        //        [ClassFn]            otherwise
+
+        // 3. Hook up the prototype chain.
+        if (hasExtends)
+        {
+            _chunk.Emit(OpCode.Swap);                    // [ClassFn, Parent]
+            _chunk.Emit(OpCode.SetupSubclass);           // [ClassFn]  (pops parent)
+            _chunk.Emit(OpCode.LinkConstructorSuper);    // [ClassFn]  (ClassFn.HomeSuper = Parent.prototype)
+        }
+
+        // 4. Duplicate for the method-installation loop.
+        // Stack: [ClassFn, ClassFn]
+        _chunk.Emit(OpCode.Dup);
+
+        // 5. Install each method (other than constructor).
+        foreach (var m in body.Methods)
+        {
+            if (m.Kind == MethodDefinitionKind.Constructor) continue;
+
+            var methodTemplate = CompileFunctionTemplate(
+                name: m.Key.Name,
+                paramNodes: m.Value.Params,
+                body: m.Value.Body,
+                sourceLength: m.End - m.Start);
+            int mIdx = _chunk.AddConstant(methodTemplate);
+            _chunk.EmitWithU16(OpCode.MakeFunction, mIdx);
+
+            int nameIdx = _chunk.AddName(m.Key.Name);
+            _chunk.EmitWithU16(
+                m.IsStatic ? OpCode.InstallStaticMethod : OpCode.InstallMethod,
+                nameIdx);
+        }
+
+        // 6. Drop the duplicate; leave one class value on the stack.
+        _chunk.Emit(OpCode.Pop);
+    }
+
+    /// <summary>
+    /// Synthesize a default constructor for a class with no
+    /// explicit <c>constructor</c> entry. For a class without
+    /// <c>extends</c>, the body is empty. For a subclass, the
+    /// body is <c>super(...args)</c> so the parent's
+    /// constructor sees the same argument list.
+    /// </summary>
+    private FunctionExpression BuildDefaultConstructor(bool hasExtends, int start, int end)
+    {
+        if (!hasExtends)
+        {
+            return new FunctionExpression(
+                start: start,
+                end: end,
+                id: null,
+                @params: new List<FunctionParameter>(),
+                body: new BlockStatement(start, end, new List<Statement>()));
+        }
+        // function(...args) { super(...args); }
+        var argsIdent = new Identifier(start, end, "args");
+        var restParam = new FunctionParameter(
+            start: start,
+            end: end,
+            target: argsIdent,
+            @default: null,
+            isRest: true);
+        var superCall = new CallExpression(
+            start: start,
+            end: end,
+            callee: new Super(start, end),
+            arguments: new List<Expression>
+            {
+                new SpreadElement(start, end, argsIdent),
+            });
+        var exprStmt = new ExpressionStatement(start, end, superCall);
+        var bodyBlock = new BlockStatement(
+            start,
+            end,
+            new List<Statement> { exprStmt });
+        return new FunctionExpression(
+            start: start,
+            end: end,
+            id: null,
+            @params: new List<FunctionParameter> { restParam },
+            body: bodyBlock);
     }
 
     // -------------------------------------------------------------------

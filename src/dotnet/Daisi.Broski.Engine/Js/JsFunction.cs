@@ -116,6 +116,27 @@ public sealed class JsFunction : JsObject
     /// </summary>
     public object? CapturedThis { get; set; }
 
+    /// <summary>
+    /// For ES2015 class methods: the [[HomeObject]]'s
+    /// prototype used to resolve <c>super.foo</c> / <c>super()</c>
+    /// references in the method body.
+    ///
+    /// - For an instance method or a derived-class constructor,
+    ///   this is the <i>parent class's prototype object</i>.
+    ///   <c>super.foo(args)</c> reads <c>foo</c> off this
+    ///   prototype, and <c>super(args)</c> inside a constructor
+    ///   goes through <c>HomeSuper.constructor</c>.
+    /// - For a static class method, this is the parent class
+    ///   (the constructor function itself), so
+    ///   <c>super.bar()</c> reads a static method off the
+    ///   parent class.
+    /// - <c>null</c> for ordinary (non-class) functions and for
+    ///   class methods in a class with no <c>extends</c> clause.
+    ///   <see cref="OpCode.LoadSuper"/> throws at runtime if
+    ///   the current method's <c>HomeSuper</c> is null.
+    /// </summary>
+    public JsObject? HomeSuper { get; set; }
+
     public string? Name => Template?.Name ?? NativeName;
     private readonly string? NativeName;
 

@@ -108,7 +108,23 @@ public sealed class JsVM
         // allocated instance per ECMA §13.2.2.
         public bool IsConstructor;
         public JsObject? NewInstance;
+        // The function value that owns the code currently
+        // executing in the caller's slot. Used by
+        // <see cref="OpCode.LoadSuper"/> to find the method's
+        // home-super on unwind. This is the function value of
+        // the *caller*, i.e. the frame that will be restored
+        // when Return runs. Non-null only for user-function
+        // frames; top-level program frames have no owning fn.
+        public JsFunction? Fn;
     }
+
+    /// <summary>
+    /// The function value whose bytecode is currently being
+    /// dispatched — i.e., the callee of the innermost call
+    /// frame. <see cref="OpCode.LoadSuper"/> reads this to
+    /// find its home-super. Null at top-level program scope.
+    /// </summary>
+    private JsFunction? _currentFn;
 
     /// <summary>
     /// The most recent value stored by a
@@ -479,6 +495,107 @@ public sealed class JsVM
                         InvokeFunction(fn, instance, flat, isConstructor: true, newInstance: instance);
                     }
                     break;
+
+                // ---- ES2015 classes ----
+                case OpCode.SetupSubclass:
+                    {
+                        // Stack [class, parent] → [class]
+                        var parent = Pop();
+                        var cls = _stack[_sp - 1];
+                        if (parent is not JsFunction parentFn || cls is not JsFunction classFn)
+                        {
+                            RaiseError("TypeError",
+                                "Class extends a non-constructor value");
+                            break;
+                        }
+                        // Link static chain: subclass.__proto__ = parent.
+                        classFn.Prototype = parentFn;
+                        // Link instance chain:
+                        // subclass.prototype.__proto__ = parent.prototype.
+                        var classProto = classFn.Get("prototype") as JsObject;
+                        var parentProto = parentFn.Get("prototype") as JsObject;
+                        if (classProto is not null)
+                        {
+                            classProto.Prototype = parentProto;
+                        }
+                    }
+                    break;
+                case OpCode.InstallMethod:
+                    {
+                        // Stack [class, fn] → [class]. Install
+                        // on class.prototype under name, set
+                        // home-super from class.prototype.__proto__.
+                        int nameIdx = ReadU16();
+                        var name = _names[nameIdx];
+                        var fnVal = Pop();
+                        var classVal = _stack[_sp - 1];
+                        if (classVal is not JsFunction classFn || fnVal is not JsFunction fn)
+                        {
+                            RaiseError("TypeError",
+                                "Invalid class method installation");
+                            break;
+                        }
+                        var classProto = classFn.Get("prototype") as JsObject;
+                        if (classProto is not null)
+                        {
+                            classProto.SetNonEnumerable(name, fn);
+                            fn.HomeSuper = classProto.Prototype;
+                        }
+                    }
+                    break;
+                case OpCode.InstallStaticMethod:
+                    {
+                        // Stack [class, fn] → [class]. Install
+                        // directly on class (not class.prototype),
+                        // set home-super from class.__proto__.
+                        int nameIdx = ReadU16();
+                        var name = _names[nameIdx];
+                        var fnVal = Pop();
+                        var classVal = _stack[_sp - 1];
+                        if (classVal is not JsFunction classFn || fnVal is not JsFunction fn)
+                        {
+                            RaiseError("TypeError",
+                                "Invalid class static method installation");
+                            break;
+                        }
+                        classFn.SetNonEnumerable(name, fn);
+                        fn.HomeSuper = classFn.Prototype;
+                    }
+                    break;
+                case OpCode.LinkConstructorSuper:
+                    {
+                        // Stack [class] → [class]. Sets
+                        // class.HomeSuper from its
+                        // prototype.__proto__ (= parent.prototype
+                        // after SetupSubclass has run).
+                        var classVal = _stack[_sp - 1];
+                        if (classVal is JsFunction classFn)
+                        {
+                            var classProto = classFn.Get("prototype") as JsObject;
+                            classFn.HomeSuper = classProto?.Prototype;
+                        }
+                    }
+                    break;
+                case OpCode.LoadSuper:
+                    {
+                        // Reads the currently executing
+                        // function's HomeSuper. The currently
+                        // executing function isn't tracked
+                        // directly on the VM — we reach it via
+                        // the env chain's owner. Instead, we
+                        // stash the current fn on each frame
+                        // (added below) so LoadSuper can read
+                        // it in O(1).
+                        var superObj = _currentFn?.HomeSuper;
+                        if (superObj is null)
+                        {
+                            RaiseError("SyntaxError",
+                                "'super' is only valid in a class method");
+                            break;
+                        }
+                        Push(superObj);
+                    }
+                    break;
                 case OpCode.Return:
                     {
                         var returnValue = Pop();
@@ -505,6 +622,7 @@ public sealed class JsVM
                         _ip = frame.Ip;
                         _env = frame.Env;
                         _this = frame.This;
+                        _currentFn = frame.Fn;
                         // Push the result onto the caller's stack.
                         // For a constructor: if the function
                         // returned a non-object, substitute the
@@ -1076,6 +1194,7 @@ public sealed class JsVM
             _ip = frame.Ip;
             _env = frame.Env;
             _this = frame.This;
+            _currentFn = frame.Fn;
         }
     }
 
@@ -1352,6 +1471,7 @@ public sealed class JsVM
             This = _this,
             IsConstructor = isConstructor,
             NewInstance = newInstance,
+            Fn = _currentFn,
         });
 
         // Switch to callee. Arrow functions replace the call-
@@ -1364,6 +1484,7 @@ public sealed class JsVM
         _ip = 0;
         _env = newEnv;
         _this = template.IsArrow ? fn.CapturedThis : thisVal;
+        _currentFn = fn;
     }
 
     /// <summary>
