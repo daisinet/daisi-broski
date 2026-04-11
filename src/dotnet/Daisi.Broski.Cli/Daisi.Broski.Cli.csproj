@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Daisi.Broski.Cli</RootNamespace>
+    <AssemblyName>daisi-broski</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski\Daisi.Broski.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <!-- Build-order dependency only: the CLI launches the sandbox child
+         at runtime but does not consume any of its types. -->
+    <ProjectReference Include="..\Daisi.Broski.Sandbox\Daisi.Broski.Sandbox.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>
