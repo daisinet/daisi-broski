@@ -74,6 +74,14 @@ public sealed class JsParser
     private readonly bool[] _hasLineBefore;
     private readonly string _source;
     private int _pos;
+    /// <summary>
+    /// True while parsing the body of a generator function.
+    /// Yield expressions consult this flag to determine if
+    /// they are syntactically legal. Saved/restored across
+    /// nested function bodies so a plain function inside a
+    /// generator does not accidentally enable yield.
+    /// </summary>
+    private bool _inGeneratorBody;
 
     public JsParser(string source)
     {
@@ -664,24 +672,26 @@ public sealed class JsParser
     {
         int start = Current.Start;
         Consume(); // function
+        bool isGenerator = Match(JsTokenKind.Star);
         var id = ParseBindingIdentifier();
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody();
-        return new FunctionDeclaration(start, body.End, id, paramList, body);
+        var body = ParseFunctionBody(insideGenerator: isGenerator);
+        return new FunctionDeclaration(start, body.End, id, paramList, body, isGenerator);
     }
 
     private FunctionExpression ParseFunctionExpression()
     {
         int start = Current.Start;
         Consume(); // function
+        bool isGenerator = Match(JsTokenKind.Star);
         Identifier? id = null;
         if (Current.Kind == JsTokenKind.Identifier)
         {
             id = ParseBindingIdentifier();
         }
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody();
-        return new FunctionExpression(start, body.End, id, paramList, body);
+        var body = ParseFunctionBody(insideGenerator: isGenerator);
+        return new FunctionExpression(start, body.End, id, paramList, body, isGenerator);
     }
 
     private List<FunctionParameter> ParseFormalParameters()
@@ -739,12 +749,24 @@ public sealed class JsParser
         return new FunctionParameter(start, end, id, @default, isRest: false);
     }
 
-    private BlockStatement ParseFunctionBody()
+    private BlockStatement ParseFunctionBody(bool insideGenerator = false)
     {
         // Function bodies accept source elements (nested function
         // declarations are hoisted), which ParseBlockStatement already
-        // handles via ParseSourceElement.
-        return ParseBlockStatement();
+        // handles via ParseSourceElement. Save/restore the
+        // generator-body flag so yield is only legal in the
+        // innermost enclosing generator function, not leaked into
+        // nested non-generator functions.
+        bool saved = _inGeneratorBody;
+        _inGeneratorBody = insideGenerator;
+        try
+        {
+            return ParseBlockStatement();
+        }
+        finally
+        {
+            _inGeneratorBody = saved;
+        }
     }
 
     private Identifier ParseBindingIdentifier()
@@ -1063,6 +1085,16 @@ public sealed class JsParser
     /// </summary>
     private Expression ParseAssignmentExpression(bool allowIn)
     {
+        // ES2015: YieldExpression is part of AssignmentExpression
+        // when we're inside a generator body. Parse it here so it
+        // plugs into all the places an assignment expression is
+        // accepted (function args, array/object literal elements,
+        // return values, etc.).
+        if (Current.Kind == JsTokenKind.KeywordYield && _inGeneratorBody)
+        {
+            return ParseYieldExpression(allowIn);
+        }
+
         var arrow = TryParseArrowFunction(allowIn);
         if (arrow is not null) return arrow;
 
@@ -1080,6 +1112,43 @@ public sealed class JsParser
         var right = ParseAssignmentExpression(allowIn);
         return new AssignmentExpression(left.Start, right.End, op.Value, left, right);
     }
+
+    /// <summary>
+    /// Parse a <c>yield</c> or <c>yield expr</c> expression.
+    /// The argument is optional — if the token following
+    /// <c>yield</c> cannot begin an expression, or if a line
+    /// terminator separates them (the ASI "no LineTerminator
+    /// here" rule from the spec), we treat it as
+    /// <c>yield undefined</c>.
+    /// </summary>
+    private YieldExpression ParseYieldExpression(bool allowIn)
+    {
+        int start = Current.Start;
+        Consume(); // yield
+        // No argument if:
+        //   - next token is something that cannot start an
+        //     expression (common: ), ], }, ;, ,, EOF)
+        //   - or there is a line terminator between `yield`
+        //     and the next token (ASI's restricted production).
+        if (CanStartExpression(Current.Kind) && !_hasLineBefore[_pos])
+        {
+            var arg = ParseAssignmentExpression(allowIn);
+            return new YieldExpression(start, arg.End, arg);
+        }
+        return new YieldExpression(start, Current.Start, null);
+    }
+
+    private static bool CanStartExpression(JsTokenKind kind) => kind switch
+    {
+        JsTokenKind.RightParen or
+        JsTokenKind.RightBracket or
+        JsTokenKind.RightBrace or
+        JsTokenKind.Semicolon or
+        JsTokenKind.Comma or
+        JsTokenKind.Colon or
+        JsTokenKind.EndOfFile => false,
+        _ => true,
+    };
 
     /// <summary>
     /// Peek for ES2015 arrow function syntax. Recognizes

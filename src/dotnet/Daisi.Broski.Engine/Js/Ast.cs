@@ -223,17 +223,27 @@ public sealed class FunctionExpression : Expression
     public Identifier? Id { get; }
     public IReadOnlyList<FunctionParameter> Params { get; }
     public BlockStatement Body { get; }
+    /// <summary>
+    /// <c>true</c> for ES2015 generator functions
+    /// (<c>function* foo(){ yield 1; }</c>). Carried all the
+    /// way into <see cref="JsFunctionTemplate"/> so the VM's
+    /// call machinery can route to the generator-object
+    /// path instead of actually running the body.
+    /// </summary>
+    public bool IsGenerator { get; }
 
     public FunctionExpression(
         int start,
         int end,
         Identifier? id,
         IReadOnlyList<FunctionParameter> @params,
-        BlockStatement body) : base(start, end)
+        BlockStatement body,
+        bool isGenerator = false) : base(start, end)
     {
         Id = id;
         Params = @params;
         Body = body;
+        IsGenerator = isGenerator;
     }
 }
 
@@ -347,17 +357,45 @@ public sealed class FunctionDeclaration : Statement
     public Identifier Id { get; }
     public IReadOnlyList<FunctionParameter> Params { get; }
     public BlockStatement Body { get; }
+    public bool IsGenerator { get; }
 
     public FunctionDeclaration(
         int start,
         int end,
         Identifier id,
         IReadOnlyList<FunctionParameter> @params,
-        BlockStatement body) : base(start, end)
+        BlockStatement body,
+        bool isGenerator = false) : base(start, end)
     {
         Id = id;
         Params = @params;
         Body = body;
+        IsGenerator = isGenerator;
+    }
+}
+
+/// <summary>
+/// ES2015 <c>yield</c> expression — only legal inside a
+/// generator function body. May appear with an argument
+/// (<c>yield x</c>) or without (<c>yield</c>, equivalent to
+/// <c>yield undefined</c>). Delegation (<c>yield*</c>) is
+/// not yet supported.
+///
+/// At runtime, evaluating a yield expression suspends the
+/// generator: the argument value becomes the result returned
+/// from <c>gen.next()</c>, and the value subsequently passed
+/// to <c>gen.next(sent)</c> becomes the value of the yield
+/// expression itself. Both directions round-trip through the
+/// compiler's <c>YieldValue</c> / <c>YieldResume</c> opcode
+/// pair.
+/// </summary>
+public sealed class YieldExpression : Expression
+{
+    public Expression? Argument { get; }
+
+    public YieldExpression(int start, int end, Expression? argument) : base(start, end)
+    {
+        Argument = argument;
     }
 }
 
