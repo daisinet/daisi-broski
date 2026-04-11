@@ -59,6 +59,18 @@ public sealed class JsEngine
     public JsObject BooleanPrototype { get; }
 
     /// <summary>
+    /// <c>Function.prototype</c>. Every <see cref="JsFunction"/>
+    /// value has this as its <c>[[Prototype]]</c> — that's what
+    /// makes <c>fn.call(...)</c> / <c>fn.apply(...)</c> /
+    /// <c>fn.bind(...)</c> resolve via the normal property
+    /// lookup path. Distinct from
+    /// <see cref="JsFunction.FunctionPrototype"/>, which is the
+    /// per-function <c>.prototype</c> property used by
+    /// <c>new F(...)</c> to set an instance's prototype.
+    /// </summary>
+    public JsObject FunctionPrototype { get; }
+
+    /// <summary>
     /// Root <c>Error.prototype</c>. Installed by slice 6b; used
     /// by <see cref="JsVM"/> when <c>RaiseError</c> creates an
     /// error object with no more specific subtype.
@@ -91,8 +103,63 @@ public sealed class JsEngine
         StringPrototype = new JsObject { Prototype = ObjectPrototype };
         NumberPrototype = new JsObject { Prototype = ObjectPrototype };
         BooleanPrototype = new JsObject { Prototype = ObjectPrototype };
+        FunctionPrototype = new JsObject { Prototype = ObjectPrototype };
 
         Builtins.Install(this);
+
+        // Post-install: set [[Prototype]] = FunctionPrototype on
+        // every JsFunction reachable from the engine so
+        // `fn.call(...)` / `fn.apply(...)` / `fn.bind(...)`
+        // resolve via the standard prototype-chain lookup.
+        // User functions created later via the MakeFunction
+        // opcode get their Prototype set at creation time by
+        // the VM.
+        FixupFunctionPrototypes();
+    }
+
+    /// <summary>
+    /// Walk all objects reachable from <see cref="Globals"/> and
+    /// the well-known prototypes, and set
+    /// <c>JsFunction.Prototype</c> to <see cref="FunctionPrototype"/>
+    /// for any function that doesn't already have one. Called
+    /// once at the end of the engine constructor.
+    /// </summary>
+    private void FixupFunctionPrototypes()
+    {
+        var visited = new HashSet<JsObject>(ReferenceEqualityComparer.Instance);
+        var roots = new JsObject[]
+        {
+            ObjectPrototype, ArrayPrototype, StringPrototype,
+            NumberPrototype, BooleanPrototype, FunctionPrototype,
+            ErrorPrototype, TypeErrorPrototype, RangeErrorPrototype,
+            SyntaxErrorPrototype, ReferenceErrorPrototype,
+        };
+        foreach (var root in roots)
+        {
+            if (root is not null) WalkForFunctions(root, visited);
+        }
+        foreach (var kv in Globals)
+        {
+            WalkValueForFunctions(kv.Value, visited);
+        }
+    }
+
+    private void WalkValueForFunctions(object? value, HashSet<JsObject> visited)
+    {
+        if (value is JsObject obj) WalkForFunctions(obj, visited);
+    }
+
+    private void WalkForFunctions(JsObject obj, HashSet<JsObject> visited)
+    {
+        if (!visited.Add(obj)) return;
+        if (obj is JsFunction fn && fn.Prototype is null)
+        {
+            fn.Prototype = FunctionPrototype;
+        }
+        foreach (var kv in obj.Properties)
+        {
+            WalkValueForFunctions(kv.Value, visited);
+        }
     }
 
     /// <summary>
