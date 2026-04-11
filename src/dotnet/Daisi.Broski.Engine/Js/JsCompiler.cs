@@ -224,7 +224,8 @@ public sealed class JsCompiler
                     fd.Params,
                     fd.Body,
                     fd.End - fd.Start,
-                    isGenerator: fd.IsGenerator);
+                    isGenerator: fd.IsGenerator,
+                    isAsync: fd.IsAsync);
                 int templateIdx = _chunk.AddConstant(template);
                 int nameIdx = _chunk.AddName(fd.Id.Name);
                 _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
@@ -312,7 +313,8 @@ public sealed class JsCompiler
                     fd.Params,
                     fd.Body,
                     fd.End - fd.Start,
-                    isGenerator: fd.IsGenerator);
+                    isGenerator: fd.IsGenerator,
+                    isAsync: fd.IsAsync);
                 int templateIdx = _chunk.AddConstant(template);
                 int nameIdx = _chunk.AddName(fd.Id.Name);
                 // Declare in the current env with undefined
@@ -443,7 +445,8 @@ public sealed class JsCompiler
         BlockStatement body,
         int sourceLength,
         bool isArrow = false,
-        bool isGenerator = false)
+        bool isGenerator = false,
+        bool isAsync = false)
     {
         PushFrame(isFunction: true);
 
@@ -499,7 +502,8 @@ public sealed class JsCompiler
             sourceLength,
             isArrow,
             restIndex,
-            isGenerator);
+            isGenerator,
+            isAsync);
     }
 
     /// <summary>
@@ -594,7 +598,8 @@ public sealed class JsCompiler
             ae.Params,
             block,
             ae.End - ae.Start,
-            isArrow: true);
+            isArrow: true,
+            isAsync: ae.IsAsync);
         int idx = _chunk.AddConstant(template);
         _chunk.EmitWithU16(OpCode.MakeFunction, idx);
     }
@@ -1197,6 +1202,17 @@ public sealed class JsCompiler
                 _chunk.Emit(OpCode.YieldValue);
                 _chunk.Emit(OpCode.YieldResume);
                 return;
+            case AwaitExpression ae3:
+                // `await expr` compiles to the same YieldValue +
+                // YieldResume pair as `yield expr` — the async
+                // stepper in the VM wraps each yielded value in
+                // a promise and resumes with the fulfilled value
+                // (or throw-injects the rejection via the VM's
+                // yield-resume throw mode).
+                CompileExpression(ae3.Argument);
+                _chunk.Emit(OpCode.YieldValue);
+                _chunk.Emit(OpCode.YieldResume);
+                return;
             case Super sup:
                 // Bare `super` by itself is not valid — only as
                 // the object of a member access or as the callee
@@ -1791,7 +1807,8 @@ public sealed class JsCompiler
             fe.Params,
             fe.Body,
             fe.End - fe.Start,
-            isGenerator: fe.IsGenerator);
+            isGenerator: fe.IsGenerator,
+            isAsync: fe.IsAsync);
         int idx = _chunk.AddConstant(template);
         _chunk.EmitWithU16(OpCode.MakeFunction, idx);
     }
@@ -1918,7 +1935,9 @@ public sealed class JsCompiler
                 name: m.Key.Name,
                 paramNodes: m.Value.Params,
                 body: m.Value.Body,
-                sourceLength: m.End - m.Start);
+                sourceLength: m.End - m.Start,
+                isGenerator: m.Value.IsGenerator,
+                isAsync: m.Value.IsAsync);
             int mIdx = _chunk.AddConstant(methodTemplate);
             _chunk.EmitWithU16(OpCode.MakeFunction, mIdx);
 

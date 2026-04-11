@@ -145,6 +145,23 @@ public sealed class JsVM
     internal object? YieldSentValue { get; set; } = JsValue.Undefined;
 
     /// <summary>
+    /// When <c>true</c>, the next <see cref="OpCode.YieldResume"/>
+    /// throws <see cref="YieldThrownValue"/> at the yield
+    /// point instead of pushing the sent value. Used by the
+    /// async stepper to inject a rejected-promise error into
+    /// the suspended generator body so <c>try</c>/<c>catch</c>
+    /// around <c>await</c> works as expected.
+    /// </summary>
+    internal bool YieldResumeWithThrow { get; set; }
+
+    /// <summary>
+    /// The value to throw on the next
+    /// <see cref="OpCode.YieldResume"/> when
+    /// <see cref="YieldResumeWithThrow"/> is set.
+    /// </summary>
+    internal object? YieldThrownValue { get; set; }
+
+    /// <summary>
     /// Bypass flag for the generator-short-circuit inside
     /// <see cref="InvokeFunction"/>. When set,
     /// <c>InvokeFunction</c> treats a generator function
@@ -350,6 +367,90 @@ public sealed class JsVM
     /// via a <see cref="JsThrowSignal"/> that bubbles up through
     /// the native call.
     /// </summary>
+    /// <summary>
+    /// Auto-drive an ES2017 async function's underlying
+    /// generator, resolving <paramref name="outer"/> when
+    /// the body completes (normally or with an unhandled
+    /// exception). Each yielded value is wrapped in a
+    /// promise via the usual resolve semantics; when that
+    /// promise fulfills the generator is resumed normally,
+    /// and when it rejects the generator is resumed in
+    /// throw-mode so the rejection surfaces at the
+    /// <c>await</c> site where any surrounding
+    /// <c>try</c>/<c>catch</c> can observe it.
+    ///
+    /// This is a pure native-side state machine — no
+    /// bytecode runs for the loop itself. All scheduling
+    /// happens via the engine's microtask queue, so async
+    /// callbacks observe the same ordering guarantees as
+    /// plain <see cref="JsPromise"/> chaining.
+    /// </summary>
+    internal void DriveAsyncGenerator(JsGenerator gen, JsPromise outer)
+    {
+        // The stepper is a nested local so it can re-invoke
+        // itself for the next iteration without a separate
+        // field / class.
+        void Step(object? resumeValue, bool isThrow)
+        {
+            GeneratorStepOutcome outcome;
+            try
+            {
+                outcome = gen.AdvanceRaw(resumeValue, isThrow);
+            }
+            catch (JsRuntimeException rex)
+            {
+                // Uncaught throw inside the async body —
+                // the outer promise rejects with the thrown
+                // value.
+                outer.Reject(rex.JsValue);
+                return;
+            }
+
+            if (outcome.Done)
+            {
+                // The async body `return`ed (or fell off the
+                // end). Resolve the outer promise with the
+                // return value; JsPromise.Resolve handles
+                // thenable adoption if the return value is
+                // itself a promise.
+                outer.Resolve(outcome.Value);
+                return;
+            }
+
+            // Otherwise, the body is paused at an `await`
+            // expression. The yielded value is what was
+            // awaited — wrap it in a promise (via the
+            // resolve semantics) and subscribe.
+            JsPromise awaited = outcome.Value is JsPromise already
+                ? already
+                : WrapInResolvedPromise(outcome.Value);
+
+            var onFulfilled = new JsFunction("<async-resume>", (t, a) =>
+            {
+                Step(a.Count > 0 ? a[0] : JsValue.Undefined, isThrow: false);
+                return JsValue.Undefined;
+            });
+            var onRejected = new JsFunction("<async-throw>", (t, a) =>
+            {
+                Step(a.Count > 0 ? a[0] : JsValue.Undefined, isThrow: true);
+                return JsValue.Undefined;
+            });
+            awaited.Then(onFulfilled, onRejected);
+        }
+
+        // Kick off the first iteration. An async function
+        // with no awaits runs its body to completion
+        // synchronously during this first step.
+        Step(JsValue.Undefined, isThrow: false);
+    }
+
+    private JsPromise WrapInResolvedPromise(object? value)
+    {
+        var p = new JsPromise(_engine);
+        p.Resolve(value);
+        return p;
+    }
+
     /// <summary>
     /// Drive the ES2015 iterator protocol over an iterable
     /// and append every yielded value to <paramref name="dest"/>.
@@ -1014,11 +1115,27 @@ public sealed class JsVM
                     break;
                 case OpCode.YieldResume:
                     {
-                        // Resume from a suspended yield —
-                        // push the most recent sent value as
-                        // the result of the yield expression.
-                        Push(YieldSentValue);
-                        YieldSentValue = JsValue.Undefined;
+                        // Resume from a suspended yield. In
+                        // the normal case, push the most
+                        // recent sent value as the yield
+                        // expression's result. In throw mode
+                        // (used by the async stepper when an
+                        // awaited promise rejects), throw the
+                        // stashed value at the yield point
+                        // instead — DoThrow will then unwind
+                        // to the nearest try/catch.
+                        if (YieldResumeWithThrow)
+                        {
+                            var thrown = YieldThrownValue;
+                            YieldResumeWithThrow = false;
+                            YieldThrownValue = null;
+                            DoThrow(thrown);
+                        }
+                        else
+                        {
+                            Push(YieldSentValue);
+                            YieldSentValue = JsValue.Undefined;
+                        }
                     }
                     break;
                 case OpCode.ForOfStart:
@@ -1819,6 +1936,20 @@ public sealed class JsVM
         {
             var gen = new JsGenerator(_engine, fn, thisVal, args);
             Push(gen);
+            return;
+        }
+
+        // Async functions: compile like generators, but
+        // instead of returning the generator object, wrap
+        // it in a Promise + auto-stepper that drives the
+        // body one await at a time. The returned promise
+        // settles when the body returns (or throws).
+        if (fn.Template?.IsAsync == true && !_startingGenerator)
+        {
+            var innerGen = new JsGenerator(_engine, fn, thisVal, args);
+            var promise = new JsPromise(_engine);
+            DriveAsyncGenerator(innerGen, promise);
+            Push(promise);
             return;
         }
 

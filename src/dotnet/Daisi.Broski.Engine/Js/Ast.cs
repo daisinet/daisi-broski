@@ -231,6 +231,14 @@ public sealed class FunctionExpression : Expression
     /// path instead of actually running the body.
     /// </summary>
     public bool IsGenerator { get; }
+    /// <summary>
+    /// <c>true</c> for ES2017 async functions
+    /// (<c>async function foo(){ await x; }</c>). Async
+    /// functions compile like generators under the hood and
+    /// the VM's call machinery wraps them in a Promise +
+    /// auto-stepping loop.
+    /// </summary>
+    public bool IsAsync { get; }
 
     public FunctionExpression(
         int start,
@@ -238,12 +246,14 @@ public sealed class FunctionExpression : Expression
         Identifier? id,
         IReadOnlyList<FunctionParameter> @params,
         BlockStatement body,
-        bool isGenerator = false) : base(start, end)
+        bool isGenerator = false,
+        bool isAsync = false) : base(start, end)
     {
         Id = id;
         Params = @params;
         Body = body;
         IsGenerator = isGenerator;
+        IsAsync = isAsync;
     }
 }
 
@@ -307,15 +317,24 @@ public sealed class ArrowFunctionExpression : Expression
     public IReadOnlyList<FunctionParameter> Params { get; }
     public JsNode Body { get; }
     public bool IsExpressionBody => Body is Expression;
+    /// <summary>
+    /// <c>true</c> for <c>async (...) =&gt; body</c> and
+    /// <c>async x =&gt; body</c>. Arrow generators
+    /// (<c>async * () =&gt; ...</c>) are not valid in
+    /// ES2017+ anyway.
+    /// </summary>
+    public bool IsAsync { get; }
 
     public ArrowFunctionExpression(
         int start,
         int end,
         IReadOnlyList<FunctionParameter> @params,
-        JsNode body) : base(start, end)
+        JsNode body,
+        bool isAsync = false) : base(start, end)
     {
         Params = @params;
         Body = body;
+        IsAsync = isAsync;
     }
 }
 
@@ -358,6 +377,7 @@ public sealed class FunctionDeclaration : Statement
     public IReadOnlyList<FunctionParameter> Params { get; }
     public BlockStatement Body { get; }
     public bool IsGenerator { get; }
+    public bool IsAsync { get; }
 
     public FunctionDeclaration(
         int start,
@@ -365,12 +385,34 @@ public sealed class FunctionDeclaration : Statement
         Identifier id,
         IReadOnlyList<FunctionParameter> @params,
         BlockStatement body,
-        bool isGenerator = false) : base(start, end)
+        bool isGenerator = false,
+        bool isAsync = false) : base(start, end)
     {
         Id = id;
         Params = @params;
         Body = body;
         IsGenerator = isGenerator;
+        IsAsync = isAsync;
+    }
+}
+
+/// <summary>
+/// ES2017 <c>await expr</c> expression — only valid inside
+/// an async function body. At compile time, await lowers
+/// to the same bytecode pattern as <c>yield</c>
+/// (<c>YieldValue</c> + <c>YieldResume</c>); at runtime,
+/// the async driver wraps the yielded value in a promise
+/// and resumes the generator with the fulfilled value (or
+/// throws the rejection into the generator via the yield
+/// resume's throw mode).
+/// </summary>
+public sealed class AwaitExpression : Expression
+{
+    public Expression Argument { get; }
+
+    public AwaitExpression(int start, int end, Expression argument) : base(start, end)
+    {
+        Argument = argument;
     }
 }
 
