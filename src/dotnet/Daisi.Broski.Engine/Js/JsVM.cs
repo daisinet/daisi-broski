@@ -190,6 +190,112 @@ public sealed class JsVM
     /// via a <see cref="JsThrowSignal"/> that bubbles up through
     /// the native call.
     /// </summary>
+    /// <summary>
+    /// Drive the ES2015 iterator protocol over an iterable
+    /// and append every yielded value to <paramref name="dest"/>.
+    /// Returns <c>true</c> on normal completion, or
+    /// <c>false</c> if iteration aborted via a routed error
+    /// (<see cref="RaiseError"/>). Used by
+    /// <see cref="OpCode.ArrayAppendSpread"/> to upgrade
+    /// spread from "JsArray only" to "any iterable".
+    /// </summary>
+    private bool AppendFromIterator(object? iterable, JsArray dest)
+    {
+        var iter = GetIteratorFromIterable(iterable);
+        if (iter is null) return false;
+        var iterObj = iter as JsObject;
+        if (iterObj is null) return false;
+        var nextFn = iterObj.Get("next") as JsFunction;
+        if (nextFn is null)
+        {
+            RaiseError("TypeError", "Iterator has no next() method");
+            return false;
+        }
+        while (true)
+        {
+            object? stepResult;
+            try
+            {
+                stepResult = InvokeJsFunction(nextFn, iterObj, Array.Empty<object?>());
+            }
+            catch (JsThrowSignal)
+            {
+                return false;
+            }
+            if (stepResult is not JsObject step)
+            {
+                RaiseError("TypeError", "Iterator result is not an object");
+                return false;
+            }
+            if (JsValue.ToBoolean(step.Get("done"))) return true;
+            dest.Elements.Add(step.Get("value"));
+        }
+    }
+
+    /// <summary>
+    /// Resolve the iterator for an iterable value per the
+    /// ES2015 protocol: look up <c>[Symbol.iterator]</c> on
+    /// the value (walking the prototype chain), call it as a
+    /// method with the value as <c>this</c>, and return the
+    /// resulting iterator. Used by <c>for..of</c>, spread in
+    /// array literals, and spread in calls.
+    ///
+    /// String primitives route through
+    /// <see cref="JsEngine.StringPrototype"/> so
+    /// <c>for (var c of "abc")</c> works without boxing.
+    /// Null / undefined / non-iterable values raise
+    /// <c>TypeError</c> via <see cref="RaiseError"/>; the
+    /// caller should bail out of the current opcode path
+    /// when this method returns <c>null</c>.
+    /// </summary>
+    public object? GetIteratorFromIterable(object? iterable)
+    {
+        JsObject? methodHost;
+        object? callThis;
+        if (iterable is JsObject jo)
+        {
+            methodHost = jo;
+            callThis = jo;
+        }
+        else if (iterable is string)
+        {
+            methodHost = _engine.StringPrototype;
+            callThis = iterable;
+        }
+        else
+        {
+            RaiseError("TypeError",
+                $"{JsValue.ToJsString(iterable)} is not iterable");
+            return null;
+        }
+
+        var iterFnObj = methodHost.GetSymbol(_engine.IteratorSymbol);
+        if (iterFnObj is not JsFunction iterFn)
+        {
+            RaiseError("TypeError",
+                $"{JsValue.ToJsString(iterable)} is not iterable (no Symbol.iterator)");
+            return null;
+        }
+        object? result;
+        try
+        {
+            result = InvokeJsFunction(iterFn, callThis, Array.Empty<object?>());
+        }
+        catch (JsThrowSignal)
+        {
+            // Exception propagated through — caller's
+            // handler will catch at the next opportunity.
+            return null;
+        }
+        if (result is not JsObject iter)
+        {
+            RaiseError("TypeError",
+                "Symbol.iterator did not return an object");
+            return null;
+        }
+        return iter;
+    }
+
     public object? InvokeJsFunction(
         JsFunction fn,
         object? thisVal,
@@ -736,6 +842,71 @@ public sealed class JsVM
                         }
                     }
                     break;
+                case OpCode.ForOfStart:
+                    {
+                        // [iterable] → [iter]. Looks up
+                        // [Symbol.iterator], calls it with the
+                        // iterable as this, expects a JsObject
+                        // iterator with a next() method.
+                        var iterable = Pop();
+                        var iter = GetIteratorFromIterable(iterable);
+                        if (iter is null)
+                        {
+                            // RaiseError has already routed control.
+                            break;
+                        }
+                        Push(iter);
+                    }
+                    break;
+                case OpCode.ForOfNext:
+                    {
+                        short offset = ReadS16();
+                        var iter = _stack[_sp - 1] as JsObject;
+                        if (iter is null)
+                        {
+                            RaiseError("TypeError",
+                                "for-of iterator is not an object");
+                            break;
+                        }
+                        var nextFn = iter.Get("next") as JsFunction;
+                        if (nextFn is null)
+                        {
+                            RaiseError("TypeError",
+                                "for-of iterator has no next() method");
+                            break;
+                        }
+                        object? stepResult;
+                        try
+                        {
+                            stepResult = InvokeJsFunction(nextFn, iter, Array.Empty<object?>());
+                        }
+                        catch (JsThrowSignal)
+                        {
+                            // Exception already unwound past the
+                            // native boundary — let normal dispatch
+                            // pick up at the handler the VM moved
+                            // to.
+                            break;
+                        }
+                        if (stepResult is not JsObject step)
+                        {
+                            RaiseError("TypeError",
+                                "Iterator result is not an object");
+                            break;
+                        }
+                        var done = step.Get("done");
+                        if (JsValue.ToBoolean(done))
+                        {
+                            // Done — pop iterator, jump past loop.
+                            _sp--;
+                            _ip += offset;
+                        }
+                        else
+                        {
+                            Push(step.Get("value"));
+                        }
+                    }
+                    break;
 
                 // ---- Arithmetic ----
                 case OpCode.Add: DoAdd(); break;
@@ -875,21 +1046,27 @@ public sealed class JsVM
                     break;
                 case OpCode.ArrayAppendSpread:
                     {
-                        // Stack [array, iter] → [array]. Flattens
-                        // an iterable into the array. In this slice
-                        // only JsArray is supported as a spread
-                        // source; proper iterator protocol ships
-                        // with the for-of slice.
-                        var iter = Pop();
-                        if (iter is not JsArray srcArr)
+                        // Stack [array, iterable] → [array]. For
+                        // a JsArray source take the fast path
+                        // (copy the dense storage); for anything
+                        // else, drive the iterator protocol.
+                        var src = Pop();
+                        var dest = (JsArray)_stack[_sp - 1]!;
+                        if (src is JsArray srcArr)
                         {
-                            RaiseError("TypeError", "Spread source is not iterable");
+                            foreach (var e in srcArr.Elements)
+                            {
+                                dest.Elements.Add(e);
+                            }
                             break;
                         }
-                        var dest = (JsArray)_stack[_sp - 1]!;
-                        foreach (var e in srcArr.Elements)
+                        // Slow path: use the iterator protocol.
+                        if (!AppendFromIterator(src, dest))
                         {
-                            dest.Elements.Add(e);
+                            // RaiseError already moved _ip to the
+                            // handler; fall through and let
+                            // dispatch continue.
+                            break;
                         }
                     }
                     break;
@@ -921,6 +1098,23 @@ public sealed class JsVM
                     {
                         var key = Pop();
                         var target = _stack[_sp - 1];
+                        if (key is JsSymbol sym)
+                        {
+                            // Symbol-keyed property — walk the
+                            // symbol-property bags up the
+                            // prototype chain.
+                            if (target is JsObject jo)
+                            {
+                                _stack[_sp - 1] = jo.GetSymbol(sym);
+                            }
+                            else
+                            {
+                                // Primitives don't carry symbol
+                                // properties; the lookup misses.
+                                _stack[_sp - 1] = JsValue.Undefined;
+                            }
+                            break;
+                        }
                         if (TryLookupProperty(target, JsValue.ToJsString(key), out var value))
                         {
                             _stack[_sp - 1] = value;
@@ -956,7 +1150,14 @@ public sealed class JsVM
                                 $"Cannot assign property on {JsValue.ToJsString(target)}");
                             break;
                         }
-                        jo.Set(JsValue.ToJsString(key), value);
+                        if (key is JsSymbol sym)
+                        {
+                            jo.SetSymbol(sym, value);
+                        }
+                        else
+                        {
+                            jo.Set(JsValue.ToJsString(key), value);
+                        }
                         _stack[_sp - 3] = value;
                         _sp -= 2;
                     }

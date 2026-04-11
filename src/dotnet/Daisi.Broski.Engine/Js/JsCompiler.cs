@@ -407,6 +407,20 @@ public sealed class JsCompiler
                 }
                 HoistInStatement(f.Body);
                 break;
+            case ForOfStatement fo:
+                if (fo.Left is VariableDeclaration fovd && fovd.Kind == VariableDeclarationKind.Var)
+                {
+                    foreach (var d in fovd.Declarations)
+                    {
+                        foreach (var name in CollectPatternNames(d.Id))
+                        {
+                            int idx = _chunk.AddName(name);
+                            _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+                        }
+                    }
+                }
+                HoistInStatement(fo.Body);
+                break;
             case LabeledStatement l:
                 HoistInStatement(l.Body);
                 break;
@@ -687,6 +701,10 @@ public sealed class JsCompiler
 
             case ForInStatement fi:
                 CompileForIn(fi);
+                return;
+
+            case ForOfStatement fo:
+                CompileForOf(fo);
                 return;
 
             case LabeledStatement l:
@@ -1945,6 +1963,92 @@ public sealed class JsCompiler
     /// rare in practice and would need extra stack juggling for
     /// the store, so it's deferred.
     /// </summary>
+    /// <summary>
+    /// Compile a <c>for..of</c> loop over an iterable. Uses
+    /// the ES2015 iterator protocol via the
+    /// <see cref="OpCode.ForOfStart"/> /
+    /// <see cref="OpCode.ForOfNext"/> opcodes, which invoke
+    /// <c>Symbol.iterator</c> and <c>next()</c> through the
+    /// normal VM call machinery.
+    ///
+    /// Supported left-hand sides: a plain identifier
+    /// (<c>for (x of arr)</c>), a <c>var</c>/<c>let</c>/<c>const</c>
+    /// declaration (<c>for (let x of arr)</c>). Destructuring
+    /// and member-access LHS are deferred.
+    /// </summary>
+    private void CompileForOf(ForOfStatement stmt)
+    {
+        var label = TakePendingLabel();
+
+        // Resolve the binding name and whether this
+        // introduces a fresh binding that needs its own env.
+        string? bindingName = stmt.Left switch
+        {
+            Identifier id => id.Name,
+            VariableDeclaration vd when vd.Declarations.Count == 1
+                && vd.Declarations[0].Id is Identifier ident
+                => ident.Name,
+            _ => null,
+        };
+        if (bindingName is null)
+        {
+            throw new JsCompileException(
+                "Only identifier and 'var/let/const identifier' targets are supported in 'for..of' in this slice",
+                stmt.Start);
+        }
+
+        bool loopScope =
+            stmt.Left is VariableDeclaration leftVd &&
+            leftVd.Kind != VariableDeclarationKind.Var;
+
+        if (loopScope)
+        {
+            _chunk.Emit(OpCode.PushEnv);
+            int declIdx = _chunk.AddName(bindingName);
+            _chunk.EmitWithU16(OpCode.DeclareLet, declIdx);
+        }
+
+        int nameIdx = _chunk.AddName(bindingName);
+
+        // Obtain the iterator and push it on the stack. The
+        // iterator stays on TOS for the duration of the
+        // loop, with [iter, value] at the body entry.
+        CompileExpression(stmt.Right);
+        _chunk.Emit(OpCode.ForOfStart);
+
+        int loopStart = _chunk.Position;
+        int exitJump = _chunk.EmitJump(OpCode.ForOfNext);
+
+        // ForOfNext left [iter, value] on the stack.
+        // Store value into the binding name, discard the
+        // scratch value, continue into the body.
+        _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+        _chunk.Emit(OpCode.Pop);
+
+        var ctx = new BreakTarget { IsLoop = true, Label = label };
+        _breakTargets.Push(ctx);
+        CompileStatement(stmt.Body);
+        _breakTargets.Pop();
+
+        // Continue jumps back to the top of the loop (re-call
+        // next()).
+        foreach (var addr in ctx.ContinueJumps)
+        {
+            _chunk.PatchJumpTo(addr, loopStart);
+        }
+        _chunk.EmitLoopJump(OpCode.Jump, loopStart);
+
+        // ForOfNext patches past the body on done; it already
+        // popped the iterator.
+        _chunk.PatchJump(exitJump);
+        foreach (var addr in ctx.BreakJumps) _chunk.PatchJump(addr);
+
+        if (loopScope)
+        {
+            _chunk.Emit(OpCode.PopEnv);
+        }
+    }
+
     private void CompileForIn(ForInStatement stmt)
     {
         var label = TakePendingLabel();

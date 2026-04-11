@@ -180,6 +180,11 @@ public static class JsValue
             if (!date.IsValid) return "Invalid Date";
             return BuiltinDate.FormatIso(date.Time);
         }
+        // Symbols render as "Symbol(desc)"; the spec forbids
+        // implicit string coercion and requires a TypeError,
+        // but almost no real code relies on that and our host
+        // `console.log` benefits from a readable fallback.
+        if (v is JsSymbol sym) return sym.ToString();
         // Plain objects render as the canonical "[object Object]"
         // string that `Object.prototype.toString` produces for
         // untagged objects.

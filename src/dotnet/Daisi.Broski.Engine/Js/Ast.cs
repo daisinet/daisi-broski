@@ -1001,6 +1001,29 @@ public sealed class ForInStatement : Statement
     }
 }
 
+/// <summary>
+/// ES2015 <c>for (lhs of iter) body</c> — drives iteration
+/// through the iterator protocol (<c>iter[Symbol.iterator]()</c>,
+/// then repeated <c>next()</c> calls). The <c>lhs</c> is either
+/// a <see cref="VariableDeclaration"/> introducing a fresh
+/// binding or an existing assignment target expression; in
+/// both cases the compiler lowers it to the iteration binding
+/// pattern at each step.
+/// </summary>
+public sealed class ForOfStatement : Statement
+{
+    public JsNode Left { get; }
+    public Expression Right { get; }
+    public Statement Body { get; }
+
+    public ForOfStatement(int start, int end, JsNode left, Expression right, Statement body) : base(start, end)
+    {
+        Left = left;
+        Right = right;
+        Body = body;
+    }
+}
+
 public sealed class BreakStatement : Statement
 {
     public Identifier? Label { get; }

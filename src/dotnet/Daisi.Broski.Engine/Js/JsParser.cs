@@ -435,6 +435,32 @@ public sealed class JsParser
             return new ForInStatement(start, body.End, init, right, body);
         }
 
+        // for..of form? `of` is a contextual keyword (it is
+        // tokenized as an ordinary identifier); accept it
+        // only when it follows a valid head init.
+        if (init is not null &&
+            Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "of")
+        {
+            if (init is VariableDeclaration vdOf && vdOf.Declarations.Count > 1)
+            {
+                throw new JsParseException(
+                    "'for..of' variable declaration must have exactly one binding",
+                    vdOf.Start);
+            }
+            if (init is Expression ofExpr && !IsValidLhs(ofExpr))
+            {
+                throw new JsParseException(
+                    "Invalid left-hand side in 'for..of'",
+                    ofExpr.Start);
+            }
+            Consume(); // of
+            var rightOf = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightParen, "for-of");
+            var bodyOf = ParseStatement();
+            return new ForOfStatement(start, bodyOf.End, init, rightOf, bodyOf);
+        }
+
         Expect(JsTokenKind.Semicolon, "for");
         Expression? test = null;
         if (Current.Kind != JsTokenKind.Semicolon)
