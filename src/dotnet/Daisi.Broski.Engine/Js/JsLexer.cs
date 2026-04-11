@@ -52,6 +52,19 @@ public sealed class JsLexer
     private readonly string _src;
     private int _pos;
 
+    // Template literal state — used to drive the context-
+    // sensitive lexing of `${ ... }` interpolations. When
+    // a template enters an interpolation (via `${`), we push
+    // the brace depth at that moment onto _templateStack.
+    // Every `{` inside the interpolation bumps _braceDepth;
+    // the matching `}` at the pushed depth emits a
+    // TemplateMiddle / TemplateTail instead of a RightBrace
+    // punctuator and switches back to template-string scan
+    // mode. Nesting templates inside template interpolations
+    // just adds more entries to the stack.
+    private int _braceDepth;
+    private readonly List<int> _templateStack = new();
+
     public JsLexer(string source)
     {
         _src = source ?? throw new ArgumentNullException(nameof(source));
@@ -73,6 +86,19 @@ public sealed class JsLexer
 
         int start = _pos;
         char c = _src[_pos];
+
+        // Template continuation: if we're inside an
+        // interpolation and see the matching `}`, switch back
+        // to scanning template string content instead of
+        // emitting a plain RightBrace punctuator.
+        if (c == '}' &&
+            _templateStack.Count > 0 &&
+            _templateStack[^1] == _braceDepth)
+        {
+            _templateStack.RemoveAt(_templateStack.Count - 1);
+            _pos++; // consume the closing `}`
+            return ScanTemplateSpan(start, isHead: false);
+        }
 
         // Identifiers and keywords.
         if (IsIdentifierStart(c))
@@ -106,6 +132,29 @@ public sealed class JsLexer
         if (c == '"' || c == '\'')
         {
             return ScanString(start, c);
+        }
+
+        // Template literal — enter template-string scan mode.
+        if (c == '`')
+        {
+            _pos++; // consume the opening backtick
+            return ScanTemplateSpan(start, isHead: true);
+        }
+
+        // Track `{` / `}` brace depth for template continuation
+        // detection before falling through to the normal
+        // punctuator path (which also emits LeftBrace/RightBrace).
+        if (c == '{')
+        {
+            _braceDepth++;
+            _pos++;
+            return new JsToken(JsTokenKind.LeftBrace, start, 1);
+        }
+        if (c == '}')
+        {
+            if (_braceDepth > 0) _braceDepth--;
+            _pos++;
+            return new JsToken(JsTokenKind.RightBrace, start, 1);
         }
 
         // Punctuators.
@@ -437,6 +486,162 @@ public sealed class JsLexer
                 // Unrecognized escape: per spec, a non-escape char after
                 // '\' represents itself. This is looser than strict mode
                 // ES5 in some cases, but matches what every browser does.
+                sb.Append(esc);
+                _pos++;
+                return;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Template literals
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Scan a template-literal span, starting from the current
+    /// position (which is just past either the opening backtick
+    /// or a <c>}</c> closing an interpolation). Reads until the
+    /// next <c>${</c> or closing backtick, decoding escape
+    /// sequences along the way.
+    ///
+    /// On <c>${</c>: emits <see cref="JsTokenKind.TemplateHead"/>
+    /// if this is the first span of the template (when
+    /// <paramref name="isHead"/>) or
+    /// <see cref="JsTokenKind.TemplateMiddle"/> otherwise, and
+    /// pushes the current <see cref="_braceDepth"/> onto
+    /// <see cref="_templateStack"/> so the matching <c>}</c>
+    /// can be recognized.
+    ///
+    /// On closing backtick: emits
+    /// <see cref="JsTokenKind.NoSubstitutionTemplate"/> if this
+    /// is the first span (no interpolations), or
+    /// <see cref="JsTokenKind.TemplateTail"/> otherwise.
+    /// </summary>
+    private JsToken ScanTemplateSpan(int start, bool isHead)
+    {
+        var sb = new StringBuilder();
+        while (_pos < _src.Length)
+        {
+            char c = _src[_pos];
+
+            if (c == '`')
+            {
+                _pos++; // consume closing backtick
+                var kind = isHead
+                    ? JsTokenKind.NoSubstitutionTemplate
+                    : JsTokenKind.TemplateTail;
+                return new JsToken(kind, start, _pos - start, stringValue: sb.ToString());
+            }
+
+            if (c == '$' && _pos + 1 < _src.Length && _src[_pos + 1] == '{')
+            {
+                _pos += 2; // consume `${`
+                _templateStack.Add(_braceDepth);
+                var kind = isHead
+                    ? JsTokenKind.TemplateHead
+                    : JsTokenKind.TemplateMiddle;
+                return new JsToken(kind, start, _pos - start, stringValue: sb.ToString());
+            }
+
+            if (c == '\\')
+            {
+                _pos++;
+                if (_pos >= _src.Length)
+                {
+                    return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+                }
+                HandleTemplateEscape(sb);
+                continue;
+            }
+
+            // CRLF and bare CR normalize to LF per ECMA §11.8.6.
+            if (c == '\r')
+            {
+                sb.Append('\n');
+                _pos++;
+                if (_pos < _src.Length && _src[_pos] == '\n') _pos++;
+                continue;
+            }
+
+            sb.Append(c);
+            _pos++;
+        }
+
+        // EOF inside an unterminated template.
+        return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+    }
+
+    /// <summary>
+    /// Escape-sequence handler for template literal spans.
+    /// Very close to <see cref="HandleStringEscape"/> but also
+    /// accepts <c>\`</c> (literal backtick) and treats <c>\$</c>
+    /// as a literal dollar sign (so an escaped
+    /// <c>\${</c> produces a literal <c>${</c> in the result).
+    /// </summary>
+    private void HandleTemplateEscape(StringBuilder sb)
+    {
+        char esc = _src[_pos];
+        switch (esc)
+        {
+            case 'n': sb.Append('\n'); _pos++; return;
+            case 't': sb.Append('\t'); _pos++; return;
+            case 'r': sb.Append('\r'); _pos++; return;
+            case 'b': sb.Append('\b'); _pos++; return;
+            case 'f': sb.Append('\f'); _pos++; return;
+            case 'v': sb.Append('\v'); _pos++; return;
+            case '0': sb.Append('\0'); _pos++; return;
+            case '\'': sb.Append('\''); _pos++; return;
+            case '"': sb.Append('"'); _pos++; return;
+            case '\\': sb.Append('\\'); _pos++; return;
+            case '/': sb.Append('/'); _pos++; return;
+            case '`': sb.Append('`'); _pos++; return;
+            case '$': sb.Append('$'); _pos++; return;
+
+            case '\n':
+                // Line continuation — produces no output.
+                _pos++;
+                return;
+            case '\r':
+                _pos++;
+                if (_pos < _src.Length && _src[_pos] == '\n') _pos++;
+                return;
+
+            case 'x':
+                _pos++;
+                if (_pos + 2 <= _src.Length &&
+                    IsHexDigit(_src[_pos]) && IsHexDigit(_src[_pos + 1]))
+                {
+                    int code = (HexDigitValue(_src[_pos]) << 4) |
+                               HexDigitValue(_src[_pos + 1]);
+                    sb.Append((char)code);
+                    _pos += 2;
+                }
+                else
+                {
+                    sb.Append('x');
+                }
+                return;
+
+            case 'u':
+                _pos++;
+                if (_pos + 4 <= _src.Length &&
+                    IsHexDigit(_src[_pos]) && IsHexDigit(_src[_pos + 1]) &&
+                    IsHexDigit(_src[_pos + 2]) && IsHexDigit(_src[_pos + 3]))
+                {
+                    int code =
+                        (HexDigitValue(_src[_pos]) << 12) |
+                        (HexDigitValue(_src[_pos + 1]) << 8) |
+                        (HexDigitValue(_src[_pos + 2]) << 4) |
+                        HexDigitValue(_src[_pos + 3]);
+                    sb.Append((char)code);
+                    _pos += 4;
+                }
+                else
+                {
+                    sb.Append('u');
+                }
+                return;
+
+            default:
                 sb.Append(esc);
                 _pos++;
                 return;

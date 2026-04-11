@@ -431,6 +431,33 @@ public sealed class JsCompiler
     }
 
     /// <summary>
+    /// Compile an ES2015 template literal. Lowers to a sequence
+    /// of string concatenations: push the first quasi, then for
+    /// each interpolation, compile the expression, <c>Add</c>
+    /// (which performs string concatenation when either operand
+    /// is a string), push the next quasi, <c>Add</c> again.
+    /// Non-string expression values are coerced to string by
+    /// the existing <c>DoAdd</c> path because one operand is
+    /// always a string.
+    /// </summary>
+    private void CompileTemplateLiteral(TemplateLiteral tl)
+    {
+        // There's always at least one quasi (the Quasis/Expressions
+        // invariant in the AST guarantees Count == Expressions.Count + 1).
+        int idx0 = _chunk.AddConstant(tl.Quasis[0]);
+        _chunk.EmitWithU16(OpCode.PushConst, idx0);
+
+        for (int i = 0; i < tl.Expressions.Count; i++)
+        {
+            CompileExpression(tl.Expressions[i]);
+            _chunk.Emit(OpCode.Add);
+            int idxN = _chunk.AddConstant(tl.Quasis[i + 1]);
+            _chunk.EmitWithU16(OpCode.PushConst, idxN);
+            _chunk.Emit(OpCode.Add);
+        }
+    }
+
+    /// <summary>
     /// Compile an ES2015 arrow function expression. For the
     /// concise expression body form, we synthesize a tiny
     /// <c>{ return expr; }</c> wrapper so the compile path
@@ -824,6 +851,9 @@ public sealed class JsCompiler
                 return;
             case ArrowFunctionExpression ae:
                 CompileArrowFunctionExpression(ae);
+                return;
+            case TemplateLiteral tl:
+                CompileTemplateLiteral(tl);
                 return;
 
             default:
