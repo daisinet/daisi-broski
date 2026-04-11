@@ -55,6 +55,11 @@ public sealed class Tokenizer
 
     private State _state = State.Data;
 
+    // When in Rawtext, Rcdata, or ScriptData state, this is the name of the
+    // element whose closing tag we are looking for (e.g. "script", "style",
+    // "title"). Only the exact matching end tag can take us back to Data.
+    private string? _rawTextElement;
+
     public Tokenizer(string input)
     {
         _input = input ?? throw new ArgumentNullException(nameof(input));
@@ -159,6 +164,15 @@ public sealed class Tokenizer
                     break;
                 case State.AfterDoctypeName:
                     HandleAfterDoctypeName(c);
+                    break;
+                case State.Rawtext:
+                    HandleRawtext(c);
+                    break;
+                case State.Rcdata:
+                    HandleRcdata(c);
+                    break;
+                case State.ScriptData:
+                    HandleScriptData(c);
                     break;
                 default:
                     throw new InvalidOperationException($"Unhandled tokenizer state: {_state}");
@@ -268,7 +282,6 @@ public sealed class Tokenizer
         {
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
 
@@ -283,7 +296,6 @@ public sealed class Tokenizer
             _currentSelfClosing = true;
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
 
@@ -352,7 +364,6 @@ public sealed class Tokenizer
             PushAttribute(withEmptyValue: true);
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
 
@@ -387,7 +398,6 @@ public sealed class Tokenizer
             PushAttribute(withEmptyValue: true);
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
 
@@ -446,7 +456,6 @@ public sealed class Tokenizer
             PushAttribute(withEmptyValue: false);
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
         if (c == '&')
@@ -477,7 +486,6 @@ public sealed class Tokenizer
         {
             _pos++;
             EmitCurrentTag();
-            _state = State.Data;
             return;
         }
 
@@ -643,6 +651,107 @@ public sealed class Tokenizer
         _pos++;
     }
 
+    /// <summary>
+    /// RAWTEXT state: body content of <c>&lt;style&gt;</c>, <c>&lt;xmp&gt;</c>,
+    /// <c>&lt;iframe&gt;</c>, <c>&lt;noembed&gt;</c>, <c>&lt;noframes&gt;</c>,
+    /// <c>&lt;noscript&gt;</c>. Everything is literal character data except
+    /// the matching end tag. Character references are <b>not</b> decoded.
+    /// </summary>
+    private void HandleRawtext(char c)
+    {
+        if (c == '<' && TryMatchRawTextEnd())
+        {
+            return;
+        }
+
+        _dataBuffer.Append(c);
+        _pos++;
+    }
+
+    /// <summary>
+    /// RCDATA state: body content of <c>&lt;title&gt;</c> and
+    /// <c>&lt;textarea&gt;</c>. Like RAWTEXT but character references
+    /// <b>are</b> decoded.
+    /// </summary>
+    private void HandleRcdata(char c)
+    {
+        if (c == '<' && TryMatchRawTextEnd())
+        {
+            return;
+        }
+        if (c == '&')
+        {
+            _dataBuffer.Append(ConsumeCharacterReference(inAttributeValue: false));
+            return;
+        }
+
+        _dataBuffer.Append(c);
+        _pos++;
+    }
+
+    /// <summary>
+    /// Script data state: body content of <c>&lt;script&gt;</c>. The full
+    /// WHATWG algorithm has ~10 sub-states to handle <c>&lt;!--</c> comment
+    /// escaping and nested <c>&lt;script&gt;</c> recognition inside those
+    /// escapes — features mostly introduced for legacy compat. For phase 1
+    /// we treat script data as plain raw text looking for a case-insensitive
+    /// <c>&lt;/script&gt;</c> terminator. This handles every modern site;
+    /// the rare legacy page that depends on escape-state semantics would
+    /// need a follow-up pass.
+    /// </summary>
+    private void HandleScriptData(char c)
+    {
+        if (c == '<' && TryMatchRawTextEnd())
+        {
+            return;
+        }
+
+        _dataBuffer.Append(c);
+        _pos++;
+    }
+
+    /// <summary>
+    /// When the tokenizer is in one of the raw-text-like states and the
+    /// current character is <c>&lt;</c>, check whether what follows is
+    /// the closing tag for <see cref="_rawTextElement"/>. If so, set up
+    /// the tag-name state machine to parse it (including any trailing
+    /// attributes or whitespace) and return <c>true</c>. Otherwise leave
+    /// the cursor where it was so the caller can append the <c>&lt;</c>
+    /// as literal character data.
+    /// </summary>
+    private bool TryMatchRawTextEnd()
+    {
+        var expected = _rawTextElement;
+        if (expected is null) return false;
+
+        // Need: "</" + name + (whitespace | '/' | '>')
+        int need = 2 + expected.Length;
+        if (_pos + need > _input.Length) return false;
+
+        if (_input[_pos] != '<' || _input[_pos + 1] != '/') return false;
+
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (char.ToLowerInvariant(_input[_pos + 2 + i]) != expected[i])
+                return false;
+        }
+
+        int after = _pos + need;
+        if (after >= _input.Length) return false;
+        char next = _input[after];
+        if (!IsWhitespace(next) && next != '/' && next != '>') return false;
+
+        // Match. Prime the tag-name state as if we had just finished
+        // tokenizing the name of an end tag. The main loop will then
+        // consume whitespace / '/' / '>' and emit the EndTagToken.
+        StartNewTag(isEndTag: true);
+        _nameBuffer.Append(expected);
+        _pos = after;
+        _state = State.TagName;
+        _rawTextElement = null;
+        return true;
+    }
+
     // -------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------
@@ -680,19 +789,29 @@ public sealed class Tokenizer
         _attrValueBuffer.Clear();
     }
 
+    /// <summary>
+    /// Emit the currently-accumulated tag as a token and set the next
+    /// tokenizer state. <b>This method is the sole owner of the state
+    /// transition out of tag parsing</b> — callers must not overwrite
+    /// <c>_state</c> after calling it, or they will clobber the special
+    /// RAWTEXT/RCDATA/ScriptData transition for elements like
+    /// <c>&lt;script&gt;</c> and <c>&lt;style&gt;</c>.
+    /// </summary>
     private void EmitCurrentTag()
     {
         // Flush any pending attribute that was still being parsed.
         PushAttribute(withEmptyValue: _attrValueBuffer.Length == 0);
 
         var name = _nameBuffer.ToString();
-        HtmlToken tag = _currentIsEndTag
+        bool wasEndTag = _currentIsEndTag;
+        bool wasSelfClosing = _currentSelfClosing;
+        HtmlToken tag = wasEndTag
             ? new EndTagToken { Name = name }
             : new StartTagToken
             {
                 Name = name,
                 Attributes = _currentAttrs.ToArray(),
-                SelfClosing = _currentSelfClosing,
+                SelfClosing = wasSelfClosing,
             };
 
         EmitBufferedCharsThenPending(tag);
@@ -700,7 +819,42 @@ public sealed class Tokenizer
         _nameBuffer.Clear();
         _currentAttrs.Clear();
         _currentSelfClosing = false;
+
+        // Default transition: back to the data state.
+        _state = State.Data;
+
+        // Override: after a start tag for a special-content element, the
+        // tokenizer switches into a state where the element body is
+        // tokenized as raw text (or RCDATA, for entity-aware elements)
+        // until the matching end tag. This is why a <script> body never
+        // gets parsed as markup even when it contains < or > characters.
+        if (!wasEndTag && !wasSelfClosing)
+        {
+            if (name == "script")
+            {
+                _rawTextElement = name;
+                _state = State.ScriptData;
+            }
+            else if (IsRawTextElement(name))
+            {
+                _rawTextElement = name;
+                _state = State.Rawtext;
+            }
+            else if (IsRcdataElement(name))
+            {
+                _rawTextElement = name;
+                _state = State.Rcdata;
+            }
+        }
     }
+
+    private static bool IsRawTextElement(string name) => name switch
+    {
+        "style" or "xmp" or "iframe" or "noembed" or "noframes" or "noscript" => true,
+        _ => false,
+    };
+
+    private static bool IsRcdataElement(string name) => name is "title" or "textarea";
 
     /// <summary>
     /// If there is buffered character data, emit it first and park the
@@ -914,5 +1068,8 @@ public sealed class Tokenizer
         BeforeDoctypeName,
         DoctypeName,
         AfterDoctypeName,
+        Rawtext,
+        Rcdata,
+        ScriptData,
     }
 }
