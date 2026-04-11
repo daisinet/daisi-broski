@@ -193,12 +193,125 @@ public sealed class JsCompiler
     {
         PushFrame(isFunction: false);
         HoistDeclarations(program.Body);
+
+        // Top-level let/const and function declarations are
+        // pre-scanned into the globals env directly (no
+        // PushEnv) so they survive across successive Evaluate
+        // calls on the same engine — the REPL-style usage
+        // pattern. This is a pragmatic deviation from the
+        // spec, which puts script-top-level let/const in a
+        // module-scope record. If we ever ship modules
+        // properly (phase 3b module loader), that will
+        // revisit the top-level behavior.
+        foreach (var stmt in program.Body)
+        {
+            if (stmt is VariableDeclaration vd &&
+                vd.Kind != VariableDeclarationKind.Var)
+            {
+                foreach (var d in vd.Declarations)
+                {
+                    int idx = _chunk.AddName(d.Id.Name);
+                    _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                }
+            }
+            else if (stmt is FunctionDeclaration fd)
+            {
+                var template = CompileFunctionTemplate(
+                    fd.Id.Name,
+                    fd.Params,
+                    fd.Body,
+                    fd.End - fd.Start);
+                int templateIdx = _chunk.AddConstant(template);
+                int nameIdx = _chunk.AddName(fd.Id.Name);
+                _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
+                _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
+                _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                _chunk.Emit(OpCode.Pop);
+            }
+        }
+
         foreach (var stmt in program.Body)
         {
             CompileStatement(stmt);
         }
         _chunk.Emit(OpCode.Halt);
         return PopFrame();
+    }
+
+    // -------------------------------------------------------------------
+    // Block compilation
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Compile a block with block scoping. Pushes a fresh
+    /// environment, pre-declares all <c>let</c> / <c>const</c>
+    /// names in the block body as
+    /// <see cref="OpCode.DeclareLet"/> (putting them in the
+    /// temporal dead zone), then compiles the body, then pops
+    /// the environment.
+    ///
+    /// Function bodies are themselves <see cref="BlockStatement"/>s
+    /// and therefore get their own block scope too. That is
+    /// one extra env push per call (harmless) and makes
+    /// function-body let/const work the same as nested-block
+    /// let/const.
+    /// </summary>
+    private void CompileBlock(BlockStatement block)
+    {
+        _chunk.Emit(OpCode.PushEnv);
+        HoistBlockScopedDeclarations(block);
+        foreach (var s in block.Body) CompileStatement(s);
+        _chunk.Emit(OpCode.PopEnv);
+    }
+
+    /// <summary>
+    /// Pre-scan a block's direct children for <c>let</c> /
+    /// <c>const</c> declarations and function declarations, and
+    /// emit their binding-creation opcodes inside the block's
+    /// env. Letting function declarations live in the block
+    /// scope makes inner closures capture the block env, so
+    /// they can see the block's <c>let</c> bindings. That's
+    /// narrower than ES5's hoist-to-function-scope rule — if
+    /// a function declared inside a nested block needs to be
+    /// visible outside it, use a <c>var fn = function () {}</c>
+    /// pattern (slice 3b-1 documented deferral).
+    ///
+    /// Pre-scan does not descend into further nested blocks,
+    /// if bodies, loops, or switches — those have their own
+    /// block scopes and pre-scan themselves on compile.
+    /// </summary>
+    private void HoistBlockScopedDeclarations(BlockStatement block)
+    {
+        foreach (var stmt in block.Body)
+        {
+            if (stmt is VariableDeclaration vd &&
+                vd.Kind != VariableDeclarationKind.Var)
+            {
+                foreach (var d in vd.Declarations)
+                {
+                    int idx = _chunk.AddName(d.Id.Name);
+                    _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                }
+            }
+            else if (stmt is FunctionDeclaration fd)
+            {
+                var template = CompileFunctionTemplate(
+                    fd.Id.Name,
+                    fd.Params,
+                    fd.Body,
+                    fd.End - fd.Start);
+                int templateIdx = _chunk.AddConstant(template);
+                int nameIdx = _chunk.AddName(fd.Id.Name);
+                // Declare in the current env with undefined
+                // (via DeclareGlobal), then overwrite with the
+                // materialized function so inner closures get
+                // the block env captured.
+                _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
+                _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
+                _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                _chunk.Emit(OpCode.Pop);
+            }
+        }
     }
 
     // -------------------------------------------------------------------
@@ -227,29 +340,24 @@ public sealed class JsCompiler
         switch (stmt)
         {
             case VariableDeclaration vd:
+                // Only `var` hoists to the enclosing function —
+                // `let` and `const` are block-scoped and handled
+                // by HoistBlockLetConst when their containing
+                // BlockStatement compiles.
+                if (vd.Kind != VariableDeclarationKind.Var) break;
                 foreach (var d in vd.Declarations)
                 {
                     int idx = _chunk.AddName(d.Id.Name);
                     _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
                 }
                 break;
-            case FunctionDeclaration fd:
-                {
-                    // Compile the function body eagerly and emit
-                    // the MakeFunction + binding write. The main
-                    // compile pass will skip this node.
-                    var template = CompileFunctionTemplate(
-                        fd.Id.Name,
-                        fd.Params,
-                        fd.Body,
-                        fd.End - fd.Start);
-                    int templateIdx = _chunk.AddConstant(template);
-                    int nameIdx = _chunk.AddName(fd.Id.Name);
-                    _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
-                    _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
-                    _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
-                    _chunk.Emit(OpCode.Pop);
-                }
+            case FunctionDeclaration:
+                // Function declarations are block-scoped per
+                // slice 3b-1. HoistBlockScopedDeclarations
+                // emits them inside the enclosing block's env,
+                // so their inner closures capture the block
+                // env. Nothing to do during the function-scope
+                // var hoist pass.
                 break;
             case BlockStatement b:
                 foreach (var s in b.Body) HoistInStatement(s);
@@ -265,7 +373,7 @@ public sealed class JsCompiler
                 HoistInStatement(dw.Body);
                 break;
             case ForStatement f:
-                if (f.Init is VariableDeclaration fvd)
+                if (f.Init is VariableDeclaration fvd && fvd.Kind == VariableDeclarationKind.Var)
                 {
                     foreach (var d in fvd.Declarations)
                     {
@@ -297,15 +405,17 @@ public sealed class JsCompiler
     {
         PushFrame(isFunction: true);
 
-        // Hoist the body — both vars AND any nested function
-        // declarations inside the body.
+        // Hoist vars + nested function declarations to function
+        // scope. Let/const are skipped here — they are handled
+        // by the block scope established by CompileBlock.
         HoistDeclarations(body.Body);
 
-        // Compile the body statements.
-        foreach (var stmt in body.Body)
-        {
-            CompileStatement(stmt);
-        }
+        // Compile the body through CompileBlock so it gets the
+        // standard PushEnv / HoistBlockLetConst / PopEnv
+        // treatment. Function-body let/const live in a scope
+        // one level below the function env, which is harmless
+        // and keeps the block-scoping path unified.
+        CompileBlock(body);
 
         // Implicit `return undefined;` at the end of every
         // function body. If the body already returned, this is
@@ -331,7 +441,7 @@ public sealed class JsCompiler
                 return;
 
             case BlockStatement b:
-                foreach (var s in b.Body) CompileStatement(s);
+                CompileBlock(b);
                 return;
 
             case ExpressionStatement es:
@@ -438,8 +548,22 @@ public sealed class JsCompiler
     {
         foreach (var d in vd.Declarations)
         {
-            if (d.Init is null) continue; // Already hoisted to undefined.
-            CompileExpression(d.Init);
+            if (d.Init is not null)
+            {
+                CompileExpression(d.Init);
+            }
+            else if (vd.Kind != VariableDeclarationKind.Var)
+            {
+                // `let x;` — the declaration clears the TDZ by
+                // explicitly storing undefined. (A `var` without
+                // an initializer is already undefined from the
+                // hoist pass, so we skip.)
+                _chunk.Emit(OpCode.PushUndefined);
+            }
+            else
+            {
+                continue;
+            }
             int idx = _chunk.AddName(d.Id.Name);
             _chunk.EmitWithU16(OpCode.StoreGlobal, idx);
             _chunk.Emit(OpCode.Pop); // Statement position, discard the value.
@@ -516,6 +640,28 @@ public sealed class JsCompiler
     private void CompileFor(ForStatement stmt)
     {
         var label = TakePendingLabel();
+
+        // If the init is a let/const declaration, wrap the whole
+        // loop in a fresh env and pre-declare the init names.
+        // The binding is shared across iterations (slice 3b-1
+        // does not implement per-iteration scope freshness —
+        // that needs closure-capture support for the outer for
+        // body, deferred to a later slice).
+        bool loopScope =
+            stmt.Init is VariableDeclaration initDecl &&
+            initDecl.Kind != VariableDeclarationKind.Var;
+
+        if (loopScope)
+        {
+            _chunk.Emit(OpCode.PushEnv);
+            var vdInit = (VariableDeclaration)stmt.Init!;
+            foreach (var d in vdInit.Declarations)
+            {
+                int idx = _chunk.AddName(d.Id.Name);
+                _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+            }
+        }
+
         // Init.
         if (stmt.Init is VariableDeclaration vd)
         {
@@ -555,6 +701,11 @@ public sealed class JsCompiler
 
         if (exitJump != -1) _chunk.PatchJump(exitJump);
         foreach (var addr in ctx.BreakJumps) _chunk.PatchJump(addr);
+
+        if (loopScope)
+        {
+            _chunk.Emit(OpCode.PopEnv);
+        }
     }
 
     // -------------------------------------------------------------------
