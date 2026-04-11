@@ -1,0 +1,682 @@
+using System.Globalization;
+using System.Text;
+
+namespace Daisi.Broski.Engine.Js;
+
+/// <summary>
+/// Lexical scanner for ECMAScript source. Produces <see cref="JsToken"/>s
+/// via <see cref="Next"/> until <see cref="JsTokenKind.EndOfFile"/>.
+///
+/// Supported today (ES5 core + ES2015+ keyword recognition):
+///
+/// - All ES5 keywords and the future-reserved / ES2015+ keywords
+///   (<c>let</c>, <c>const</c>, <c>class</c>, <c>extends</c>, ...).
+/// - Identifiers over ASCII letters / digits / <c>_</c> / <c>$</c>.
+///   Unicode escapes in identifiers are deferred until a real site
+///   trips over them.
+/// - Number literals:
+///   - Decimal: <c>42</c>, <c>3.14</c>, <c>.5</c>, <c>5.</c>
+///   - Scientific: <c>1e10</c>, <c>1e+10</c>, <c>1E-10</c>, <c>1.5e2</c>
+///   - Hex: <c>0x1F</c>, <c>0X1F</c>
+///   - Octal (legacy): not supported (strict mode forbids them anyway)
+/// - String literals in single or double quotes with escapes:
+///   <c>\n</c>, <c>\r</c>, <c>\t</c>, <c>\b</c>, <c>\f</c>, <c>\v</c>,
+///   <c>\0</c>, <c>\'</c>, <c>\"</c>, <c>\\</c>, <c>\xXX</c>, <c>\uXXXX</c>,
+///   and line continuations (<c>\</c> at end of line).
+/// - Line comments (<c>//</c> to end of line) and block comments
+///   (<c>/* ... */</c>). Skipped, not emitted.
+/// - All ES5 punctuators, including the long ones
+///   (<c>&gt;&gt;&gt;=</c>, <c>===</c>, etc.).
+/// - <c>null</c>, <c>true</c>, <c>false</c> as their own token kinds
+///   so the parser can handle them without going through the
+///   identifier path.
+///
+/// Deliberately deferred:
+///
+/// - <b>Regex literals.</b> These can only be distinguished from the
+///   division operator by parser context. The lexer will grow a
+///   <c>ReLexCurrent(RegexMode)</c> entry point when the parser
+///   needs it; for now <c>/</c> always lexes as division.
+/// - <b>Template literals</b> (<c>`foo ${bar}`</c>) — ES2015 feature,
+///   phase 3b.
+/// - <b>BigInt literals</b> (<c>42n</c>) — phase 3c.
+/// - <b>Unicode identifiers</b> beyond ASCII — phase 3b if a site
+///   needs them.
+/// - <b>Automatic semicolon insertion.</b> ASI is a parser concern;
+///   the lexer does not inject synthetic semicolons.
+/// - <b>Hashbang</b> (<c>#!/usr/bin/env node</c>) — only relevant for
+///   CLI scripts, not web JS.
+/// </summary>
+public sealed class JsLexer
+{
+    private readonly string _src;
+    private int _pos;
+
+    public JsLexer(string source)
+    {
+        _src = source ?? throw new ArgumentNullException(nameof(source));
+    }
+
+    /// <summary>
+    /// Advance past whitespace / comments and return the next token,
+    /// or <see cref="JsTokenKind.EndOfFile"/> at end of input. The
+    /// lexer does not buffer — call this in a loop.
+    /// </summary>
+    public JsToken Next()
+    {
+        SkipTrivia();
+
+        if (_pos >= _src.Length)
+        {
+            return new JsToken(JsTokenKind.EndOfFile, _pos, 0);
+        }
+
+        int start = _pos;
+        char c = _src[_pos];
+
+        // Identifiers and keywords.
+        if (IsIdentifierStart(c))
+        {
+            return ScanIdentifierOrKeyword(start);
+        }
+
+        // Number literal starting with a digit.
+        if (c >= '0' && c <= '9')
+        {
+            return ScanNumber(start);
+        }
+
+        // '.' could be a number (.5), punctuator (.), or spread (...).
+        if (c == '.')
+        {
+            if (_pos + 1 < _src.Length && _src[_pos + 1] >= '0' && _src[_pos + 1] <= '9')
+            {
+                return ScanNumber(start);
+            }
+            if (_pos + 2 < _src.Length && _src[_pos + 1] == '.' && _src[_pos + 2] == '.')
+            {
+                _pos += 3;
+                return new JsToken(JsTokenKind.DotDotDot, start, 3);
+            }
+            _pos++;
+            return new JsToken(JsTokenKind.Dot, start, 1);
+        }
+
+        // String literals.
+        if (c == '"' || c == '\'')
+        {
+            return ScanString(start, c);
+        }
+
+        // Punctuators.
+        return ScanPunctuator(start, c);
+    }
+
+    /// <summary>
+    /// Enumerate every token including the final EOF. Convenience for
+    /// tests and simple callers that don't need the per-call Next() loop.
+    /// </summary>
+    public IEnumerable<JsToken> Tokens()
+    {
+        while (true)
+        {
+            var t = Next();
+            yield return t;
+            if (t.Kind == JsTokenKind.EndOfFile) yield break;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Trivia: whitespace + comments
+    // -------------------------------------------------------------------
+
+    private void SkipTrivia()
+    {
+        while (_pos < _src.Length)
+        {
+            char c = _src[_pos];
+            if (IsWhitespace(c))
+            {
+                _pos++;
+                continue;
+            }
+            if (c == '/' && _pos + 1 < _src.Length)
+            {
+                char next = _src[_pos + 1];
+                if (next == '/')
+                {
+                    SkipLineComment();
+                    continue;
+                }
+                if (next == '*')
+                {
+                    SkipBlockComment();
+                    continue;
+                }
+            }
+            return;
+        }
+    }
+
+    private void SkipLineComment()
+    {
+        // Past the '//' — skip until end of line.
+        _pos += 2;
+        while (_pos < _src.Length)
+        {
+            char c = _src[_pos];
+            if (c == '\n' || c == '\r') return;
+            _pos++;
+        }
+    }
+
+    private void SkipBlockComment()
+    {
+        // Past the '/*' — skip until '*/'.
+        _pos += 2;
+        while (_pos < _src.Length)
+        {
+            if (_src[_pos] == '*' && _pos + 1 < _src.Length && _src[_pos + 1] == '/')
+            {
+                _pos += 2;
+                return;
+            }
+            _pos++;
+        }
+        // Unterminated block comment — silently stop at EOF. The parser
+        // will notice the missing close via token positions if needed.
+    }
+
+    // -------------------------------------------------------------------
+    // Identifiers and keywords
+    // -------------------------------------------------------------------
+
+    private JsToken ScanIdentifierOrKeyword(int start)
+    {
+        _pos++; // consume the start char we already validated
+        while (_pos < _src.Length && IsIdentifierPart(_src[_pos]))
+        {
+            _pos++;
+        }
+
+        var text = _src[start.._pos];
+        var kind = LookupKeyword(text);
+        return new JsToken(kind, start, _pos - start, kind == JsTokenKind.Identifier ? text : null);
+    }
+
+    /// <summary>
+    /// Map a candidate identifier to a keyword token kind, or
+    /// <see cref="JsTokenKind.Identifier"/> if it isn't a keyword.
+    /// Ordered by rough frequency for a faint hot-path micro-win;
+    /// the compiler is free to compile this to a jump table.
+    /// </summary>
+    private static JsTokenKind LookupKeyword(string text) => text switch
+    {
+        // Literal-like keywords.
+        "null" => JsTokenKind.NullLiteral,
+        "true" => JsTokenKind.TrueLiteral,
+        "false" => JsTokenKind.FalseLiteral,
+
+        // ES5 keywords.
+        "var" => JsTokenKind.KeywordVar,
+        "function" => JsTokenKind.KeywordFunction,
+        "return" => JsTokenKind.KeywordReturn,
+        "if" => JsTokenKind.KeywordIf,
+        "else" => JsTokenKind.KeywordElse,
+        "for" => JsTokenKind.KeywordFor,
+        "while" => JsTokenKind.KeywordWhile,
+        "do" => JsTokenKind.KeywordDo,
+        "break" => JsTokenKind.KeywordBreak,
+        "continue" => JsTokenKind.KeywordContinue,
+        "this" => JsTokenKind.KeywordThis,
+        "new" => JsTokenKind.KeywordNew,
+        "typeof" => JsTokenKind.KeywordTypeof,
+        "instanceof" => JsTokenKind.KeywordInstanceof,
+        "in" => JsTokenKind.KeywordIn,
+        "delete" => JsTokenKind.KeywordDelete,
+        "void" => JsTokenKind.KeywordVoid,
+        "throw" => JsTokenKind.KeywordThrow,
+        "try" => JsTokenKind.KeywordTry,
+        "catch" => JsTokenKind.KeywordCatch,
+        "finally" => JsTokenKind.KeywordFinally,
+        "switch" => JsTokenKind.KeywordSwitch,
+        "case" => JsTokenKind.KeywordCase,
+        "default" => JsTokenKind.KeywordDefault,
+        "debugger" => JsTokenKind.KeywordDebugger,
+        "with" => JsTokenKind.KeywordWith,
+
+        // ES2015+ / future-reserved keywords.
+        "let" => JsTokenKind.KeywordLet,
+        "const" => JsTokenKind.KeywordConst,
+        "class" => JsTokenKind.KeywordClass,
+        "extends" => JsTokenKind.KeywordExtends,
+        "super" => JsTokenKind.KeywordSuper,
+        "import" => JsTokenKind.KeywordImport,
+        "export" => JsTokenKind.KeywordExport,
+        "enum" => JsTokenKind.KeywordEnum,
+        "yield" => JsTokenKind.KeywordYield,
+        "static" => JsTokenKind.KeywordStatic,
+
+        _ => JsTokenKind.Identifier,
+    };
+
+    // -------------------------------------------------------------------
+    // Numbers
+    // -------------------------------------------------------------------
+
+    private JsToken ScanNumber(int start)
+    {
+        // Hex (0x or 0X).
+        if (_src[_pos] == '0' && _pos + 1 < _src.Length &&
+            (_src[_pos + 1] == 'x' || _src[_pos + 1] == 'X'))
+        {
+            _pos += 2;
+            int digitStart = _pos;
+            while (_pos < _src.Length && IsHexDigit(_src[_pos])) _pos++;
+            if (_pos == digitStart)
+            {
+                // "0x" with no digits — treat as an error by emitting
+                // an Unknown token covering what we consumed. The parser
+                // will stop on it.
+                return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+            }
+
+            var hexText = _src[digitStart.._pos];
+            double hexValue = (double)long.Parse(hexText, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+            return new JsToken(JsTokenKind.NumberLiteral, start, _pos - start, numberValue: hexValue);
+        }
+
+        // Decimal integer part. '.5' and '0.5' both land here because
+        // the caller routed leading-dot numbers to ScanNumber.
+        while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
+
+        // Fractional part.
+        if (_pos < _src.Length && _src[_pos] == '.')
+        {
+            _pos++;
+            while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
+        }
+
+        // Exponent.
+        if (_pos < _src.Length && (_src[_pos] == 'e' || _src[_pos] == 'E'))
+        {
+            _pos++;
+            if (_pos < _src.Length && (_src[_pos] == '+' || _src[_pos] == '-')) _pos++;
+            int expStart = _pos;
+            while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
+            if (_pos == expStart)
+            {
+                return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+            }
+        }
+
+        var text = _src[start.._pos];
+        if (!double.TryParse(
+                text,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var value))
+        {
+            return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+        }
+        return new JsToken(JsTokenKind.NumberLiteral, start, _pos - start, numberValue: value);
+    }
+
+    // -------------------------------------------------------------------
+    // Strings
+    // -------------------------------------------------------------------
+
+    private JsToken ScanString(int start, char quote)
+    {
+        _pos++; // consume opening quote
+        var sb = new StringBuilder();
+
+        while (_pos < _src.Length)
+        {
+            char c = _src[_pos];
+
+            if (c == quote)
+            {
+                _pos++;
+                return new JsToken(
+                    JsTokenKind.StringLiteral, start, _pos - start, stringValue: sb.ToString());
+            }
+
+            if (c == '\n' || c == '\r')
+            {
+                // Unterminated string — emit as Unknown at the point
+                // where the line break happened.
+                return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+            }
+
+            if (c == '\\')
+            {
+                _pos++;
+                if (_pos >= _src.Length)
+                {
+                    return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+                }
+                HandleStringEscape(sb);
+                continue;
+            }
+
+            sb.Append(c);
+            _pos++;
+        }
+
+        // EOF before closing quote.
+        return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+    }
+
+    private void HandleStringEscape(StringBuilder sb)
+    {
+        char esc = _src[_pos];
+        switch (esc)
+        {
+            case 'n': sb.Append('\n'); _pos++; return;
+            case 't': sb.Append('\t'); _pos++; return;
+            case 'r': sb.Append('\r'); _pos++; return;
+            case 'b': sb.Append('\b'); _pos++; return;
+            case 'f': sb.Append('\f'); _pos++; return;
+            case 'v': sb.Append('\v'); _pos++; return;
+            case '0':
+                // Only '\0' (not followed by another digit) is the null char.
+                // Legacy octal escapes ('\012') are not supported.
+                sb.Append('\0'); _pos++; return;
+            case '\'': sb.Append('\''); _pos++; return;
+            case '"': sb.Append('"'); _pos++; return;
+            case '\\': sb.Append('\\'); _pos++; return;
+            case '/': sb.Append('/'); _pos++; return;
+
+            case '\n':
+                // Line continuation — produces no output.
+                _pos++;
+                return;
+            case '\r':
+                _pos++;
+                if (_pos < _src.Length && _src[_pos] == '\n') _pos++;
+                return;
+
+            case 'x':
+                _pos++;
+                if (_pos + 2 <= _src.Length &&
+                    IsHexDigit(_src[_pos]) && IsHexDigit(_src[_pos + 1]))
+                {
+                    int code = (HexDigitValue(_src[_pos]) << 4) | HexDigitValue(_src[_pos + 1]);
+                    sb.Append((char)code);
+                    _pos += 2;
+                }
+                else
+                {
+                    // Malformed \x — emit the literal characters.
+                    sb.Append('x');
+                }
+                return;
+
+            case 'u':
+                _pos++;
+                if (_pos + 4 <= _src.Length &&
+                    IsHexDigit(_src[_pos]) && IsHexDigit(_src[_pos + 1]) &&
+                    IsHexDigit(_src[_pos + 2]) && IsHexDigit(_src[_pos + 3]))
+                {
+                    int code =
+                        (HexDigitValue(_src[_pos]) << 12) |
+                        (HexDigitValue(_src[_pos + 1]) << 8) |
+                        (HexDigitValue(_src[_pos + 2]) << 4) |
+                        HexDigitValue(_src[_pos + 3]);
+                    sb.Append((char)code);
+                    _pos += 4;
+                }
+                else
+                {
+                    sb.Append('u');
+                }
+                return;
+
+            default:
+                // Unrecognized escape: per spec, a non-escape char after
+                // '\' represents itself. This is looser than strict mode
+                // ES5 in some cases, but matches what every browser does.
+                sb.Append(esc);
+                _pos++;
+                return;
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Punctuators
+    // -------------------------------------------------------------------
+
+    private JsToken ScanPunctuator(int start, char c)
+    {
+        // Greedy matching: try the longest punctuator first at each
+        // dispatch. Single-char fallback at the bottom of each branch.
+        switch (c)
+        {
+            case '(': _pos++; return new JsToken(JsTokenKind.LeftParen, start, 1);
+            case ')': _pos++; return new JsToken(JsTokenKind.RightParen, start, 1);
+            case '{': _pos++; return new JsToken(JsTokenKind.LeftBrace, start, 1);
+            case '}': _pos++; return new JsToken(JsTokenKind.RightBrace, start, 1);
+            case '[': _pos++; return new JsToken(JsTokenKind.LeftBracket, start, 1);
+            case ']': _pos++; return new JsToken(JsTokenKind.RightBracket, start, 1);
+            case ';': _pos++; return new JsToken(JsTokenKind.Semicolon, start, 1);
+            case ',': _pos++; return new JsToken(JsTokenKind.Comma, start, 1);
+            case ':': _pos++; return new JsToken(JsTokenKind.Colon, start, 1);
+            case '?': _pos++; return new JsToken(JsTokenKind.QuestionMark, start, 1);
+            case '~': _pos++; return new JsToken(JsTokenKind.Tilde, start, 1);
+
+            case '=':
+                if (Peek(1) == '=')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.StrictEqual, start, 3);
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.Equal, start, 2);
+                }
+                if (Peek(1) == '>')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.Arrow, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Assign, start, 1);
+
+            case '!':
+                if (Peek(1) == '=')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.StrictNotEqual, start, 3);
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.NotEqual, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Exclamation, start, 1);
+
+            case '<':
+                if (Peek(1) == '<')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.LeftShiftAssign, start, 3);
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.LeftShift, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.LessThanEqual, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.LessThan, start, 1);
+
+            case '>':
+                if (Peek(1) == '>')
+                {
+                    if (Peek(2) == '>')
+                    {
+                        if (Peek(3) == '=')
+                        {
+                            _pos += 4;
+                            return new JsToken(JsTokenKind.UnsignedRightShiftAssign, start, 4);
+                        }
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.UnsignedRightShift, start, 3);
+                    }
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.RightShiftAssign, start, 3);
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.RightShift, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.GreaterThanEqual, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.GreaterThan, start, 1);
+
+            case '+':
+                if (Peek(1) == '+')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.PlusPlus, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.PlusAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Plus, start, 1);
+
+            case '-':
+                if (Peek(1) == '-')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.MinusMinus, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.MinusAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Minus, start, 1);
+
+            case '*':
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.StarAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Star, start, 1);
+
+            case '/':
+                // Note: regex literals are context-sensitive and not
+                // yet supported — '/' always lexes as division.
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.SlashAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Slash, start, 1);
+
+            case '%':
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.PercentAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Percent, start, 1);
+
+            case '&':
+                if (Peek(1) == '&')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.AmpersandAmpersand, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.AmpersandAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Ampersand, start, 1);
+
+            case '|':
+                if (Peek(1) == '|')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.PipePipe, start, 2);
+                }
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.PipeAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Pipe, start, 1);
+
+            case '^':
+                if (Peek(1) == '=')
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.CaretAssign, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.Caret, start, 1);
+        }
+
+        // Anything else: emit as Unknown so the parser sees it.
+        _pos++;
+        return new JsToken(JsTokenKind.Unknown, start, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------
+
+    private char Peek(int offset)
+    {
+        int p = _pos + offset;
+        return p < _src.Length ? _src[p] : '\0';
+    }
+
+    private static bool IsWhitespace(char c) =>
+        c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f' ||
+        // Unicode no-break space. Beyond this we don't bother — if a site
+        // uses a rare Unicode space character, it'll fail to tokenize and
+        // we'll add support.
+        c == '\u00A0';
+
+    private static bool IsIdentifierStart(char c) =>
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+
+    private static bool IsIdentifierPart(char c) =>
+        IsIdentifierStart(c) || (c >= '0' && c <= '9');
+
+    private static bool IsHexDigit(char c) =>
+        (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+
+    private static int HexDigitValue(char c) => c switch
+    {
+        >= '0' and <= '9' => c - '0',
+        >= 'a' and <= 'f' => c - 'a' + 10,
+        >= 'A' and <= 'F' => c - 'A' + 10,
+        _ => -1,
+    };
+}
