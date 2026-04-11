@@ -411,12 +411,19 @@ public sealed class JsCompiler
     /// </summary>
     private JsFunctionTemplate CompileFunctionTemplate(
         string? name,
-        IReadOnlyList<Identifier> paramNodes,
+        IReadOnlyList<FunctionParameter> paramNodes,
         BlockStatement body,
         int sourceLength,
         bool isArrow = false)
     {
         PushFrame(isFunction: true);
+
+        // Defaults: emit at function entry, *before* the body
+        // hoist/block setup, so the param binding already lives
+        // in the function env (the VM bound it from the caller's
+        // args). Rest params are handled by the VM itself via
+        // the template's RestParamIndex — no emission here.
+        EmitParameterDefaults(paramNodes);
 
         // Hoist vars + nested function declarations to function
         // scope. Let/const are skipped here — they are handled
@@ -437,9 +444,61 @@ public sealed class JsCompiler
         _chunk.Emit(OpCode.Return);
 
         var chunk = PopFrame();
+
+        // Gather param names and locate the rest param (if any).
+        // The parser guarantees at most one rest param and that
+        // it is last, so RestParamIndex is either -1 or the last
+        // index.
         var paramNames = new List<string>(paramNodes.Count);
-        foreach (var p in paramNodes) paramNames.Add(p.Name);
-        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength, isArrow);
+        int restIndex = -1;
+        for (int i = 0; i < paramNodes.Count; i++)
+        {
+            var p = paramNodes[i];
+            if (p.Target is not Identifier idName)
+            {
+                throw new JsCompileException(
+                    "Parameter destructuring is not supported in this slice",
+                    p.Start);
+            }
+            paramNames.Add(idName.Name);
+            if (p.IsRest) restIndex = i;
+        }
+        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength, isArrow, restIndex);
+    }
+
+    /// <summary>
+    /// For each parameter that carries a default value, emit
+    /// bytecode at function entry that checks whether the
+    /// current binding is strictly equal to <c>undefined</c>,
+    /// and if so replaces it with the default expression's
+    /// value. The default expression is lowered to normal
+    /// compiled bytecode — it sees the enclosing closure
+    /// exactly as a body expression would, and earlier
+    /// parameters are visible because they are already bound
+    /// in the function env at this point.
+    ///
+    /// Rest parameters do not participate — the VM binds them
+    /// to a fresh array of leftover args at call time.
+    /// </summary>
+    private void EmitParameterDefaults(IReadOnlyList<FunctionParameter> paramNodes)
+    {
+        foreach (var p in paramNodes)
+        {
+            if (p.IsRest || p.Default is null) continue;
+            if (p.Target is not Identifier id) continue;
+
+            int nameIdx = _chunk.AddName(id.Name);
+            // Load the current value of the param binding.
+            _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+            _chunk.Emit(OpCode.PushUndefined);
+            _chunk.Emit(OpCode.StrictEq);
+            int skip = _chunk.EmitJump(OpCode.JumpIfFalse);
+            // Undefined → evaluate default, store it, discard.
+            CompileExpression(p.Default);
+            _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+            _chunk.Emit(OpCode.Pop);
+            _chunk.PatchJump(skip);
+        }
     }
 
     /// <summary>
@@ -770,10 +829,44 @@ public sealed class JsCompiler
         //   CompilePatternBinding   // consumes val, leaves [src]
         // Null elements are elisions — skip them but still advance
         // the source index.
+        //
+        // A rest element (`...target`) captures a fresh array of
+        // the tail starting at its index. Lowered as:
+        //   CreateArray 0           // [src, restArr]
+        //   for each tail index j:
+        //     Swap                  // [restArr, src]
+        //     Dup                   // [restArr, src, src]
+        //     PushConst <j>         // [restArr, src, src, j]
+        //     GetPropertyComputed   // [restArr, src, val]
+        //     ... we want [src, restArr, val] — manage with Swap
+        // Simpler: resolve the tail length at runtime by loading
+        // the source's `length` and looping. But we have no loop
+        // opcode here. Given the element count is known-small in
+        // practice (tests use short arrays), we lower rest by
+        // calling Array.prototype.slice on the source.
         for (int i = 0; i < pattern.Elements.Count; i++)
         {
             var e = pattern.Elements[i];
             if (e is null) continue;
+            if (e.IsRest)
+            {
+                // [src] → [src, src.slice(i)]
+                //
+                // We emit a call to Array.prototype.slice via a
+                // method-call layout: [src, slice, src, i] then
+                // Call 1 → [src, tailArr]. Then bind tailArr to
+                // the target (which consumes it) leaving [src].
+                _chunk.Emit(OpCode.Dup);                                  // [src, src]
+                int sliceIdx = _chunk.AddName("slice");
+                _chunk.Emit(OpCode.Dup);                                  // [src, src, src]
+                _chunk.EmitWithU16(OpCode.GetProperty, sliceIdx);         // [src, src, slice]
+                _chunk.Emit(OpCode.Swap);                                 // [src, slice, src]
+                int iConstIdx = _chunk.AddConstant((double)i);
+                _chunk.EmitWithU16(OpCode.PushConst, iConstIdx);          // [src, slice, src, i]
+                _chunk.EmitWithU8(OpCode.Call, 1);                        // [src, tailArr]
+                CompilePatternBinding(e.Target);                          // consumes tailArr, leaves [src]
+                continue;
+            }
             _chunk.Emit(OpCode.Dup);
             int constIdx = _chunk.AddConstant((double)i);
             _chunk.EmitWithU16(OpCode.PushConst, constIdx);
@@ -1365,24 +1458,59 @@ public sealed class JsCompiler
 
     private void CompileArrayExpression(ArrayExpression ae)
     {
-        // Holes (null entries) are approximated as undefined —
-        // phase-3a slice 4a does not distinguish a true array hole
-        // from an explicit undefined slot. Tests cover the common
-        // cases; the spec distinction matters only for `in` on the
-        // index and for sparse iteration, neither of which is
-        // reachable yet.
+        // Fast path: no spread — keep the existing
+        // Push...Push + CreateArray<n> layout.
+        bool hasSpread = false;
+        foreach (var e in ae.Elements)
+        {
+            if (e is SpreadElement) { hasSpread = true; break; }
+        }
+
+        if (!hasSpread)
+        {
+            // Holes (null entries) are approximated as undefined —
+            // phase-3a slice 4a does not distinguish a true array hole
+            // from an explicit undefined slot. Tests cover the common
+            // cases; the spec distinction matters only for `in` on the
+            // index and for sparse iteration, neither of which is
+            // reachable yet.
+            foreach (var e in ae.Elements)
+            {
+                if (e is null)
+                {
+                    _chunk.Emit(OpCode.PushUndefined);
+                }
+                else
+                {
+                    CompileExpression(e);
+                }
+            }
+            _chunk.EmitWithU16(OpCode.CreateArray, ae.Elements.Count);
+            return;
+        }
+
+        // Spread path: build an empty array, then append each
+        // element one at a time (ArrayAppend for regular or
+        // hole elements, ArrayAppendSpread for spreads).
+        _chunk.EmitWithU16(OpCode.CreateArray, 0);
         foreach (var e in ae.Elements)
         {
             if (e is null)
             {
                 _chunk.Emit(OpCode.PushUndefined);
+                _chunk.Emit(OpCode.ArrayAppend);
+            }
+            else if (e is SpreadElement sp)
+            {
+                CompileExpression(sp.Argument);
+                _chunk.Emit(OpCode.ArrayAppendSpread);
             }
             else
             {
                 CompileExpression(e);
+                _chunk.Emit(OpCode.ArrayAppend);
             }
         }
-        _chunk.EmitWithU16(OpCode.CreateArray, ae.Elements.Count);
     }
 
     private void CompileObjectExpression(ObjectExpression oe)
@@ -1415,6 +1543,8 @@ public sealed class JsCompiler
     /// </summary>
     private void CompileCall(CallExpression ce)
     {
+        // Emit the `[fn, this]` header the same way for both
+        // the normal and the spread path.
         if (ce.Callee is MemberExpression m)
         {
             CompileExpression(m.Object);
@@ -1436,31 +1566,84 @@ public sealed class JsCompiler
             CompileExpression(ce.Callee);
             _chunk.Emit(OpCode.PushUndefined);
         }
-        foreach (var arg in ce.Arguments)
+
+        bool hasSpread = HasSpreadArgument(ce.Arguments);
+        if (!hasSpread)
         {
-            CompileExpression(arg);
+            foreach (var arg in ce.Arguments)
+            {
+                CompileExpression(arg);
+            }
+            if (ce.Arguments.Count > byte.MaxValue)
+            {
+                throw new JsCompileException(
+                    "More than 255 call arguments are not supported", ce.Start);
+            }
+            _chunk.EmitWithU8(OpCode.Call, ce.Arguments.Count);
+            return;
         }
-        if (ce.Arguments.Count > byte.MaxValue)
-        {
-            throw new JsCompileException(
-                "More than 255 call arguments are not supported", ce.Start);
-        }
-        _chunk.EmitWithU8(OpCode.Call, ce.Arguments.Count);
+
+        // Spread path: build the args array at runtime and
+        // hand it to CallSpread.
+        EmitSpreadArgsArray(ce.Arguments);
+        _chunk.Emit(OpCode.CallSpread);
     }
 
     private void CompileNew(NewExpression ne)
     {
         CompileExpression(ne.Callee);
-        foreach (var arg in ne.Arguments)
+        bool hasSpread = HasSpreadArgument(ne.Arguments);
+        if (!hasSpread)
         {
-            CompileExpression(arg);
+            foreach (var arg in ne.Arguments)
+            {
+                CompileExpression(arg);
+            }
+            if (ne.Arguments.Count > byte.MaxValue)
+            {
+                throw new JsCompileException(
+                    "More than 255 constructor arguments are not supported", ne.Start);
+            }
+            _chunk.EmitWithU8(OpCode.New, ne.Arguments.Count);
+            return;
         }
-        if (ne.Arguments.Count > byte.MaxValue)
+        EmitSpreadArgsArray(ne.Arguments);
+        _chunk.Emit(OpCode.NewSpread);
+    }
+
+    private static bool HasSpreadArgument(IReadOnlyList<Expression> args)
+    {
+        foreach (var a in args)
         {
-            throw new JsCompileException(
-                "More than 255 constructor arguments are not supported", ne.Start);
+            if (a is SpreadElement) return true;
         }
-        _chunk.EmitWithU8(OpCode.New, ne.Arguments.Count);
+        return false;
+    }
+
+    /// <summary>
+    /// Emit bytecode that, given the current call-prefix on
+    /// the stack, pushes a single <see cref="JsArray"/> holding
+    /// all the arguments in order — with spread elements
+    /// flattened in place. Used by <see cref="CompileCall"/>
+    /// and <see cref="CompileNew"/> when any argument is a
+    /// spread element.
+    /// </summary>
+    private void EmitSpreadArgsArray(IReadOnlyList<Expression> args)
+    {
+        _chunk.EmitWithU16(OpCode.CreateArray, 0);
+        foreach (var a in args)
+        {
+            if (a is SpreadElement sp)
+            {
+                CompileExpression(sp.Argument);
+                _chunk.Emit(OpCode.ArrayAppendSpread);
+            }
+            else
+            {
+                CompileExpression(a);
+                _chunk.Emit(OpCode.ArrayAppend);
+            }
+        }
     }
 
     private void CompileFunctionExpression(FunctionExpression fe)

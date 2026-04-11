@@ -142,6 +142,23 @@ public enum OpCode : byte
     /// </summary>
     New,
     /// <summary>
+    /// ES2015 spread call. Stack before:
+    /// <c>[..., fn, this, argsArray]</c>. Stack after:
+    /// <c>[..., result]</c>. <c>argsArray</c> must be a
+    /// <see cref="JsArray"/> — the VM flattens its elements
+    /// into the call's actual argument list. Emitted by the
+    /// compiler whenever a call contains at least one
+    /// <c>...expr</c> argument; plain calls continue to use
+    /// <see cref="Call"/> for efficiency.
+    /// </summary>
+    CallSpread,
+    /// <summary>
+    /// ES2015 spread <c>new</c>. Stack before:
+    /// <c>[..., fn, argsArray]</c>. Stack after:
+    /// <c>[..., instance]</c>.
+    /// </summary>
+    NewSpread,
+    /// <summary>
     /// Return from the current function call. Pops the top of
     /// stack as the return value, restores the calling frame, and
     /// pushes the value onto the caller's stack. At the top-level
@@ -268,6 +285,23 @@ public enum OpCode : byte
     /// (bottom-to-top), and push the array. Operand: u16 count.
     /// </summary>
     CreateArray,
+    /// <summary>
+    /// Append a single value to an array. Stack
+    /// <c>[array, value]</c> → <c>[array]</c>. Used by the
+    /// ES2015 spread lowering in array literals and calls —
+    /// each non-spread element is pushed via this opcode while
+    /// the evolving result array stays at TOS.
+    /// </summary>
+    ArrayAppend,
+    /// <summary>
+    /// Append every element of an iterable to an array.
+    /// Stack <c>[array, iter]</c> → <c>[array]</c>. The
+    /// iterable must be a <see cref="JsArray"/> in this slice
+    /// (generic iterator protocol support is deferred to the
+    /// iterator/for-of slice). Non-array iterables throw
+    /// <c>TypeError</c>.
+    /// </summary>
+    ArrayAppendSpread,
     /// <summary>
     /// Initialize a property on the object currently under a
     /// single value. Stack <c>[obj, value]</c> → <c>[obj]</c>.
