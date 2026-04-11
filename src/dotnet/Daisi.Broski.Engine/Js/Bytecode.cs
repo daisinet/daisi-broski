@@ -158,6 +158,67 @@ public enum OpCode : byte
     /// <c>[..., instance]</c>.
     /// </summary>
     NewSpread,
+
+    // ---- ES2015 classes ----
+    /// <summary>
+    /// Wire a subclass's prototype chain to its parent. Stack
+    /// <c>[subclass, parent]</c> → <c>[subclass]</c>. Sets
+    /// <c>subclass.[[Prototype]] = parent</c> (so static
+    /// methods on the parent are inherited) and
+    /// <c>subclass.prototype.[[Prototype]] = parent.prototype</c>
+    /// (so instance methods on the parent are inherited via
+    /// the instance prototype chain). Pops the parent; keeps
+    /// the subclass on the stack for further class-assembly
+    /// ops (method installation, etc.).
+    /// </summary>
+    SetupSubclass,
+    /// <summary>
+    /// Install an instance method on a class's prototype.
+    /// Stack <c>[class, fn]</c> → <c>[class]</c>. The method
+    /// is installed as a non-enumerable property under the
+    /// operand name (u16 name index), and its
+    /// <see cref="JsFunction.HomeSuper"/> is set to
+    /// <c>class.prototype.[[Prototype]]</c> when that is a
+    /// non-null <see cref="JsObject"/>, so
+    /// <see cref="LoadSuper"/> inside the method body can
+    /// walk to the parent's prototype. For a class with no
+    /// <c>extends</c>, the home-super chain resolves to the
+    /// engine's default object prototype.
+    /// </summary>
+    InstallMethod,
+    /// <summary>
+    /// Install a static method on a class function itself.
+    /// Stack <c>[class, fn]</c> → <c>[class]</c>. Non-enumerable
+    /// property store under the operand name (u16). The
+    /// method's <see cref="JsFunction.HomeSuper"/> is set to
+    /// <c>class.[[Prototype]]</c>, which after
+    /// <see cref="SetupSubclass"/> is the parent class value —
+    /// so <c>super.foo()</c> inside a static method resolves
+    /// against the parent class's static methods.
+    /// </summary>
+    InstallStaticMethod,
+    /// <summary>
+    /// Copy the constructor function's home-super from its
+    /// class's prototype chain. Stack <c>[class]</c> →
+    /// <c>[class]</c>. After <see cref="SetupSubclass"/> has
+    /// run, <c>class.prototype.[[Prototype]]</c> is the
+    /// parent class's prototype; this opcode sets
+    /// <c>class.HomeSuper</c> to that object so the
+    /// constructor body's <c>super(args)</c> and
+    /// <c>super.foo</c> references resolve correctly.
+    /// Emitted only for classes with an <c>extends</c>
+    /// clause.
+    /// </summary>
+    LinkConstructorSuper,
+    /// <summary>
+    /// Push the current call frame's function's
+    /// <see cref="JsFunction.HomeSuper"/> onto the stack.
+    /// Throws <c>SyntaxError</c>-shaped <c>TypeError</c> if
+    /// the current function has no home-super (i.e. it is
+    /// not a class method, or is a method in a class with no
+    /// <c>extends</c> clause).
+    /// </summary>
+    LoadSuper,
     /// <summary>
     /// Return from the current function call. Pops the top of
     /// stack as the return value, restores the calling frame, and

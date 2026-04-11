@@ -238,6 +238,8 @@ public sealed class JsParser
                 // appearing inside a block is non-standard but every
                 // browser accepts it and treats it as a declaration.
                 return ParseFunctionDeclaration();
+            case JsTokenKind.KeywordClass:
+                return ParseClassDeclaration();
         }
 
         // Labeled statement? Peek past the identifier for a ':'.
@@ -729,6 +731,130 @@ public sealed class JsParser
         }
         var tok = Consume();
         return new Identifier(tok.Start, tok.End, tok.StringValue!);
+    }
+
+    // -------------------------------------------------------------------
+    // Classes (ES2015)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// <c>class Name [extends Expr] { body }</c> declaration.
+    /// The binding is block-scoped like <c>let</c>.
+    /// </summary>
+    private ClassDeclaration ParseClassDeclaration()
+    {
+        int start = Current.Start;
+        Consume(); // class
+        var id = ParseBindingIdentifier();
+        Expression? superClass = null;
+        if (Match(JsTokenKind.KeywordExtends))
+        {
+            superClass = ParseLeftHandSideExpression();
+        }
+        var body = ParseClassBody();
+        return new ClassDeclaration(start, body.End, id, superClass, body);
+    }
+
+    /// <summary>
+    /// Class expression form — <c>class [Name] [extends Expr]
+    /// { body }</c>. The name is optional; the parser stores it
+    /// but this slice treats it as anonymous for self-reference
+    /// purposes.
+    /// </summary>
+    private ClassExpression ParseClassExpression()
+    {
+        int start = Current.Start;
+        Consume(); // class
+        Identifier? id = null;
+        if (Current.Kind == JsTokenKind.Identifier)
+        {
+            id = ParseBindingIdentifier();
+        }
+        Expression? superClass = null;
+        if (Match(JsTokenKind.KeywordExtends))
+        {
+            superClass = ParseLeftHandSideExpression();
+        }
+        var body = ParseClassBody();
+        return new ClassExpression(start, body.End, id, superClass, body);
+    }
+
+    private ClassBody ParseClassBody()
+    {
+        int start = Current.Start;
+        Expect(JsTokenKind.LeftBrace, "class body");
+        var methods = new List<MethodDefinition>();
+        while (Current.Kind != JsTokenKind.RightBrace && Current.Kind != JsTokenKind.EndOfFile)
+        {
+            if (Current.Kind == JsTokenKind.Semicolon)
+            {
+                // Empty class-element per spec.
+                Consume();
+                continue;
+            }
+            methods.Add(ParseMethodDefinition());
+        }
+        int end = Current.End;
+        Expect(JsTokenKind.RightBrace, "class body");
+        return new ClassBody(start, end, methods);
+    }
+
+    /// <summary>
+    /// <c>[static] name(params) { body }</c>. The
+    /// <c>constructor</c> name produces a
+    /// <see cref="MethodDefinitionKind.Constructor"/> entry;
+    /// everything else is a regular method. Getters, setters,
+    /// computed keys, async, and generator methods are
+    /// deferred.
+    /// </summary>
+    private MethodDefinition ParseMethodDefinition()
+    {
+        int start = Current.Start;
+        bool isStatic = false;
+        // `static` is an ES2015 future-reserved keyword; in
+        // class body position it's a modifier. A method
+        // literally named "static" has `static` followed by
+        // `(` — disambiguate via lookahead.
+        if (Current.Kind == JsTokenKind.KeywordStatic &&
+            Peek(1).Kind != JsTokenKind.LeftParen)
+        {
+            Consume();
+            isStatic = true;
+        }
+
+        // Method name — accept a plain Identifier, or a
+        // contextual keyword that would otherwise be reserved
+        // (like "static" standalone as a method name fallback).
+        string methodName;
+        int keyStart = Current.Start;
+        int keyEnd = Current.End;
+        if (Current.Kind == JsTokenKind.Identifier)
+        {
+            var tok = Consume();
+            methodName = tok.StringValue!;
+        }
+        else
+        {
+            throw new JsParseException(
+                $"Expected method name, got {Current.Kind}",
+                Current.Start);
+        }
+        var key = new Identifier(keyStart, keyEnd, methodName);
+
+        var paramList = ParseFormalParameters();
+        var body = ParseFunctionBody();
+
+        var fnExpr = new FunctionExpression(
+            start: key.Start,
+            end: body.End,
+            id: null,
+            @params: paramList,
+            body: body);
+
+        var kind = (!isStatic && key.Name == "constructor")
+            ? MethodDefinitionKind.Constructor
+            : MethodDefinitionKind.Method;
+        return new MethodDefinition(start, body.End, key, fnExpr, kind, isStatic);
     }
 
     /// <summary>
@@ -1326,6 +1452,13 @@ public sealed class JsParser
 
             case JsTokenKind.KeywordFunction:
                 return ParseFunctionExpression();
+
+            case JsTokenKind.KeywordClass:
+                return ParseClassExpression();
+
+            case JsTokenKind.KeywordSuper:
+                Consume();
+                return new Super(tok.Start, tok.End);
 
             case JsTokenKind.NoSubstitutionTemplate:
                 Consume();
