@@ -109,6 +109,12 @@ public sealed class JsEngine
     /// </summary>
     public JsSymbol IteratorSymbol { get; } = new JsSymbol("Symbol.iterator");
 
+    /// <summary><c>Promise.prototype</c> — installed by
+    /// <c>BuiltinPromise</c>. Exposed as a property so the
+    /// <see cref="JsPromise"/> constructor can set its new
+    /// instances' prototype at allocation time.</summary>
+    public JsObject PromisePrototype { get; internal set; } = null!;
+
     /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
