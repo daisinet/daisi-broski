@@ -1607,15 +1607,22 @@ public sealed class JsParser
     {
         int start = Current.Start;
         Consume(); // yield
+        // `yield* expr` — delegation form.
+        bool isDelegate = false;
+        if (Current.Kind == JsTokenKind.Star)
+        {
+            Consume();
+            isDelegate = true;
+        }
         // No argument if:
         //   - next token is something that cannot start an
         //     expression (common: ), ], }, ;, ,, EOF)
         //   - or there is a line terminator between `yield`
         //     and the next token (ASI's restricted production).
-        if (CanStartExpression(Current.Kind) && !_hasLineBefore[_pos])
+        if (isDelegate || (CanStartExpression(Current.Kind) && !_hasLineBefore[_pos]))
         {
             var arg = ParseAssignmentExpression(allowIn);
-            return new YieldExpression(start, arg.End, arg);
+            return new YieldExpression(start, arg.End, arg, isDelegate);
         }
         return new YieldExpression(start, Current.Start, null);
     }
