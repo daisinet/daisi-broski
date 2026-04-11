@@ -53,8 +53,18 @@ public sealed class BrowserSession : IAsyncDisposable
     /// inside the sandbox. The returned metadata comes from the
     /// child; the document itself lives in the child process and can
     /// be queried via <see cref="QuerySelectorAllAsync"/>.</summary>
+    /// <param name="includeHtml">
+    /// When true, the returned <see cref="NavigateResponse.Html"/> is
+    /// populated with the full decoded HTML of the final page. Opt-in
+    /// so the common metadata-only case (title, status, counts) doesn't
+    /// pay the serialization cost for every fetch.
+    /// </param>
     public async Task<NavigateResponse> NavigateAsync(
-        Uri url, string? userAgent = null, int? maxRedirects = null, CancellationToken ct = default)
+        Uri url,
+        string? userAgent = null,
+        int? maxRedirects = null,
+        bool includeHtml = false,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(url);
         var request = new NavigateRequest
@@ -62,6 +72,7 @@ public sealed class BrowserSession : IAsyncDisposable
             Url = url.AbsoluteUri,
             UserAgent = userAgent,
             MaxRedirects = maxRedirects,
+            IncludeHtml = includeHtml,
         };
         return await _sandbox
             .SendRequestAsync<NavigateRequest, NavigateResponse>(Methods.Navigate, request, ct)
