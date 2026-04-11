@@ -12,5 +12,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
     <ProjectReference Include="..\..\Daisi.Broski.Ipc\Daisi.Broski.Ipc.csproj" />
+    <ProjectReference Include="..\..\Daisi.Broski\Daisi.Broski.csproj" />
   </ItemGroup>
 </Project>
