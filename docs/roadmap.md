@@ -7,9 +7,9 @@
 
 ## Current state
 
-**Phase 0, 1, and 4 are complete. Phase 3a is in progress** — the JavaScript lexer and parser have shipped; the bytecode compiler, stack VM, and built-ins are still ahead. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 (JS) is in. Phase 2 will likely be absorbed into phase 3 rather than shipping as its own unit.
+**Phase 0, 1, and 4 are complete. Phase 3a is in progress** — the JavaScript lexer, parser, bytecode compiler, and stack VM have shipped, enough to run primitive expressions and global-scope control flow from the host. Functions, objects, arrays, exception handling, and the built-in library are still ahead. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 (JS) is in. Phase 2 will likely be absorbed into phase 3 rather than shipping as its own unit.
 
-**Combined test suite: 292/292 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser).
+**Combined test suite: 344/344 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM).
 
 What works today from a clean clone:
 
@@ -91,12 +91,14 @@ returns 30 story links, identical to what Chrome sees.
 
 - **Lexer** ✅ — `Daisi.Broski.Engine.Js.JsLexer` and `JsTokenKind` / `JsToken`. Recognizes every ES5 keyword, the ES2015+ future-reserved keywords, decimal + scientific + hex number literals, single- and double-quoted string literals with the common escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\v`, `\0`, `\'`, `\"`, `\\`, `\xXX`, `\uXXXX`, line continuations), line and block comments (skipped, not emitted), and all ES5 punctuators including greedy long matches (`>>>=`, `===`, etc.). Deferred: regex literals (context-sensitive, needs parser cooperation), template literals (ES2015 — phase 3b), BigInt literals (phase 3c), Unicode identifiers beyond ASCII. 43 tests passing.
 - **Parser + AST** ✅ — `Daisi.Broski.Engine.Js.JsParser` and the ESTree-shaped sealed-class hierarchy in `Ast.cs`. Covers every ES5 statement form (`var`/`function`/`if`/`while`/`do..while`/C-style `for`/`for..in`/`break`/`continue`/`return`/`throw`/`try`/`catch`/`finally`/`switch` with fall-through/`with`/`debugger`/labeled/block/empty/expression) and every ES5 expression form including the full operator-precedence table, right-associative assignment and conditional, member access, computed member access, function calls, `new` with and without arguments, array and object literals (with holes, trailing commas, reserved-word keys, and `get`/`set` accessors), and function expressions (named and anonymous). Implements automatic semicolon insertion including the restricted productions (`return`/`throw`/`break`/`continue`, postfix `++`/`--`) and the `in`-operator ambiguity in `for` headers. `let`/`const` are accepted (tagged for future block scoping); other ES2015 forms (arrow, class, template, destructuring) are rejected with a descriptive error. Regex literals are still deferred. 69 tests passing.
-- Bytecode compiler + stack VM.
-- Built-ins: `Object`, `Function`, `Array`, `String`, `Number`, `Boolean`, `Math`, `Date`, `RegExp`, `Error`, `JSON`, `arguments`.
-- Prototypes, `this`, closures, `try`/`catch`, strict mode.
+- **Bytecode compiler + stack VM (slice 3 — primitives and global control flow)** ✅ — `Daisi.Broski.Engine.Js.JsCompiler` walks the parser's AST into a `Chunk` of single-byte opcodes and the `JsVM` executes it on a value stack. `JsEngine` wraps the pipeline into `Evaluate(source)`, returning the completion value of the last top-level expression per ECMA §14. Scope covers: primitive literals; `var` with hoisted global declarations; assignment and compound assignment to identifiers; every unary / binary / logical / conditional / sequence / update operator; `typeof` (special-cased for undeclared identifiers); `if`/`else`, `while`, `do..while`, C-style `for`, `break`, and `continue` (unlabeled); ES §11.9 loose and strict equality, §11.8.5 relational comparison with string-string and numeric coercion, §9.5 / §9.6 `ToInt32` / `ToUint32` for bitwise ops and shifts, and §9.8.1 number-to-string formatting. Values are boxed .NET objects (DD-05 option A). 52 end-to-end tests including iterative Fibonacci and sum-of-squares. Deliberately deferred to later slices: functions and closures (slice 4), objects / arrays / member access / calls / `new` (slice 4), `try`/`catch`/`throw` (slice 5), `for..in` (slice 4), labeled `break`/`continue` and `switch` (slice 4), `with` (deferred indefinitely).
+- Functions, `this`, closures, `arguments`, `return`, `try`/`catch`/`throw` (slices 4–5).
+- Objects, arrays, prototype chain, member access, property descriptors (slice 4).
+- Built-ins: `Object`, `Function`, `Array`, `String`, `Number`, `Boolean`, `Math`, `Date`, `RegExp`, `Error`, `JSON`, `arguments` (slice 6).
 - ECMA regex engine (or BCL fallback — see [DD-01](design-decisions.md#dd-01--regex-engine)).
 - Event loop (task queue + microtask queue, HTML spec semantics).
 - Wire up `console`, `setTimeout`, `setInterval` as the first Web APIs backed by JS.
+- Strict mode enforcement.
 
 **Ship gate:** test262 ES5 subset >80% pass.
 
@@ -123,7 +125,7 @@ returns 30 story links, identical to what Chrome sees.
 
 **Ship gate:** load `news.ycombinator.com` with scripts enabled, run them, and confirm the DOM after script execution matches what Chrome produces within a small tolerance.
 
-**Current status:** phase 3a in progress — lexer and parser shipped. Bytecode VM / built-ins / event loop still ahead.
+**Current status:** phase 3a in progress — lexer, parser, and the bytecode VM's primitive-expression / global control-flow subset are shipped. Functions, objects, exceptions, built-ins, and the event loop are still ahead.
 
 ## Phase 4 — Sandbox host ✅ (infrastructure) / ⏸ (full ship gate blocked on phase 3)
 
