@@ -1,3 +1,5 @@
+using Daisi.Broski.Engine.Dom.Selectors;
+
 namespace Daisi.Broski.Engine.Dom;
 
 /// <summary>
@@ -126,5 +128,30 @@ public class Element : Node
             }
             return null;
         }
+    }
+
+    /// <summary>
+    /// Return <c>true</c> if this element would be matched by
+    /// <paramref name="selector"/>.
+    /// </summary>
+    public bool Matches(string selector)
+    {
+        var list = SelectorParser.Parse(selector);
+        return SelectorMatcher.Matches(this, list);
+    }
+
+    /// <summary>
+    /// Return the innermost ancestor (including this element) that
+    /// matches <paramref name="selector"/>, or <c>null</c> if none.
+    /// </summary>
+    public Element? Closest(string selector)
+    {
+        var list = SelectorParser.Parse(selector);
+        for (Node? cur = this; cur is not null; cur = cur.ParentNode)
+        {
+            if (cur is Element e && SelectorMatcher.Matches(e, list))
+                return e;
+        }
+        return null;
     }
 }
