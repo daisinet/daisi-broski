@@ -14,6 +14,12 @@ internal static class Builtins
 {
     public static void Install(JsEngine engine)
     {
+        // Error constructors install first so the VM can tag
+        // internal runtime errors (from RaiseError) with proper
+        // prototype chains before any other code runs.
+        BuiltinError.Install(engine);
+        BuiltinObject.Install(engine);
+        BuiltinMath.Install(engine);
         BuiltinGlobal.Install(engine);
         BuiltinArray.Install(engine);
         BuiltinString.Install(engine);

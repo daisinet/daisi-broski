@@ -52,11 +52,30 @@ public sealed class JsEngine
     /// </summary>
     public JsObject StringPrototype { get; }
 
-    /// <summary>Number primitive prototype. Slice 6b populates.</summary>
+    /// <summary>Number primitive prototype. Slice 6c populates.</summary>
     public JsObject NumberPrototype { get; }
 
-    /// <summary>Boolean primitive prototype. Slice 6b populates.</summary>
+    /// <summary>Boolean primitive prototype. Slice 6c populates.</summary>
     public JsObject BooleanPrototype { get; }
+
+    /// <summary>
+    /// Root <c>Error.prototype</c>. Installed by slice 6b; used
+    /// by <see cref="JsVM"/> when <c>RaiseError</c> creates an
+    /// error object with no more specific subtype.
+    /// </summary>
+    public JsObject ErrorPrototype { get; internal set; } = null!;
+
+    /// <summary><c>TypeError.prototype</c>.</summary>
+    public JsObject TypeErrorPrototype { get; internal set; } = null!;
+
+    /// <summary><c>RangeError.prototype</c>.</summary>
+    public JsObject RangeErrorPrototype { get; internal set; } = null!;
+
+    /// <summary><c>SyntaxError.prototype</c>.</summary>
+    public JsObject SyntaxErrorPrototype { get; internal set; } = null!;
+
+    /// <summary><c>ReferenceError.prototype</c>.</summary>
+    public JsObject ReferenceErrorPrototype { get; internal set; } = null!;
 
     public JsEngine()
     {

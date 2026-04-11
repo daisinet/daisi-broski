@@ -26,15 +26,33 @@ internal static class BuiltinArray
         Builtins.Method(proto, "pop", Pop);
         Builtins.Method(proto, "shift", Shift);
         Builtins.Method(proto, "unshift", Unshift);
-        // slice and concat produce fresh arrays, so they capture
-        // the engine reference to attach Array.prototype.
         Builtins.Method(proto, "slice", (t, a) => Slice(engine, t, a));
         Builtins.Method(proto, "concat", (t, a) => Concat(engine, t, a));
         Builtins.Method(proto, "join", Join);
         Builtins.Method(proto, "indexOf", IndexOf);
         Builtins.Method(proto, "reverse", Reverse);
-        Builtins.Method(proto, "sort", Sort);
         Builtins.Method(proto, "toString", ToStringMethod);
+
+        // Callback-taking methods — these need a VM reference to
+        // invoke the user callback synchronously. sort replaces
+        // the slice-6a throw-on-compareFn with a real compare
+        // dispatcher, and also handles the no-compareFn case.
+        proto.SetNonEnumerable("sort",
+            new JsFunction("sort", (vm, t, a) => SortWithCompare(vm, t, a)));
+        proto.SetNonEnumerable("forEach",
+            new JsFunction("forEach", (vm, t, a) => ForEach(vm, t, a)));
+        proto.SetNonEnumerable("map",
+            new JsFunction("map", (vm, t, a) => Map(vm, engine, t, a)));
+        proto.SetNonEnumerable("filter",
+            new JsFunction("filter", (vm, t, a) => Filter(vm, engine, t, a)));
+        proto.SetNonEnumerable("reduce",
+            new JsFunction("reduce", (vm, t, a) => Reduce(vm, t, a, fromLeft: true)));
+        proto.SetNonEnumerable("reduceRight",
+            new JsFunction("reduceRight", (vm, t, a) => Reduce(vm, t, a, fromLeft: false)));
+        proto.SetNonEnumerable("every",
+            new JsFunction("every", (vm, t, a) => Every(vm, t, a)));
+        proto.SetNonEnumerable("some",
+            new JsFunction("some", (vm, t, a) => Some(vm, t, a)));
 
         // Array constructor.
         var ctor = new JsFunction("Array", (thisVal, args) => Construct(engine, args));
@@ -216,23 +234,26 @@ internal static class BuiltinArray
     }
 
     /// <summary>
-    /// ECMA §15.4.4.11 — <c>sort()</c> without compareFn. Uses
-    /// the spec's default ordering: coerce each element to a
-    /// string and compare ordinally. Elements that are
-    /// <c>undefined</c> sort to the end. compareFn support is
-    /// slice 6b (needs a re-entrant VM call path to invoke the
-    /// JS callback from native code).
+    /// ECMA §15.4.4.11 — <c>sort([compareFn])</c>. Without a
+    /// compareFn, elements are coerced to strings and compared
+    /// ordinally (undefined sorts to the end). With a compareFn,
+    /// each pair-wise comparison invokes the callback via
+    /// <see cref="JsVM.InvokeJsFunction"/>; the return value's
+    /// sign determines order.
     /// </summary>
-    private static object? Sort(object? thisVal, IReadOnlyList<object?> args)
+    private static object? SortWithCompare(JsVM vm, object? thisVal, IReadOnlyList<object?> args)
     {
         var arr = RequireArray(thisVal, "sort");
-        if (args.Count > 0 && args[0] is JsFunction)
-        {
-            return JsThrow.TypeError(
-                "Array.prototype.sort with a compareFn is not supported in this slice");
-        }
+        JsFunction? cmp = args.Count > 0 && args[0] is JsFunction f ? f : null;
         arr.Elements.Sort((a, b) =>
         {
+            if (cmp is not null)
+            {
+                var r = vm.InvokeJsFunction(cmp, JsValue.Undefined, new[] { a, b });
+                double n = JsValue.ToNumber(r);
+                if (double.IsNaN(n) || n == 0) return 0;
+                return n < 0 ? -1 : 1;
+            }
             bool aUndef = a is JsUndefined;
             bool bUndef = b is JsUndefined;
             if (aUndef && bUndef) return 0;
@@ -241,6 +262,132 @@ internal static class BuiltinArray
             return string.CompareOrdinal(JsValue.ToJsString(a), JsValue.ToJsString(b));
         });
         return arr;
+    }
+
+    // -------------------------------------------------------------------
+    // Callback-taking methods
+    // -------------------------------------------------------------------
+
+    private static object? ForEach(JsVM vm, object? thisVal, IReadOnlyList<object?> args)
+    {
+        var arr = RequireArray(thisVal, "forEach");
+        var cb = RequireFunction(args, 0, "forEach");
+        object? thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (int i = 0; i < arr.Elements.Count; i++)
+        {
+            vm.InvokeJsFunction(cb, thisArg,
+                new[] { arr.Elements[i], (object?)(double)i, (object?)arr });
+        }
+        return JsValue.Undefined;
+    }
+
+    private static object? Map(JsVM vm, JsEngine engine, object? thisVal, IReadOnlyList<object?> args)
+    {
+        var arr = RequireArray(thisVal, "map");
+        var cb = RequireFunction(args, 0, "map");
+        object? thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var result = new JsArray { Prototype = engine.ArrayPrototype };
+        for (int i = 0; i < arr.Elements.Count; i++)
+        {
+            var mapped = vm.InvokeJsFunction(cb, thisArg,
+                new[] { arr.Elements[i], (object?)(double)i, (object?)arr });
+            result.Elements.Add(mapped);
+        }
+        return result;
+    }
+
+    private static object? Filter(JsVM vm, JsEngine engine, object? thisVal, IReadOnlyList<object?> args)
+    {
+        var arr = RequireArray(thisVal, "filter");
+        var cb = RequireFunction(args, 0, "filter");
+        object? thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var result = new JsArray { Prototype = engine.ArrayPrototype };
+        for (int i = 0; i < arr.Elements.Count; i++)
+        {
+            var pass = vm.InvokeJsFunction(cb, thisArg,
+                new[] { arr.Elements[i], (object?)(double)i, (object?)arr });
+            if (JsValue.ToBoolean(pass))
+            {
+                result.Elements.Add(arr.Elements[i]);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// ECMA §15.4.4.21 / §15.4.4.22 — <c>reduce</c> and
+    /// <c>reduceRight</c>. If no initial value is given, the
+    /// first / last element becomes the accumulator seed. Empty
+    /// array with no initial value is a TypeError.
+    /// </summary>
+    private static object? Reduce(JsVM vm, object? thisVal, IReadOnlyList<object?> args, bool fromLeft)
+    {
+        var arr = RequireArray(thisVal, fromLeft ? "reduce" : "reduceRight");
+        var cb = RequireFunction(args, 0, fromLeft ? "reduce" : "reduceRight");
+        int len = arr.Elements.Count;
+        bool hasInitial = args.Count > 1;
+        object? accum;
+        int i;
+        int step = fromLeft ? 1 : -1;
+        int end = fromLeft ? len : -1;
+
+        if (hasInitial)
+        {
+            accum = args[1];
+            i = fromLeft ? 0 : len - 1;
+        }
+        else
+        {
+            if (len == 0)
+            {
+                return JsThrow.TypeError("Reduce of empty array with no initial value");
+            }
+            i = fromLeft ? 0 : len - 1;
+            accum = arr.Elements[i];
+            i += step;
+        }
+
+        for (; i != end; i += step)
+        {
+            accum = vm.InvokeJsFunction(cb, JsValue.Undefined,
+                new[] { accum, arr.Elements[i], (object?)(double)i, (object?)arr });
+        }
+        return accum;
+    }
+
+    private static object? Every(JsVM vm, object? thisVal, IReadOnlyList<object?> args)
+    {
+        var arr = RequireArray(thisVal, "every");
+        var cb = RequireFunction(args, 0, "every");
+        object? thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (int i = 0; i < arr.Elements.Count; i++)
+        {
+            var pass = vm.InvokeJsFunction(cb, thisArg,
+                new[] { arr.Elements[i], (object?)(double)i, (object?)arr });
+            if (!JsValue.ToBoolean(pass)) return false;
+        }
+        return true;
+    }
+
+    private static object? Some(JsVM vm, object? thisVal, IReadOnlyList<object?> args)
+    {
+        var arr = RequireArray(thisVal, "some");
+        var cb = RequireFunction(args, 0, "some");
+        object? thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (int i = 0; i < arr.Elements.Count; i++)
+        {
+            var pass = vm.InvokeJsFunction(cb, thisArg,
+                new[] { arr.Elements[i], (object?)(double)i, (object?)arr });
+            if (JsValue.ToBoolean(pass)) return true;
+        }
+        return false;
+    }
+
+    private static JsFunction RequireFunction(IReadOnlyList<object?> args, int index, string method)
+    {
+        if (index < args.Count && args[index] is JsFunction fn) return fn;
+        JsThrow.TypeError($"Array.prototype.{method} callback must be a function");
+        return null!;
     }
 
     // -------------------------------------------------------------------

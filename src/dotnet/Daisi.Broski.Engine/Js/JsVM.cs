@@ -71,6 +71,20 @@ public sealed class JsVM
     private readonly Stack<HandlerRecord> _handlers = new();
     private object? _pendingException;
 
+    // Stack of frame-depth boundaries that mark where a native
+    // call was entered from JS. When <see cref="DoThrow"/> needs
+    // to unwind past one of these boundaries, it escapes via a
+    // <see cref="JsThrowSignal"/> instead, so the .NET exception
+    // propagates through the native call. The outer
+    // <see cref="InvokeFunction"/> catches the signal and resumes
+    // the unwind from a safer context. Managed by
+    // <see cref="InvokeJsFunction"/>.
+    private readonly Stack<int> _nativeBoundaries = new();
+
+    // Set by the Halt opcode; read by the dispatch loop to exit
+    // cleanly at the end of the top-level program.
+    private bool _halted;
+
     private sealed class HandlerRecord
     {
         public int HandlerIp;
@@ -124,8 +138,100 @@ public sealed class JsVM
     /// </summary>
     public object? Run()
     {
+        _halted = false;
+        RunLoop(stopFrameDepth: -1);
+        return CompletionValue;
+    }
+
+    /// <summary>
+    /// Invoke a JS function synchronously from a native built-in.
+    /// Used by callback-taking methods like
+    /// <c>Array.prototype.forEach</c> to run a user-supplied
+    /// callback. Native callees run inline; user functions run
+    /// via a nested <see cref="RunLoop"/> invocation that stops
+    /// when the call's return pops the pushed frame. Exceptions
+    /// that would unwind past the caller's frame depth escape
+    /// via a <see cref="JsThrowSignal"/> that bubbles up through
+    /// the native call.
+    /// </summary>
+    public object? InvokeJsFunction(
+        JsFunction fn,
+        object? thisVal,
+        IReadOnlyList<object?> args)
+    {
+        if (fn.NativeImpl is not null)
+        {
+            return fn.NativeImpl(thisVal, args);
+        }
+        if (fn.NativeCallable is not null)
+        {
+            return fn.NativeCallable(this, thisVal, args);
+        }
+
+        int enterDepth = _frames.Count;
+
+        // Snapshot the caller's VM state so we can restore it
+        // exactly if the nested call aborts via a cross-boundary
+        // throw. On the normal path, DoCall / Return take care of
+        // this via the call frame, but on abort the escape
+        // happens BEFORE the nested frame is popped by Return,
+        // so we can't rely on that.
+        var savedCode = _code;
+        var savedConstants = _constants;
+        var savedNames = _names;
+        int savedIp = _ip;
+        var savedEnv = _env;
+        var savedThis = _this;
+        int savedSp = _sp;
+
+        // Push call operands: [fn, this, arg0, ..., argN-1]
+        Push(fn);
+        Push(thisVal);
+        for (int i = 0; i < args.Count; i++) Push(args[i]);
+
+        _nativeBoundaries.Push(enterDepth);
+        try
+        {
+            DoCall(args.Count);
+            RunLoop(stopFrameDepth: enterDepth);
+            return Pop();
+        }
+        catch (JsThrowSignal)
+        {
+            // Nested call aborted via a cross-boundary throw.
+            // Discard any frames / handlers that belonged to the
+            // nested invocation and restore the caller's VM state
+            // so the outer context sees consistent state on
+            // re-raise.
+            while (_frames.Count > enterDepth) _frames.Pop();
+            while (_handlers.Count > 0 &&
+                   _handlers.Peek().FrameDepth > enterDepth)
+            {
+                _handlers.Pop();
+            }
+            _code = savedCode;
+            _constants = savedConstants;
+            _names = savedNames;
+            _ip = savedIp;
+            _env = savedEnv;
+            _this = savedThis;
+            _sp = savedSp;
+            _pendingException = null;
+            throw;
+        }
+        finally
+        {
+            _nativeBoundaries.Pop();
+        }
+    }
+
+    private void RunLoop(int stopFrameDepth)
+    {
         while (true)
         {
+            if (_halted) return;
+            if (stopFrameDepth >= 0 && _frames.Count <= stopFrameDepth) return;
+
             var op = (OpCode)_code[_ip++];
             switch (op)
             {
@@ -231,7 +337,8 @@ public sealed class JsVM
                         {
                             // Top-level return — shouldn't happen
                             // because the compiler rejects it.
-                            return CompletionValue;
+                            _halted = true;
+                            break;
                         }
                         // Drop any handlers installed in this frame —
                         // we're returning normally, so they no
@@ -625,7 +732,8 @@ public sealed class JsVM
                     break;
 
                 case OpCode.Halt:
-                    return CompletionValue;
+                    _halted = true;
+                    break;
 
                 default:
                     throw new JsRuntimeException($"Unknown opcode: {op}");
@@ -709,18 +817,27 @@ public sealed class JsVM
     /// Unwind handlers and call frames to find the nearest
     /// <c>try</c> handler for <paramref name="value"/>. On success,
     /// restores the stack and env to the state at handler-push
-    /// time and jumps execution to the handler target. On
-    /// failure (no handler anywhere), throws
-    /// <see cref="JsRuntimeException"/> with the value attached —
-    /// this escapes the VM as a .NET exception.
+    /// time and jumps execution to the handler target. If no
+    /// handler can be reached without crossing a native-call
+    /// boundary (set up by <see cref="InvokeJsFunction"/>),
+    /// escapes via a <see cref="JsThrowSignal"/> that the outer
+    /// native call's wrapper catches and re-routes. If no
+    /// handler exists anywhere, throws
+    /// <see cref="JsRuntimeException"/> with the value attached.
     /// </summary>
     private void DoThrow(object? value)
     {
+        // Frame depth below which we cannot unwind safely —
+        // doing so would discard a frame that a native call
+        // farther up the .NET stack is still running in. If
+        // there are no active native boundaries, we can unwind
+        // all the way down to frame 0 (the top-level program).
+        int safeMin = _nativeBoundaries.Count > 0 ? _nativeBoundaries.Peek() : -1;
+
         while (true)
         {
             // Drop any stale handlers whose frame has been
-            // unwound past (shouldn't happen if frame-pop cleans
-            // up, but belt-and-suspenders).
+            // unwound past.
             while (_handlers.Count > 0 &&
                    _handlers.Peek().FrameDepth > _frames.Count)
             {
@@ -730,35 +847,47 @@ public sealed class JsVM
             if (_handlers.Count > 0 &&
                 _handlers.Peek().FrameDepth == _frames.Count)
             {
+                // A handler exists in the current frame.
+                // Reaching it requires activating it now; this
+                // is safe iff the current frame itself is safe
+                // to unwind (i.e., deeper than safeMin).
+                if (_frames.Count <= safeMin)
+                {
+                    // The handler is in a frame that a native
+                    // call above us owns — escape through the
+                    // native call.
+                    throw new JsThrowSignal(value);
+                }
+
                 var h = _handlers.Pop();
                 _sp = h.StackBase;
                 _env = h.Env;
                 _ip = h.HandlerIp;
                 if (h.IsCatch)
                 {
-                    // Push the thrown value onto the stack for the
-                    // catch binding sequence to consume.
                     Push(value);
                     _pendingException = null;
                 }
                 else
                 {
-                    // Finally-only — carry the pending throw
-                    // through the finally body; EndFinally will
-                    // re-throw it.
                     _pendingException = value;
                 }
                 return;
             }
 
             // No handler in the current frame — unwind to the
-            // caller. If there's no caller, the throw escapes
-            // as a .NET exception.
+            // caller if possible, else escape.
             if (_frames.Count == 0)
             {
                 throw new JsRuntimeException(
                     $"Uncaught {JsValue.ToJsString(value)}",
                     value);
+            }
+            if (_frames.Count <= safeMin + 1)
+            {
+                // Unwinding one more frame would put us at or
+                // below the native boundary. Escape instead.
+                throw new JsThrowSignal(value);
             }
 
             var frame = _frames.Pop();
@@ -773,16 +902,24 @@ public sealed class JsVM
 
     /// <summary>
     /// Raise a catchable JS error with the given <c>name</c> and
-    /// <c>message</c>. Constructs a plain <see cref="JsObject"/>
-    /// with those two properties (the full <c>Error</c> constructor
-    /// is a slice-6b built-in) and routes it through
-    /// <see cref="DoThrow"/> so script-level <c>try</c>/<c>catch</c>
-    /// can inspect it.
+    /// <c>message</c>. Constructs a <see cref="JsObject"/> linked
+    /// to the appropriate error prototype on the engine (so
+    /// <c>e instanceof TypeError</c> works from script), sets
+    /// <c>message</c>, and routes it through <see cref="DoThrow"/>.
     /// </summary>
     private void RaiseError(string name, string message)
     {
-        var err = new JsObject();
-        err.Set("name", name);
+        var err = new JsObject
+        {
+            Prototype = name switch
+            {
+                "TypeError" => _engine.TypeErrorPrototype,
+                "RangeError" => _engine.RangeErrorPrototype,
+                "SyntaxError" => _engine.SyntaxErrorPrototype,
+                "ReferenceError" => _engine.ReferenceErrorPrototype,
+                _ => _engine.ErrorPrototype,
+            },
+        };
         err.Set("message", message);
         DoThrow(err);
     }
@@ -954,7 +1091,7 @@ public sealed class JsVM
         bool isConstructor,
         JsObject? newInstance)
     {
-        if (fn.NativeImpl is not null)
+        if (fn.NativeImpl is not null || fn.NativeCallable is not null)
         {
             // Synchronous native call — no frame push needed.
             // Native built-ins signal exceptions via JsThrowSignal,
@@ -963,7 +1100,9 @@ public sealed class JsVM
             object? result;
             try
             {
-                result = fn.NativeImpl(thisVal, args);
+                result = fn.NativeImpl is not null
+                    ? fn.NativeImpl(thisVal, args)
+                    : fn.NativeCallable!(this, thisVal, args);
             }
             catch (JsThrowSignal sig)
             {
