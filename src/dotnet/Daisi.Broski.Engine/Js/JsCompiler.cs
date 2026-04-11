@@ -1502,6 +1502,35 @@ public sealed class JsCompiler
                 CompileClassAssembly(ce2.Id?.Name, ce2.SuperClass, ce2.Body);
                 return;
             case YieldExpression ye:
+                if (ye.Delegate)
+                {
+                    // yield* iterable: re-yield every value
+                    // the inner iterator produces, leaving
+                    // undefined as the expression value.
+                    //
+                    // Compiles to:
+                    //   CompileExpression(arg)
+                    //   ForOfStart                         // [iter]
+                    // loopStart:
+                    //   ForOfNext <exit>                   // [iter, value] or fall through
+                    //   YieldValue                         // pop value, halt gen
+                    //   YieldResume                        // push sent value
+                    //   Pop                                // discard sent (we ignore)
+                    //   Jump loopStart
+                    // exit:                                // [] after ForOfNext pops iter
+                    //   PushUndefined                      // yield*'s result
+                    CompileExpression(ye.Argument!);
+                    _chunk.Emit(OpCode.ForOfStart);
+                    int delegateLoopStart = _chunk.Position;
+                    int delegateExit = _chunk.EmitJump(OpCode.ForOfNext);
+                    _chunk.Emit(OpCode.YieldValue);
+                    _chunk.Emit(OpCode.YieldResume);
+                    _chunk.Emit(OpCode.Pop);
+                    _chunk.EmitLoopJump(OpCode.Jump, delegateLoopStart);
+                    _chunk.PatchJump(delegateExit);
+                    _chunk.Emit(OpCode.PushUndefined);
+                    return;
+                }
                 // yield arg: push the argument (or undefined),
                 // then YieldValue halts the generator. On
                 // resume, YieldResume pushes the sent value as

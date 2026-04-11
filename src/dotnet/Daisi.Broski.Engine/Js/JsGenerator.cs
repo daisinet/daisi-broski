@@ -54,22 +54,30 @@ public sealed class JsGenerator : JsObject
         Prototype = engine.ObjectPrototype;
         _vm = new JsVM(engine);
 
-        // Install next() as a native-callable method that
-        // drives this specific generator. Closure-captures
-        // `this` (the JsGenerator instance) so calls like
-        // `var n = gen.next; n()` work — the generator is
-        // identified by the closed-over instance, not by the
-        // runtime `this` receiver.
+        // Install next() / return() / throw() as native
+        // methods on this specific generator instance.
+        // They closure-capture the generator (as `self`) so
+        // calls like `var n = gen.next; n()` keep working
+        // — the identity comes from the captured reference,
+        // not the runtime `this` receiver.
         var self = this;
-        SetNonEnumerable(
-            "next",
-            new JsFunction(
-                "next",
-                (vm, thisCall, args) =>
-                {
-                    object? sent = args.Count > 0 ? args[0] : JsValue.Undefined;
-                    return self.Next(sent);
-                }));
+        SetNonEnumerable("next", new JsFunction("next", (vm, thisCall, args) =>
+        {
+            object? sent = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return self.Next(sent);
+        }));
+
+        SetNonEnumerable("return", new JsFunction("return", (vm, thisCall, args) =>
+        {
+            object? value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return self.ReturnMethod(value);
+        }));
+
+        SetNonEnumerable("throw", new JsFunction("throw", (vm, thisCall, args) =>
+        {
+            object? reason = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return self.ThrowMethod(reason);
+        }));
 
         // Generators are their own iterator — per spec,
         // `gen[Symbol.iterator]()` returns the generator
@@ -79,6 +87,61 @@ public sealed class JsGenerator : JsObject
             new JsFunction(
                 "[Symbol.iterator]",
                 (thisCall, args) => self));
+    }
+
+    /// <summary>
+    /// <c>gen.return(value)</c>. Forcibly completes the
+    /// generator with <paramref name="value"/> as the final
+    /// result. Any pending <c>finally</c> clauses do not
+    /// run in this slice — the generator transitions
+    /// straight to <see cref="GeneratorStatus.Completed"/>.
+    /// Spec-faithful finally handling is a documented
+    /// deferral.
+    /// </summary>
+    public JsObject ReturnMethod(object? value)
+    {
+        var result = new JsObject { Prototype = _engine.ObjectPrototype };
+        _status = GeneratorStatus.Completed;
+        result.Set("value", value);
+        result.Set("done", JsValue.True);
+        return result;
+    }
+
+    /// <summary>
+    /// <c>gen.throw(reason)</c>. Injects a thrown value at
+    /// the current yield point so a surrounding
+    /// <c>try</c>/<c>catch</c> in the generator body can
+    /// catch it. If uncaught the generator completes and
+    /// the caller receives a rejected <see cref="JsObject"/>
+    /// result (or the C# <see cref="JsRuntimeException"/>
+    /// escapes, depending on how the body handles it).
+    /// </summary>
+    public JsObject ThrowMethod(object? reason)
+    {
+        var result = new JsObject { Prototype = _engine.ObjectPrototype };
+        if (_status == GeneratorStatus.Completed || _status == GeneratorStatus.SuspendedStart)
+        {
+            // Before any yield has been reached the thrown
+            // value escapes directly — caller sees an
+            // uncaught exception.
+            _status = GeneratorStatus.Completed;
+            throw new JsRuntimeException(
+                $"Uncaught {JsValue.ToJsString(reason)}",
+                reason);
+        }
+        JsVM.GeneratorStepOutcome raw;
+        try
+        {
+            raw = AdvanceRaw(reason, isThrow: true);
+        }
+        catch (JsRuntimeException)
+        {
+            _status = GeneratorStatus.Completed;
+            throw;
+        }
+        result.Set("value", raw.Value);
+        result.Set("done", raw.Done ? (object)JsValue.True : JsValue.False);
+        return result;
     }
 
     /// <summary>

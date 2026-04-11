@@ -561,10 +561,18 @@ public sealed class ExportDefaultDeclaration : Statement
 public sealed class YieldExpression : Expression
 {
     public Expression? Argument { get; }
+    /// <summary>
+    /// <c>true</c> for <c>yield* expr</c> — the argument
+    /// is an iterable whose values are re-yielded one at a
+    /// time by the enclosing generator. Mandatory
+    /// <see cref="Argument"/> when set.
+    /// </summary>
+    public bool Delegate { get; }
 
-    public YieldExpression(int start, int end, Expression? argument) : base(start, end)
+    public YieldExpression(int start, int end, Expression? argument, bool @delegate = false) : base(start, end)
     {
         Argument = argument;
+        Delegate = @delegate;
     }
 }
 
