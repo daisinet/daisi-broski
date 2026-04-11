@@ -175,11 +175,15 @@ public enum PropertyKind
 }
 
 /// <summary>
-/// One key/value slot in an object literal. The key is always a
+/// One key/value slot in an object literal. The key is a
 /// <see cref="Literal"/> (number or string) or an
-/// <see cref="Identifier"/> (bare name shorthand). ES5 allows keywords
-/// as bare keys (<c>{ if: 1 }</c>); the parser accepts them and stores
-/// them as <see cref="Identifier"/> instances.
+/// <see cref="Identifier"/> (bare name shorthand). ES5 allows
+/// keywords as bare keys (<c>{ if: 1 }</c>); the parser accepts
+/// them and stores them as <see cref="Identifier"/> instances.
+/// The ES2018 spread form <c>{...source}</c> is represented
+/// by setting <see cref="IsSpread"/> to true — in that case
+/// <see cref="Key"/> is a placeholder (the spread source is
+/// stored in <see cref="Value"/>).
 /// </summary>
 public sealed class Property : JsNode
 {
@@ -187,13 +191,21 @@ public sealed class Property : JsNode
     public Expression Value { get; }
     public PropertyKind Kind { get; }
     public bool Computed { get; } // ES5: always false; reserved for phase 3b
+    /// <summary>
+    /// <c>true</c> for an ES2018 <c>{ ...source }</c> spread
+    /// entry. When set, <see cref="Value"/> is the source
+    /// expression whose own enumerable properties get copied
+    /// into the literal; <see cref="Key"/> is unused.
+    /// </summary>
+    public bool IsSpread { get; }
 
-    public Property(int start, int end, Expression key, Expression value, PropertyKind kind) : base(start, end)
+    public Property(int start, int end, Expression key, Expression value, PropertyKind kind, bool isSpread = false) : base(start, end)
     {
         Key = key;
         Value = value;
         Kind = kind;
         Computed = false;
+        IsSpread = isSpread;
     }
 }
 

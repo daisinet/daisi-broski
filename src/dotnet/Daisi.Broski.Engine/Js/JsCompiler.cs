@@ -653,6 +653,29 @@ public sealed class JsCompiler
         bool isGenerator = false,
         bool isAsync = false)
     {
+        // Build the parameter name list up front. Identifier
+        // params use their actual name; pattern params use a
+        // synthetic name (<c>$arg0</c>, <c>$arg1</c>, ...) so
+        // the VM has a slot to bind the positional arg into.
+        // The pattern's own introduced names are declared
+        // separately during body entry via
+        // <see cref="EmitParameterPatternBindings"/>.
+        var paramNames = new List<string>(paramNodes.Count);
+        int restIndex = -1;
+        for (int i = 0; i < paramNodes.Count; i++)
+        {
+            var p = paramNodes[i];
+            if (p.Target is Identifier id)
+            {
+                paramNames.Add(id.Name);
+            }
+            else
+            {
+                paramNames.Add($"$arg{i}");
+            }
+            if (p.IsRest) restIndex = i;
+        }
+
         PushFrame(isFunction: true);
 
         // Defaults: emit at function entry, *before* the body
@@ -661,6 +684,12 @@ public sealed class JsCompiler
         // args). Rest params are handled by the VM itself via
         // the template's RestParamIndex — no emission here.
         EmitParameterDefaults(paramNodes);
+
+        // Destructure pattern parameters. Each pattern reads
+        // its synthetic-named argument slot and binds the
+        // decomposed values into freshly declared names in
+        // the function env.
+        EmitParameterPatternBindings(paramNodes, paramNames);
 
         // Hoist vars + nested function declarations to function
         // scope. Let/const are skipped here — they are handled
@@ -682,24 +711,6 @@ public sealed class JsCompiler
 
         var chunk = PopFrame();
 
-        // Gather param names and locate the rest param (if any).
-        // The parser guarantees at most one rest param and that
-        // it is last, so RestParamIndex is either -1 or the last
-        // index.
-        var paramNames = new List<string>(paramNodes.Count);
-        int restIndex = -1;
-        for (int i = 0; i < paramNodes.Count; i++)
-        {
-            var p = paramNodes[i];
-            if (p.Target is not Identifier idName)
-            {
-                throw new JsCompileException(
-                    "Parameter destructuring is not supported in this slice",
-                    p.Start);
-            }
-            paramNames.Add(idName.Name);
-            if (p.IsRest) restIndex = i;
-        }
         return new JsFunctionTemplate(
             chunk,
             paramNames,
@@ -709,6 +720,54 @@ public sealed class JsCompiler
             restIndex,
             isGenerator,
             isAsync);
+    }
+
+    /// <summary>
+    /// For every parameter whose target is a destructuring
+    /// pattern, declare the pattern-introduced names in the
+    /// function env and emit bytecode that reads the
+    /// synthetic arg binding + destructures it. Runs after
+    /// <see cref="EmitParameterDefaults"/> so the identifier
+    /// param defaults are applied first.
+    /// </summary>
+    private void EmitParameterPatternBindings(
+        IReadOnlyList<FunctionParameter> paramNodes,
+        List<string> paramNames)
+    {
+        for (int i = 0; i < paramNodes.Count; i++)
+        {
+            var p = paramNodes[i];
+            if (p.Target is Identifier) continue;
+            if (p.IsRest) continue; // rest targets are identifiers in this slice
+
+            // Pre-declare every name the pattern introduces.
+            // DeclareGlobal writes to the current env (the
+            // function's param env at this point), so the
+            // later CompilePatternBinding → StoreGlobal finds
+            // them one level up from anywhere in the body.
+            foreach (var introducedName in CollectPatternNames(p.Target))
+            {
+                int introducedIdx = _chunk.AddName(introducedName);
+                _chunk.EmitWithU16(OpCode.DeclareGlobal, introducedIdx);
+            }
+
+            // Load the synthetic argument slot.
+            int argIdx = _chunk.AddName(paramNames[i]);
+            _chunk.EmitWithU16(OpCode.LoadGlobal, argIdx);
+
+            // Apply the parameter default if present — the
+            // default applies to the whole pattern's input
+            // (spec: `function f({a} = {}) { ... }`).
+            if (p.Default is not null)
+            {
+                EmitDefaultIfUndefined(p.Default);
+            }
+
+            // Destructure the resolved value into the
+            // previously declared bindings. Consumes the
+            // value, leaves stack net-zero.
+            CompilePatternBinding(p.Target);
+        }
     }
 
     /// <summary>
@@ -1845,6 +1904,15 @@ public sealed class JsCompiler
         _chunk.Emit(OpCode.CreateObject);
         foreach (var prop in oe.Properties)
         {
+            if (prop.IsSpread)
+            {
+                // ES2018 {...source}: compile the source,
+                // then ObjectSpread copies own enumerable
+                // string-keyed props onto the running result.
+                CompileExpression(prop.Value);
+                _chunk.Emit(OpCode.ObjectSpread);
+                continue;
+            }
             if (prop.Kind != PropertyKind.Init)
             {
                 throw new JsCompileException(
@@ -2246,35 +2314,47 @@ public sealed class JsCompiler
     {
         var label = TakePendingLabel();
 
-        // Resolve the binding name and whether this
-        // introduces a fresh binding that needs its own env.
-        string? bindingName = stmt.Left switch
+        // Extract the binding target from the LHS. The
+        // target is either a bare identifier, a var/let/const
+        // wrapping an identifier, or a var/let/const wrapping
+        // a pattern (ES2015 destructuring in for-of heads).
+        JsNode bindingTarget;
+        bool loopScope = false;
+        bool isPattern;
+
+        if (stmt.Left is Identifier idLhs)
         {
-            Identifier id => id.Name,
-            VariableDeclaration vd when vd.Declarations.Count == 1
-                && vd.Declarations[0].Id is Identifier ident
-                => ident.Name,
-            _ => null,
-        };
-        if (bindingName is null)
+            bindingTarget = idLhs;
+        }
+        else if (stmt.Left is VariableDeclaration vdLhs && vdLhs.Declarations.Count == 1)
+        {
+            bindingTarget = vdLhs.Declarations[0].Id;
+            loopScope = vdLhs.Kind != VariableDeclarationKind.Var;
+        }
+        else
         {
             throw new JsCompileException(
-                "Only identifier and 'var/let/const identifier' targets are supported in 'for..of' in this slice",
+                "Unsupported left-hand side in 'for..of'",
                 stmt.Start);
         }
+        isPattern = bindingTarget is not Identifier;
 
-        bool loopScope =
-            stmt.Left is VariableDeclaration leftVd &&
-            leftVd.Kind != VariableDeclarationKind.Var;
+        // Collect the names the target introduces — for a
+        // bare identifier this is just the name itself; for
+        // a pattern it's every leaf target.
+        var targetNames = isPattern
+            ? new List<string>(CollectPatternNames(bindingTarget))
+            : new List<string> { ((Identifier)bindingTarget).Name };
 
         if (loopScope)
         {
             _chunk.Emit(OpCode.PushEnv);
-            int declIdx = _chunk.AddName(bindingName);
-            _chunk.EmitWithU16(OpCode.DeclareLet, declIdx);
+            foreach (var n in targetNames)
+            {
+                int declIdx = _chunk.AddName(n);
+                _chunk.EmitWithU16(OpCode.DeclareLet, declIdx);
+            }
         }
-
-        int nameIdx = _chunk.AddName(bindingName);
 
         // Obtain the iterator and push it on the stack. The
         // iterator stays on TOS for the duration of the
@@ -2285,11 +2365,20 @@ public sealed class JsCompiler
         int loopStart = _chunk.Position;
         int exitJump = _chunk.EmitJump(OpCode.ForOfNext);
 
-        // ForOfNext left [iter, value] on the stack.
-        // Store value into the binding name, discard the
-        // scratch value, continue into the body.
-        _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
-        _chunk.Emit(OpCode.Pop);
+        // ForOfNext left [iter, value] on the stack. For an
+        // identifier target, store the value directly. For a
+        // pattern target, call CompilePatternBinding which
+        // consumes the value and writes each leaf name.
+        if (isPattern)
+        {
+            CompilePatternBinding(bindingTarget);
+        }
+        else
+        {
+            int nameIdx = _chunk.AddName(targetNames[0]);
+            _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+            _chunk.Emit(OpCode.Pop);
+        }
 
         var ctx = new BreakTarget { IsLoop = true, Label = label };
         _breakTargets.Push(ctx);

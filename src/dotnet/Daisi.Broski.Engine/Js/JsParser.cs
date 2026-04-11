@@ -589,7 +589,7 @@ public sealed class JsParser
     /// consuming a trailing semicolon — used for both statement form
     /// and <c>for (var x ...</c> loop headers.
     /// </summary>
-    private VariableDeclaration ParseVariableDeclaration(bool allowIn)
+    private VariableDeclaration ParseVariableDeclaration(bool allowIn, bool allowMissingInit = false)
     {
         int start = Current.Start;
         VariableDeclarationKind kind = Current.Kind switch
@@ -604,16 +604,16 @@ public sealed class JsParser
         Consume();
 
         var decls = new List<VariableDeclarator>();
-        decls.Add(ParseVariableDeclarator(allowIn));
+        decls.Add(ParseVariableDeclarator(allowIn, allowMissingInit));
         while (Match(JsTokenKind.Comma))
         {
-            decls.Add(ParseVariableDeclarator(allowIn));
+            decls.Add(ParseVariableDeclarator(allowIn, allowMissingInit));
         }
         int end = decls[decls.Count - 1].End;
         return new VariableDeclaration(start, end, kind, decls);
     }
 
-    private VariableDeclarator ParseVariableDeclarator(bool allowIn)
+    private VariableDeclarator ParseVariableDeclarator(bool allowIn, bool allowMissingInit)
     {
         var id = ParseBindingTarget();
         Expression? init = null;
@@ -621,10 +621,12 @@ public sealed class JsParser
         {
             init = ParseAssignmentExpression(allowIn);
         }
-        else if (id is not Identifier)
+        else if (id is not Identifier && !allowMissingInit)
         {
             // ES2015: BindingPattern in a VariableDeclaration
-            // requires an initializer. Simple identifiers don't.
+            // requires an initializer in the normal form. The
+            // for-in / for-of heads are the only exception —
+            // the iterator supplies each step's value.
             throw new JsParseException(
                 "Destructuring declaration requires an initializer",
                 id.Start);
@@ -698,7 +700,11 @@ public sealed class JsParser
                 Current.Kind == JsTokenKind.KeywordLet ||
                 Current.Kind == JsTokenKind.KeywordConst)
             {
-                init = ParseVariableDeclaration(allowIn: false);
+                // for-in / for-of heads allow
+                // `for (var {a} of x)` with no initializer
+                // on the declarator — the iterator supplies
+                // the value at each step.
+                init = ParseVariableDeclaration(allowIn: false, allowMissingInit: true);
             }
             else
             {
@@ -1044,23 +1050,27 @@ public sealed class JsParser
         if (Current.Kind == JsTokenKind.DotDotDot)
         {
             Consume();
-            var restId = ParseBindingIdentifier();
+            var restTarget = ParseBindingIdentifier();
             if (Current.Kind == JsTokenKind.Assign)
             {
                 throw new JsParseException(
                     "Rest parameter may not have a default value",
                     Current.Start);
             }
-            return new FunctionParameter(start, restId.End, restId, null, isRest: true);
+            return new FunctionParameter(start, restTarget.End, restTarget, null, isRest: true);
         }
-        var id = ParseBindingIdentifier();
+        // ES2015: a formal parameter can be any binding target —
+        // an identifier, an object pattern, or an array pattern.
+        // This lets users write `function f({a, b})` or
+        // `function f([x, y, z])`.
+        var target = ParseBindingTarget();
         Expression? @default = null;
         if (Match(JsTokenKind.Assign))
         {
             @default = ParseAssignmentExpression(allowIn: true);
         }
-        int end = @default?.End ?? id.End;
-        return new FunctionParameter(start, end, id, @default, isRest: false);
+        int end = @default?.End ?? target.End;
+        return new FunctionParameter(start, end, target, @default, isRest: false);
     }
 
     private BlockStatement ParseFunctionBody(bool insideGenerator = false, bool insideAsync = false)
@@ -2073,6 +2083,25 @@ public sealed class JsParser
 
     private Property ParseObjectProperty()
     {
+        // ES2018 spread: `{ ...source }`. The resulting
+        // Property has IsSpread = true and stores the source
+        // expression in Value; the compiler treats it as a
+        // runtime enumerate-and-copy rather than a single-
+        // property init.
+        if (Current.Kind == JsTokenKind.DotDotDot)
+        {
+            int spreadStart = Current.Start;
+            Consume();
+            var source = ParseAssignmentExpression(allowIn: true);
+            return new Property(
+                start: spreadStart,
+                end: source.End,
+                key: new Identifier(spreadStart, spreadStart, "<spread>"),
+                value: source,
+                kind: PropertyKind.Init,
+                isSpread: true);
+        }
+
         // get / set accessors: the identifier 'get' or 'set' followed
         // by another property name (not by ':' or ',' or '}').
         if (Current.Kind == JsTokenKind.Identifier &&
