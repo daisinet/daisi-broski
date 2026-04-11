@@ -4,6 +4,51 @@ using System.Text;
 namespace Daisi.Broski.Engine.Js;
 
 /// <summary>
+/// Internal iterator state used by the <c>for..in</c> bytecode.
+/// Holds a pre-collected snapshot of the enumerable string keys
+/// in enumeration order (own properties first, then up the
+/// prototype chain, skipping already-seen names) and an index
+/// into the snapshot.
+///
+/// Snapshotting at <see cref="OpCode.ForInStart"/> time means
+/// mutations to the object during iteration (adding or removing
+/// keys in the loop body) do not affect the iteration order.
+/// The real spec has more nuance — deleted-during-iteration keys
+/// must be skipped — but browsers all differ on the corner cases
+/// and phase 3a ships the predictable snapshot behavior.
+/// </summary>
+internal sealed class ForInIterator
+{
+    public List<string> Keys { get; }
+    public int Index { get; set; }
+
+    public ForInIterator(List<string> keys)
+    {
+        Keys = keys;
+        Index = 0;
+    }
+
+    public static ForInIterator From(object? value)
+    {
+        if (value is not JsObject obj)
+        {
+            // null / undefined / primitives: iterate zero keys.
+            return new ForInIterator(new List<string>());
+        }
+        var seen = new HashSet<string>();
+        var keys = new List<string>();
+        for (var cursor = obj; cursor is not null; cursor = cursor.Prototype)
+        {
+            foreach (var k in cursor.OwnKeys())
+            {
+                if (seen.Add(k)) keys.Add(k);
+            }
+        }
+        return new ForInIterator(keys);
+    }
+}
+
+/// <summary>
 /// Base type for every JavaScript object value the VM sees —
 /// object literals, arrays (see <see cref="JsArray"/>), and later
 /// functions and host wrappers. Backed by a <see cref="Dictionary{TKey, TValue}"/>
@@ -182,13 +227,20 @@ public sealed class JsArray : JsObject
         return base.Delete(key);
     }
 
+    /// <summary>
+    /// Enumerable own property names. Matches what <c>for..in</c>
+    /// should iterate: dense integer indices plus any
+    /// string-keyed properties added via <c>arr.name = ...</c>.
+    /// <c>length</c> is omitted because it is non-enumerable in
+    /// ES5; <see cref="Get"/> still returns it, but
+    /// <see cref="ForInIterator.From"/> will skip it.
+    /// </summary>
     public override IEnumerable<string> OwnKeys()
     {
         for (int i = 0; i < Elements.Count; i++)
         {
             yield return i.ToString(CultureInfo.InvariantCulture);
         }
-        yield return "length";
         foreach (var k in Properties.Keys) yield return k;
     }
 
