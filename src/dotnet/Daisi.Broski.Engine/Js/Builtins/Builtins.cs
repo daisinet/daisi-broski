@@ -19,10 +19,13 @@ internal static class Builtins
         // prototype chains before any other code runs.
         BuiltinError.Install(engine);
         BuiltinObject.Install(engine);
+        BuiltinFunction.Install(engine);
         BuiltinMath.Install(engine);
+        BuiltinJson.Install(engine);
         BuiltinGlobal.Install(engine);
         BuiltinArray.Install(engine);
         BuiltinString.Install(engine);
+        BuiltinNumberBoolean.Install(engine);
     }
 
     /// <summary>

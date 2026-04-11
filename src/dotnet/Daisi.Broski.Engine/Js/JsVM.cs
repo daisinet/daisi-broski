@@ -315,7 +315,11 @@ public sealed class JsVM
                 case OpCode.MakeFunction:
                     {
                         var template = (JsFunctionTemplate)_constants[ReadU16()]!;
-                        Push(new JsFunction(template, _env));
+                        var fn = new JsFunction(template, _env)
+                        {
+                            Prototype = _engine.FunctionPrototype,
+                        };
+                        Push(fn);
                     }
                     break;
                 case OpCode.Call:
