@@ -1440,6 +1440,38 @@ public sealed class JsVM
                         }
                     }
                     break;
+                case OpCode.ObjectSpread:
+                    {
+                        // Stack [dest, source] → [dest]. Copy
+                        // every own enumerable string-keyed
+                        // property from source onto dest.
+                        // null / undefined / primitives are a
+                        // no-op per spec.
+                        var source = Pop();
+                        if (source is JsObject srcObj)
+                        {
+                            var destObj = (JsObject)_stack[_sp - 1]!;
+                            if (source is JsArray arr)
+                            {
+                                // Array spread writes integer
+                                // indexes as string keys.
+                                for (int i = 0; i < arr.Elements.Count; i++)
+                                {
+                                    destObj.Set(
+                                        i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                        arr.Elements[i]);
+                                }
+                            }
+                            else
+                            {
+                                foreach (var k in srcObj.OwnKeys())
+                                {
+                                    destObj.Set(k, srcObj.Get(k));
+                                }
+                            }
+                        }
+                    }
+                    break;
                 case OpCode.InitProperty:
                     {
                         // [obj, value] -> [obj], side effect: obj[name] = value.

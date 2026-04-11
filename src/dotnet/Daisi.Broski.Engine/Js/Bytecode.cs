@@ -410,6 +410,14 @@ public enum OpCode : byte
     /// </summary>
     ArrayAppendSpread,
     /// <summary>
+    /// ES2018 object spread: copy every own enumerable
+    /// string-keyed property from a source object into a
+    /// destination object. Stack <c>[dest, source]</c> →
+    /// <c>[dest]</c>. Non-object sources (including null and
+    /// undefined) are a no-op, matching spec.
+    /// </summary>
+    ObjectSpread,
+    /// <summary>
     /// Initialize a property on the object currently under a
     /// single value. Stack <c>[obj, value]</c> → <c>[obj]</c>.
     /// Unlike <see cref="SetProperty"/>, this leaves the object
