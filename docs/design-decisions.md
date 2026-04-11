@@ -17,8 +17,8 @@ Numbering matches the architecture.md open-question list; gaps are intentional a
 
 ## DD-01 — Regex engine
 
-**Status:** open, tentative recommendation below.
-**Affects:** `Daisi.Broski.Engine.Js.Builtins.RegExp`, the JS engine's string methods, and any Web API that exposes regex (`URLPattern` eventually).
+**Status:** open — tentative recommendation below, phase 3 has not started yet so nothing on `dev` commits us either way.
+**Affects:** `Daisi.Broski.Engine.Js.Builtins.RegExp` (future), the JS engine's string methods, and any Web API that exposes regex (`URLPattern` eventually).
 
 ### What's at stake
 
@@ -100,8 +100,8 @@ Option C, but with the algorithm cribbed from a known-good reference engine inst
 
 ## DD-05 — JS heap and GC strategy
 
-**Status:** open, tentative recommendation below. This one has the biggest structural impact on the engine and is the easiest to get wrong by over-engineering early.
-**Affects:** `Daisi.Broski.Engine.Js.Value`, `Heap`, `Scope`, `BytecodeCompiler`, `Interpreter` — essentially every file in the JS engine.
+**Status:** open — tentative recommendation below, phase 3 has not started yet so nothing on `dev` commits us either way. This one has the biggest structural impact on the engine and is the easiest to get wrong by over-engineering early.
+**Affects:** `Daisi.Broski.Engine.Js.Value`, `Heap`, `Scope`, `BytecodeCompiler`, `Interpreter` — essentially every file in the JS engine once it starts landing.
 
 ### What's at stake
 
