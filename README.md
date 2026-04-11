@@ -1,4 +1,5 @@
 # daisi-broski
+**Bro**wse And **Ski**m = Broski
 
 **A native C# headless web browser, from scratch.**
 
@@ -39,6 +40,7 @@ daisi-broski/
 ├── docs/
 │   ├── architecture.md          # System design
 │   ├── roadmap.md               # Phased plan
+│   ├── design-decisions.md      # Long-form write-ups of non-trivial choices
 │   ├── js-engine.md             # JavaScript engine design (planned)
 │   ├── html-parser.md           # HTML5 tokenizer/tree construction (planned)
 │   └── sandbox.md               # Win32 Job Object + AppContainer design (planned)

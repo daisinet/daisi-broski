@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/Daisi.Broski.Engine.Tests/Daisi.Broski.Engine.Tests.csproj" />
+  </Folder>
+  <Project Path="Daisi.Broski.Engine/Daisi.Broski.Engine.csproj" />
+</Solution>
