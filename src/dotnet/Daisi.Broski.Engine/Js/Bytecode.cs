@@ -149,6 +149,24 @@ public enum OpCode : byte
     /// </summary>
     Swap,
 
+    // ---- for-in iteration ----
+    /// <summary>
+    /// Pop an object off the stack and push a fresh
+    /// <see cref="ForInIterator"/> positioned at the first
+    /// enumerable string key. Non-object arguments (per spec
+    /// §12.6.4: <c>null</c> and <c>undefined</c>) push an empty
+    /// iterator so the subsequent loop executes zero times.
+    /// </summary>
+    ForInStart,
+    /// <summary>
+    /// Advance the iterator sitting on top of the stack by one
+    /// key. If there is a next key, push it (stack becomes
+    /// <c>[iter, key]</c>) and fall through. If the iterator is
+    /// done, pop the iterator and jump by a 2-byte signed offset
+    /// (relative to the instruction after the jump).
+    /// </summary>
+    ForInNext,
+
     // ---- Arithmetic (all pop two operands, push one) ----
     Add, Sub, Mul, Div, Mod,
     Negate, UnaryPlus,

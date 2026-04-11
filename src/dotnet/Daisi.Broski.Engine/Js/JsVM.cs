@@ -248,6 +248,31 @@ public sealed class JsVM
                     }
                     break;
 
+                // ---- for-in iteration ----
+                case OpCode.ForInStart:
+                    {
+                        var target = Pop();
+                        Push(ForInIterator.From(target));
+                    }
+                    break;
+                case OpCode.ForInNext:
+                    {
+                        short offset = ReadS16();
+                        var iter = (ForInIterator)_stack[_sp - 1]!;
+                        if (iter.Index < iter.Keys.Count)
+                        {
+                            Push(iter.Keys[iter.Index]);
+                            iter.Index++;
+                        }
+                        else
+                        {
+                            // Done — discard the iterator and jump out.
+                            _sp--;
+                            _ip += offset;
+                        }
+                    }
+                    break;
+
                 // ---- Arithmetic ----
                 case OpCode.Add: DoAdd(); break;
                 case OpCode.Sub: DoNumericBinary((a, b) => a - b); break;

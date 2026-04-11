@@ -50,23 +50,38 @@ namespace Daisi.Broski.Engine.Js;
 public sealed class JsCompiler
 {
     // Nested function bodies push their own frame, which owns its
-    // own Chunk and loop context stack. The active frame's Chunk
-    // is cached in <see cref="_chunk"/> and loops in
-    // <see cref="_loops"/> so the existing emit helpers continue
-    // to work unchanged.
+    // own Chunk and break-target stack. The active frame's Chunk
+    // is cached in <see cref="_chunk"/> and targets in
+    // <see cref="_breakTargets"/> so the existing emit helpers
+    // continue to work unchanged.
     private readonly Stack<CompilerFrame> _frames = new();
     private Chunk _chunk = null!;
-    private Stack<LoopContext> _loops = null!;
+    private Stack<BreakTarget> _breakTargets = null!;
+    // Label pending attachment to the next loop / switch — set
+    // by a <see cref="LabeledStatement"/> when its inner body
+    // is a loop or switch, so break / continue referring to the
+    // label find the context on the stack.
+    private string? _pendingLabel;
 
     private sealed class CompilerFrame
     {
         public Chunk Chunk { get; } = new();
-        public Stack<LoopContext> Loops { get; } = new();
+        public Stack<BreakTarget> BreakTargets { get; } = new();
         public bool IsFunction { get; init; }
     }
 
-    private sealed class LoopContext
+    /// <summary>
+    /// An in-progress control-flow context that <c>break</c>
+    /// (and possibly <c>continue</c>) statements can target.
+    /// Loops set <see cref="IsLoop"/> and may carry an optional
+    /// <see cref="Label"/>; <c>switch</c> pushes one with
+    /// <c>IsLoop = false</c>; a labeled non-loop statement
+    /// pushes one with <c>IsLoop = false</c> and its label.
+    /// </summary>
+    private sealed class BreakTarget
     {
+        public string? Label;
+        public bool IsLoop;
         public readonly List<int> BreakJumps = new();
         public readonly List<int> ContinueJumps = new();
     }
@@ -76,7 +91,7 @@ public sealed class JsCompiler
         var f = new CompilerFrame { IsFunction = isFunction };
         _frames.Push(f);
         _chunk = f.Chunk;
-        _loops = f.Loops;
+        _breakTargets = f.BreakTargets;
     }
 
     private Chunk PopFrame()
@@ -85,12 +100,12 @@ public sealed class JsCompiler
         if (_frames.Count > 0)
         {
             _chunk = _frames.Peek().Chunk;
-            _loops = _frames.Peek().Loops;
+            _breakTargets = _frames.Peek().BreakTargets;
         }
         else
         {
             _chunk = null!;
-            _loops = null!;
+            _breakTargets = null!;
         }
         return popped.Chunk;
     }
@@ -102,6 +117,76 @@ public sealed class JsCompiler
             if (f.IsFunction) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Resolve the target of a <c>break</c> statement. Unlabeled
+    /// breaks take the nearest enclosing loop or switch;
+    /// labeled breaks walk up the stack looking for a matching
+    /// label. Throws <see cref="JsCompileException"/> if no
+    /// matching target is found.
+    /// </summary>
+    private BreakTarget ResolveBreakTarget(string? label, int sourceOffset)
+    {
+        if (_breakTargets.Count == 0)
+        {
+            throw new JsCompileException(
+                label is null
+                    ? "'break' outside of loop or switch"
+                    : $"Labeled 'break {label}' target not found",
+                sourceOffset);
+        }
+        if (label is null)
+        {
+            return _breakTargets.Peek();
+        }
+        foreach (var ctx in _breakTargets)
+        {
+            if (ctx.Label == label) return ctx;
+        }
+        throw new JsCompileException(
+            $"Labeled 'break {label}' target not found", sourceOffset);
+    }
+
+    /// <summary>
+    /// Resolve the target of a <c>continue</c> statement. Unlike
+    /// <c>break</c>, <c>continue</c> can only target a loop —
+    /// never a switch. Unlabeled continues take the nearest
+    /// enclosing loop (walking past any intervening switches);
+    /// labeled continues walk up looking for a loop with the
+    /// matching label.
+    /// </summary>
+    private BreakTarget ResolveContinueTarget(string? label, int sourceOffset)
+    {
+        if (label is null)
+        {
+            foreach (var ctx in _breakTargets)
+            {
+                if (ctx.IsLoop) return ctx;
+            }
+            throw new JsCompileException("'continue' outside of loop", sourceOffset);
+        }
+        foreach (var ctx in _breakTargets)
+        {
+            if (ctx.IsLoop && ctx.Label == label) return ctx;
+        }
+        throw new JsCompileException(
+            $"Labeled 'continue {label}' target not found or not a loop",
+            sourceOffset);
+    }
+
+    /// <summary>
+    /// Pop the pending label (if any) and return it. Called at
+    /// the start of each loop / switch compilation so it can
+    /// attach the label to its own <see cref="BreakTarget"/>.
+    /// Having this as a consume-once operation avoids the need to
+    /// explicitly clear it after.
+    /// </summary>
+    private string? TakePendingLabel()
+    {
+        var l = _pendingLabel;
+        _pendingLabel = null;
+        return l;
     }
 
     public Chunk Compile(Program program)
@@ -278,34 +363,18 @@ public sealed class JsCompiler
                 return;
 
             case BreakStatement bs:
-                if (bs.Label is not null)
                 {
-                    throw new JsCompileException(
-                        "Labeled 'break' is not supported in this slice", bs.Start);
-                }
-                if (_loops.Count == 0)
-                {
-                    throw new JsCompileException("'break' outside of a loop", bs.Start);
-                }
-                {
+                    var target = ResolveBreakTarget(bs.Label?.Name, bs.Start);
                     int addr = _chunk.EmitJump(OpCode.Jump);
-                    _loops.Peek().BreakJumps.Add(addr);
+                    target.BreakJumps.Add(addr);
                 }
                 return;
 
             case ContinueStatement cs:
-                if (cs.Label is not null)
                 {
-                    throw new JsCompileException(
-                        "Labeled 'continue' is not supported in this slice", cs.Start);
-                }
-                if (_loops.Count == 0)
-                {
-                    throw new JsCompileException("'continue' outside of a loop", cs.Start);
-                }
-                {
+                    var target = ResolveContinueTarget(cs.Label?.Name, cs.Start);
                     int addr = _chunk.EmitJump(OpCode.Jump);
-                    _loops.Peek().ContinueJumps.Add(addr);
+                    target.ContinueJumps.Add(addr);
                 }
                 return;
 
@@ -343,20 +412,20 @@ public sealed class JsCompiler
                     "'try' requires the exception machinery (phase 3a slice 5)", tr.Start);
 
             case SwitchStatement sw:
-                throw new JsCompileException(
-                    "'switch' is not supported in this slice (phase 3a slice 4)", sw.Start);
+                CompileSwitch(sw);
+                return;
 
             case ForInStatement fi:
-                throw new JsCompileException(
-                    "'for..in' requires object enumeration (phase 3a slice 4)", fi.Start);
+                CompileForIn(fi);
+                return;
+
+            case LabeledStatement l:
+                CompileLabeledStatement(l);
+                return;
 
             case WithStatement w:
                 throw new JsCompileException(
-                    "'with' is not supported (phase 3a slice 5, if ever)", w.Start);
-
-            case LabeledStatement l:
-                throw new JsCompileException(
-                    "Labeled statements are not supported in this slice", l.Start);
+                    "'with' is not supported (deferred indefinitely)", w.Start);
 
             default:
                 throw new JsCompileException(
@@ -401,14 +470,15 @@ public sealed class JsCompiler
 
     private void CompileWhile(WhileStatement stmt)
     {
+        var label = TakePendingLabel();
         int loopStart = _chunk.Position;
         CompileExpression(stmt.Test);
         int exitJump = _chunk.EmitJump(OpCode.JumpIfFalse);
 
-        var ctx = new LoopContext();
-        _loops.Push(ctx);
+        var ctx = new BreakTarget { IsLoop = true, Label = label };
+        _breakTargets.Push(ctx);
         CompileStatement(stmt.Body);
-        _loops.Pop();
+        _breakTargets.Pop();
 
         // Continue jumps land at the top of the loop (re-test).
         foreach (var addr in ctx.ContinueJumps)
@@ -422,12 +492,13 @@ public sealed class JsCompiler
 
     private void CompileDoWhile(DoWhileStatement stmt)
     {
+        var label = TakePendingLabel();
         int loopStart = _chunk.Position;
 
-        var ctx = new LoopContext();
-        _loops.Push(ctx);
+        var ctx = new BreakTarget { IsLoop = true, Label = label };
+        _breakTargets.Push(ctx);
         CompileStatement(stmt.Body);
-        _loops.Pop();
+        _breakTargets.Pop();
 
         // Continue jumps land at the condition check.
         int continueTarget = _chunk.Position;
@@ -443,6 +514,7 @@ public sealed class JsCompiler
 
     private void CompileFor(ForStatement stmt)
     {
+        var label = TakePendingLabel();
         // Init.
         if (stmt.Init is VariableDeclaration vd)
         {
@@ -462,10 +534,10 @@ public sealed class JsCompiler
             exitJump = _chunk.EmitJump(OpCode.JumpIfFalse);
         }
 
-        var ctx = new LoopContext();
-        _loops.Push(ctx);
+        var ctx = new BreakTarget { IsLoop = true, Label = label };
+        _breakTargets.Push(ctx);
         CompileStatement(stmt.Body);
-        _loops.Pop();
+        _breakTargets.Pop();
 
         // Continue target is the update clause.
         int continueTarget = _chunk.Position;
@@ -1002,6 +1074,220 @@ public sealed class JsCompiler
             fe.End - fe.Start);
         int idx = _chunk.AddConstant(template);
         _chunk.EmitWithU16(OpCode.MakeFunction, idx);
+    }
+
+    // -------------------------------------------------------------------
+    // for..in
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Compile a <c>for..in</c> loop. Only identifier (and
+    /// <c>var identifier</c>) LHS are supported in this slice —
+    /// member-targeted <c>for (a.b in obj)</c> is legal ES5 but
+    /// rare in practice and would need extra stack juggling for
+    /// the store, so it's deferred.
+    /// </summary>
+    private void CompileForIn(ForInStatement stmt)
+    {
+        var label = TakePendingLabel();
+
+        // Resolve the binding name from the left-hand side.
+        string? bindingName = stmt.Left switch
+        {
+            Identifier id => id.Name,
+            VariableDeclaration vd when vd.Declarations.Count == 1
+                => vd.Declarations[0].Id.Name,
+            _ => null,
+        };
+        if (bindingName is null)
+        {
+            throw new JsCompileException(
+                "Only identifier and 'var identifier' targets are supported in 'for..in' in this slice",
+                stmt.Start);
+        }
+        int nameIdx = _chunk.AddName(bindingName);
+
+        // Evaluate the source object and start the iterator.
+        CompileExpression(stmt.Right);
+        _chunk.Emit(OpCode.ForInStart);
+
+        int loopStart = _chunk.Position;
+        int exitJump = _chunk.EmitJump(OpCode.ForInNext);
+
+        // ForInNext leaves [iter, key] on the stack on success.
+        // Bind the key and discard it from the stack.
+        _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+        _chunk.Emit(OpCode.Pop);
+
+        var ctx = new BreakTarget { IsLoop = true, Label = label };
+        _breakTargets.Push(ctx);
+        CompileStatement(stmt.Body);
+        _breakTargets.Pop();
+
+        // Continue jumps back to ForInNext to advance.
+        foreach (var addr in ctx.ContinueJumps)
+        {
+            _chunk.PatchJumpTo(addr, loopStart);
+        }
+        _chunk.EmitLoopJump(OpCode.Jump, loopStart);
+
+        // ForInNext patches past the loop body when iteration is
+        // done; it already popped the iterator for us.
+        _chunk.PatchJump(exitJump);
+        foreach (var addr in ctx.BreakJumps) _chunk.PatchJump(addr);
+    }
+
+    // -------------------------------------------------------------------
+    // switch
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Compile a <c>switch</c> statement. Layout:
+    /// <list type="number">
+    /// <item>Evaluate discriminant, leaving it on the stack.</item>
+    /// <item>Dispatch table: for each non-default case, <c>Dup</c>,
+    /// compile test, <c>StrictEq</c>, <c>JumpIfTrue</c> to the
+    /// entry label. <c>JumpIfTrue</c> pops the bool but leaves the
+    /// duplicated discriminant — the next <c>Dup</c> sets up for
+    /// the following test.</item>
+    /// <item>After all tests, <c>Pop</c> the discriminant and
+    /// <c>Jump</c> to the default entry (or the exit if no
+    /// default).</item>
+    /// <item>For each case (in source order), emit an entry label
+    /// that does <c>Pop</c> + <c>Jump</c> to the body label, then
+    /// lay out the bodies sequentially so fall-through happens by
+    /// adjacency.</item>
+    /// </list>
+    /// </summary>
+    private void CompileSwitch(SwitchStatement stmt)
+    {
+        var label = TakePendingLabel();
+
+        CompileExpression(stmt.Discriminant);
+        // Stack: [d]
+
+        int caseCount = stmt.Cases.Count;
+        // Jump-to-entry addresses for each case, keyed by case
+        // index. Default has no test so no entry jump.
+        var caseEntryJumps = new int[caseCount];
+        int defaultIndex = -1;
+        for (int i = 0; i < caseCount; i++)
+        {
+            var c = stmt.Cases[i];
+            if (c.Test is null)
+            {
+                defaultIndex = i;
+                caseEntryJumps[i] = -1;
+                continue;
+            }
+            _chunk.Emit(OpCode.Dup);                  // [d, d]
+            CompileExpression(c.Test);                // [d, d, t]
+            _chunk.Emit(OpCode.StrictEq);             // [d, bool]
+            caseEntryJumps[i] = _chunk.EmitJump(OpCode.JumpIfTrue);
+        }
+
+        // No test matched — discard the discriminant and jump to
+        // the default entry (if any) or past the whole switch.
+        // Both paths pop the discriminant here, so the default
+        // entry (which is reached only from here or from fall-
+        // through) starts with a clean stack.
+        _chunk.Emit(OpCode.Pop);                      // []
+        int noMatchJump = _chunk.EmitJump(OpCode.Jump);
+
+        // Now lay out per-case entry labels. Non-default entries
+        // are reached via JumpIfTrue, which left the discriminant
+        // on the stack, so they start with a Pop. Default is
+        // reached only via the no-match path (already popped) or
+        // via fall-through (also already clean), so default
+        // entry skips the Pop.
+        var entryAddrs = new int[caseCount];
+        var entryBodyJumps = new int[caseCount];
+        for (int i = 0; i < caseCount; i++)
+        {
+            entryAddrs[i] = _chunk.Position;
+            if (i != defaultIndex)
+            {
+                _chunk.Emit(OpCode.Pop);             // []
+            }
+            entryBodyJumps[i] = _chunk.EmitJump(OpCode.Jump);
+        }
+
+        // Patch the dispatch-table jumps to their entry labels.
+        for (int i = 0; i < caseCount; i++)
+        {
+            if (caseEntryJumps[i] >= 0)
+            {
+                _chunk.PatchJumpTo(caseEntryJumps[i], entryAddrs[i]);
+            }
+        }
+        // If there was a default, patch the no-match jump to its
+        // entry; otherwise patch it to the exit (end of switch).
+        // We don't yet know the exit position for the default-less
+        // case, so defer that until after bodies are laid out.
+
+        var ctx = new BreakTarget { IsLoop = false, Label = label };
+        _breakTargets.Push(ctx);
+
+        // Body labels + statements.
+        var bodyAddrs = new int[caseCount];
+        for (int i = 0; i < caseCount; i++)
+        {
+            bodyAddrs[i] = _chunk.Position;
+            _chunk.PatchJumpTo(entryBodyJumps[i], bodyAddrs[i]);
+            foreach (var s in stmt.Cases[i].Consequent)
+            {
+                CompileStatement(s);
+            }
+        }
+
+        _breakTargets.Pop();
+
+        // Exit of switch — patch break jumps and the no-default
+        // no-match path.
+        foreach (var addr in ctx.BreakJumps) _chunk.PatchJump(addr);
+        if (defaultIndex >= 0)
+        {
+            _chunk.PatchJumpTo(noMatchJump, entryAddrs[defaultIndex]);
+        }
+        else
+        {
+            _chunk.PatchJump(noMatchJump);
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Labeled statements
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Compile a labeled statement. If the inner statement is a
+    /// loop or switch, set the pending-label slot and delegate to
+    /// that statement's compiler — it will attach the label to
+    /// its own <see cref="BreakTarget"/>. Otherwise, push a
+    /// label-only break-target (useful for
+    /// <c>foo: { break foo; ... }</c>), compile the inner body,
+    /// and patch break jumps at the end.
+    /// </summary>
+    private void CompileLabeledStatement(LabeledStatement ls)
+    {
+        switch (ls.Body)
+        {
+            case WhileStatement:
+            case DoWhileStatement:
+            case ForStatement:
+            case ForInStatement:
+            case SwitchStatement:
+                _pendingLabel = ls.Label.Name;
+                CompileStatement(ls.Body);
+                return;
+        }
+
+        // Non-loop labeled statement — break-only target.
+        var ctx = new BreakTarget { IsLoop = false, Label = ls.Label.Name };
+        _breakTargets.Push(ctx);
+        CompileStatement(ls.Body);
+        _breakTargets.Pop();
+        foreach (var addr in ctx.BreakJumps) _chunk.PatchJump(addr);
     }
 
     /// <summary>
