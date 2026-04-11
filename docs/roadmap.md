@@ -9,7 +9,7 @@
 
 **Phase 0, 1, 3a, and 4 are complete. Phase 3b has started** with block-scoped `let`/`const` as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
 
-**Combined test suite: 650/650 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1).
+**Combined test suite: 671/671 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1 + 21 JS arrows 3b-2).
 
 What works today from a clean clone:
 
@@ -112,7 +112,9 @@ returns 30 story links, identical to what Chrome sees.
 ### Phase 3b — ES2015 core (in progress)
 
 - **`let`/`const` with temporal dead zone + block scoping (slice 3b-1)** ✅ — new `JsUninitialized` sentinel and `DeclareLet` opcode; `BlockStatement` now pushes a fresh env, pre-scans the block for let/const and function declarations, and pops the env on exit. `LoadGlobal` / `LoadGlobalOrUndefined` both check for the sentinel and throw `ReferenceError` so `typeof` of a TDZ binding also throws per spec. For-loop `let` init wraps the whole loop in an env. Function declarations at block scope now hoist into the block env (not the enclosing function), so inner closures capture the block env and can read `let` bindings declared alongside them. Top-level `let` / `const` persist in the globals env across successive `Evaluate` calls (pragmatic REPL-friendly deviation from the spec's module record). Per-iteration freshness for `for (let i ...)` is deferred. 21 end-to-end tests.
-- Arrow functions, classes (including static fields, `super`), template literals.
+- **Arrow functions (slice 3b-2)** ✅ — `ArrowFunctionExpression` AST node. Parser's `ParseAssignmentExpression` peeks for `Identifier =>` and `(...) => body` via a read-only forward scan for the matching close paren; falls through to the normal expression parse when nothing follows the `)`. `JsFunctionTemplate.IsArrow` and `JsFunction.CapturedThis`: the VM snapshots the current `_this` at `MakeFunction` time and the call path uses it instead of the caller's thisVal. Arrow call setup skips binding a fresh `arguments` object, so references resolve up the env chain to the enclosing function's. `DoNew` rejects arrow targets with a `TypeError`. Concise body `x => expr` is lowered to `{ return expr; }` via a synthetic `ReturnStatement` wrapper so it reuses the normal function-body compile path. 21 end-to-end tests including currying, method-with-inner-arrow `this` preservation, `arguments` inheritance from outer, arrows passed to `forEach`/`map`/`filter`/`reduce`, and `new` rejection.
+- Template literals (slice 3b-3).
+- Classes (including static fields, `super`).
 - Destructuring, default params, rest/spread.
 - `Symbol`, iterators, `for..of`, generators.
 - ESM module loader (host-provided resolver; modules come from the network via `fetch`).

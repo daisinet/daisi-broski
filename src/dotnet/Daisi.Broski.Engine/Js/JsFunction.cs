@@ -21,18 +21,31 @@ public sealed class JsFunctionTemplate
     /// </summary>
     public int SourceLength { get; }
 
+    /// <summary>
+    /// True for ES2015 arrow functions. The VM uses this at
+    /// <see cref="OpCode.MakeFunction"/> time to capture the
+    /// current <c>this</c> binding into
+    /// <see cref="JsFunction.CapturedThis"/>, and at call time
+    /// to skip binding a fresh <c>arguments</c> object (arrows
+    /// inherit the enclosing function's <c>arguments</c> via
+    /// the env chain).
+    /// </summary>
+    public bool IsArrow { get; }
+
     public int ParamCount => ParamNames.Count;
 
     public JsFunctionTemplate(
         Chunk body,
         IReadOnlyList<string> paramNames,
         string? name,
-        int sourceLength)
+        int sourceLength,
+        bool isArrow = false)
     {
         Body = body;
         ParamNames = paramNames;
         Name = name;
         SourceLength = sourceLength;
+        IsArrow = isArrow;
     }
 }
 
@@ -78,6 +91,16 @@ public sealed class JsFunction : JsObject
     /// <c>new</c> (usually by throwing TypeError).
     /// </summary>
     public JsObject? FunctionPrototype { get; }
+
+    /// <summary>
+    /// For arrow functions: the <c>this</c> value captured at
+    /// the moment the arrow was materialized by
+    /// <see cref="OpCode.MakeFunction"/>. Arrows don't bind
+    /// their own <c>this</c> at call time — they use this
+    /// captured value regardless of how they are called.
+    /// Ignored for non-arrow functions.
+    /// </summary>
+    public object? CapturedThis { get; set; }
 
     public string? Name => Template?.Name ?? NativeName;
     private readonly string? NativeName;

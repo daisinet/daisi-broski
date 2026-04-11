@@ -206,6 +206,42 @@ public sealed class FunctionExpression : Expression
     }
 }
 
+/// <summary>
+/// ES2015 arrow function expression. The body is either an
+/// <see cref="Expression"/> (concise form, <c>x =&gt; x + 1</c>)
+/// or a <see cref="BlockStatement"/> (block form,
+/// <c>x =&gt; { ... }</c>). Arrow functions differ from
+/// regular functions in two key ways the compiler and VM must
+/// honor:
+///
+/// - <b>Lexical <c>this</c>.</b> Arrows don't bind their own
+///   <c>this</c>; they capture it from the enclosing function
+///   at the point the arrow is created.
+/// - <b>No own <c>arguments</c>.</b> References to
+///   <c>arguments</c> inside an arrow resolve to the enclosing
+///   function's arguments object (via the env chain), not the
+///   arrow's own call-site arguments.
+///
+/// Additionally, arrows cannot be used as constructors —
+/// <c>new arrowFn()</c> throws <c>TypeError</c>.
+/// </summary>
+public sealed class ArrowFunctionExpression : Expression
+{
+    public IReadOnlyList<Identifier> Params { get; }
+    public JsNode Body { get; }
+    public bool IsExpressionBody => Body is Expression;
+
+    public ArrowFunctionExpression(
+        int start,
+        int end,
+        IReadOnlyList<Identifier> @params,
+        JsNode body) : base(start, end)
+    {
+        Params = @params;
+        Body = body;
+    }
+}
+
 public sealed class FunctionDeclaration : Statement
 {
     public Identifier Id { get; }
