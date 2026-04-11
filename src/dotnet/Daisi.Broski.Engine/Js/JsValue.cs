@@ -84,11 +84,16 @@ public static class JsValue
         if (v is bool b) return b ? 1.0 : 0.0;
         if (v is double d) return d;
         if (v is string s) return StringToNumber(s);
-        // ECMA §9.3 also defines ToPrimitive(object, hint: Number)
-        // which, for arrays, delegates to join(',') and then
-        // StringToNumber. Empty array → "" → 0, single-element
-        // numeric array → the element as a number, etc. Plain
-        // objects → "[object Object]" → NaN.
+        // ECMA §9.3 also defines ToPrimitive(object, hint: Number).
+        // For Date, the spec actually says hint "String" by
+        // default, but `valueOf()` is still the fallback and
+        // returns the numeric time — which is what
+        // `b - a` arithmetic and relational comparisons rely
+        // on, so we special-case Date to return its Time
+        // directly. For arrays, delegate to join(',') and then
+        // StringToNumber (empty → 0, single numeric → that number,
+        // multi-element → NaN). Plain objects → NaN.
+        if (v is JsDate date) return date.Time;
         if (v is JsArray arr) return StringToNumber(arr.Join(","));
         if (v is JsObject) return double.NaN;
         return double.NaN;
@@ -148,6 +153,13 @@ public static class JsValue
         // we inline that to avoid a dependency on the built-in
         // library (which slice 6 will ship).
         if (v is JsArray arr) return arr.Join(",");
+        // Date stringifies via its ISO form when coerced to a
+        // string (matches `'' + new Date()` and `String(new Date())`).
+        if (v is JsDate date)
+        {
+            if (!date.IsValid) return "Invalid Date";
+            return BuiltinDate.FormatIso(date.Time);
+        }
         // Plain objects render as the canonical "[object Object]"
         // string that `Object.prototype.toString` produces for
         // untagged objects.
