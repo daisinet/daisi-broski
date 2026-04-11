@@ -189,6 +189,176 @@ public sealed class JsCompiler
         return l;
     }
 
+    /// <summary>
+    /// Name of the synthetic module-local binding that
+    /// holds the exports namespace object. The engine pre-
+    /// populates this binding in the module's evaluation
+    /// env before running the compiled chunk; the compiler
+    /// rewrites <c>export</c> declarations to store into
+    /// <c>__exports[name]</c> via this binding.
+    /// </summary>
+    private const string ModuleExportsName = "$exports";
+
+    /// <summary>
+    /// Named-export bindings to copy into <c>$exports</c>
+    /// at the end of the module body. We defer the stores
+    /// so mutations to the local binding during module
+    /// initialization (e.g. <c>export var n = 0; n++;</c>)
+    /// are reflected in the exports snapshot. A proper
+    /// live-binding implementation would need real
+    /// getter-backed exports — this is a known deferral.
+    /// </summary>
+    private readonly List<(string Local, string Exported)> _pendingNamedExports = new();
+
+    /// <summary>
+    /// Compile a module's top-level program. Import
+    /// declarations are skipped (the engine's loader has
+    /// already materialized them as entries in
+    /// <paramref name="importBindings"/>, and the VM
+    /// seeds them into the runtime env before dispatching
+    /// the chunk). Export declarations compile to their
+    /// underlying declaration plus bytecode that writes
+    /// the named binding into the module's exports object
+    /// via the <see cref="ModuleExportsName"/> synthetic
+    /// binding.
+    /// </summary>
+    public Chunk CompileModule(Program program, Dictionary<string, object?> importBindings)
+    {
+        _pendingNamedExports.Clear();
+        return Compile(program);
+    }
+
+    /// <summary>
+    /// Lower an <c>export ...</c> form. The module's
+    /// exports object is accessed through the synthetic
+    /// global <see cref="ModuleExportsName"/> — the engine
+    /// pre-binds it in the module's evaluation env before
+    /// the chunk runs. Named exports compile the underlying
+    /// declaration first (so the binding exists) and then
+    /// emit a <c>$exports[name] = name</c> store; specifier
+    /// lists do just the store part.
+    /// </summary>
+    private void CompileExportNamed(ExportNamedDeclaration ex)
+    {
+        if (ex.Declaration is not null)
+        {
+            // Compile the underlying declaration first — it
+            // creates the binding in the module's env.
+            // Stores to $exports are deferred until the end
+            // of the module body so mutations during
+            // initialization are reflected.
+            CompileStatement(ex.Declaration);
+            foreach (var name in CollectDeclarationNames(ex.Declaration))
+            {
+                _pendingNamedExports.Add((name, name));
+            }
+            return;
+        }
+        foreach (var spec in ex.Specifiers)
+        {
+            _pendingNamedExports.Add((spec.Local, spec.Exported));
+        }
+    }
+
+    /// <summary>
+    /// Lower an <c>export default expr</c>. For a
+    /// default-exported <c>function</c> or <c>class</c> the
+    /// declaration is compiled normally (so the binding
+    /// name is usable in-module), then the binding value
+    /// is copied into <c>$exports.default</c>. For a bare
+    /// expression we compile and store it directly.
+    /// </summary>
+    private void CompileExportDefault(ExportDefaultDeclaration ex)
+    {
+        // Load the target exports object.
+        int exportsNameIdx = _chunk.AddName(ModuleExportsName);
+        _chunk.EmitWithU16(OpCode.LoadGlobal, exportsNameIdx);
+
+        switch (ex.Declaration)
+        {
+            case FunctionDeclaration fd:
+                // FunctionDeclaration was hoisted — the binding
+                // already holds the function value. Just load it.
+                {
+                    int nameIdx = _chunk.AddName(fd.Id.Name);
+                    _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+                }
+                break;
+            case ClassDeclaration cd:
+                // Compile the class in place (it's already been
+                // pre-declared by the top-level hoist pass), then
+                // load the binding.
+                CompileStatement(cd);
+                {
+                    int nameIdx = _chunk.AddName(cd.Id.Name);
+                    _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+                }
+                break;
+            case Expression expr:
+                // Anonymous function / class expressions and
+                // arbitrary value expressions take this path —
+                // compile the expression normally; the result
+                // sits on top of the stack for the SetProperty
+                // below.
+                CompileExpression(expr);
+                break;
+            default:
+                throw new JsCompileException(
+                    $"Unsupported export-default form: {ex.Declaration.GetType().Name}",
+                    ex.Start);
+        }
+
+        // Stack: [$exports, value]. SetProperty pops both,
+        // pushes [value] — then Pop to discard.
+        int defaultIdx = _chunk.AddName("default");
+        _chunk.EmitWithU16(OpCode.SetProperty, defaultIdx);
+        _chunk.Emit(OpCode.Pop);
+    }
+
+    /// <summary>
+    /// Emit <c>$exports[exportedName] = localName;</c>
+    /// bytecode. Assumes <paramref name="localName"/> is
+    /// a binding in the current env chain.
+    /// </summary>
+    private void EmitExportStore(string localName, string exportedName)
+    {
+        int exportsNameIdx = _chunk.AddName(ModuleExportsName);
+        _chunk.EmitWithU16(OpCode.LoadGlobal, exportsNameIdx);
+        int localIdx = _chunk.AddName(localName);
+        _chunk.EmitWithU16(OpCode.LoadGlobal, localIdx);
+        int exportedIdx = _chunk.AddName(exportedName);
+        _chunk.EmitWithU16(OpCode.SetProperty, exportedIdx);
+        _chunk.Emit(OpCode.Pop);
+    }
+
+    /// <summary>
+    /// Collect the binding names introduced by a variable,
+    /// function, or class declaration. Used by export-named
+    /// lowering to copy each declared binding into the
+    /// exports object.
+    /// </summary>
+    private static IEnumerable<string> CollectDeclarationNames(Statement decl)
+    {
+        switch (decl)
+        {
+            case VariableDeclaration vd:
+                foreach (var d in vd.Declarations)
+                {
+                    foreach (var name in CollectPatternNames(d.Id))
+                    {
+                        yield return name;
+                    }
+                }
+                break;
+            case FunctionDeclaration fd:
+                yield return fd.Id.Name;
+                break;
+            case ClassDeclaration cd:
+                yield return cd.Id.Name;
+                break;
+        }
+    }
+
     public Chunk Compile(Program program)
     {
         PushFrame(isFunction: false);
@@ -205,7 +375,15 @@ public sealed class JsCompiler
         // revisit the top-level behavior.
         foreach (var stmt in program.Body)
         {
-            if (stmt is VariableDeclaration vd &&
+            // Look through an ExportNamedDeclaration so the
+            // wrapped declaration participates in the top-
+            // level let/const/function/class pre-scan.
+            var effective = stmt is ExportNamedDeclaration ex ? ex.Declaration ?? stmt : stmt;
+            var defaulted = stmt is ExportDefaultDeclaration exd
+                ? (exd.Declaration as Statement) ?? stmt
+                : effective;
+
+            if (defaulted is VariableDeclaration vd &&
                 vd.Kind != VariableDeclarationKind.Var)
             {
                 foreach (var d in vd.Declarations)
@@ -217,7 +395,7 @@ public sealed class JsCompiler
                     }
                 }
             }
-            else if (stmt is FunctionDeclaration fd)
+            else if (defaulted is FunctionDeclaration fd)
             {
                 var template = CompileFunctionTemplate(
                     fd.Id.Name,
@@ -233,7 +411,7 @@ public sealed class JsCompiler
                 _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
                 _chunk.Emit(OpCode.Pop);
             }
-            else if (stmt is ClassDeclaration cd)
+            else if (defaulted is ClassDeclaration cd)
             {
                 int idx = _chunk.AddName(cd.Id.Name);
                 _chunk.EmitWithU16(OpCode.DeclareLet, idx);
@@ -244,6 +422,19 @@ public sealed class JsCompiler
         {
             CompileStatement(stmt);
         }
+
+        // Module-mode: after all top-level statements have
+        // run, copy each named export's current value into
+        // the exports object. Deferring to here lets
+        // mutations during module initialization flow
+        // through (e.g. `export var n = 0; n++;` resolves
+        // to n=1 in the exports).
+        foreach (var (local, exported) in _pendingNamedExports)
+        {
+            EmitExportStore(local, exported);
+        }
+        _pendingNamedExports.Clear();
+
         _chunk.Emit(OpCode.Halt);
         return PopFrame();
     }
@@ -359,6 +550,20 @@ public sealed class JsCompiler
 
     private void HoistInStatement(Statement stmt)
     {
+        // `export` wrappers are transparent to hoisting — the
+        // wrapped declaration (if any) participates as if it
+        // were a plain top-level statement.
+        if (stmt is ExportNamedDeclaration ex && ex.Declaration is not null)
+        {
+            HoistInStatement(ex.Declaration);
+            return;
+        }
+        if (stmt is ExportDefaultDeclaration exd && exd.Declaration is Statement expDeclStmt)
+        {
+            HoistInStatement(expDeclStmt);
+            return;
+        }
+
         switch (stmt)
         {
             case VariableDeclaration vd:
@@ -669,6 +874,21 @@ public sealed class JsCompiler
 
             case FunctionDeclaration:
                 // Already emitted during the hoisting pass.
+                return;
+
+            case ImportDeclaration:
+                // Imports are pre-resolved by the engine's
+                // module loader and seeded into the runtime
+                // env before this chunk dispatches. Nothing
+                // to emit at the compile site.
+                return;
+
+            case ExportNamedDeclaration exportNamed:
+                CompileExportNamed(exportNamed);
+                return;
+
+            case ExportDefaultDeclaration exportDefault:
+                CompileExportDefault(exportDefault);
                 return;
 
             case ClassDeclaration cd:

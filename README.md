@@ -11,7 +11,7 @@ No third-party NuGet packages in the product code. No Chromium, no WebKit, no V8
 
 ## Status
 
-**Phases 0, 1, and 4 are shipped. Phase 3 (JavaScript engine) is the next major milestone.**
+**Phases 0, 1, 3a, 3b, and 4 are shipped. Phase 3c (ES2017+ sugar, the DOM bridge, and `fetch`) is the next major milestone.**
 
 What works today, from a clean clone:
 
@@ -56,7 +56,9 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 974/974 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1 + 21 JS arrows 3b-2 + 25 JS templates 3b-3 + 38 JS destructuring 3b-4 + 42 JS defaults/rest/spread 3b-5 + 28 JS classes 3b-6 + 24 JS iterators/for-of 3b-7a + 21 JS generators 3b-7b + 35 JS collections 3b-8 + 27 JS promises 3b-9 + 25 JS async/await 3b-10 + 38 JS typed arrays 3b-11.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 993/993 passing.** Phase 3b (ES2015+ core) is complete.
+
+(152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1 + 21 JS arrows 3b-2 + 25 JS templates 3b-3 + 38 JS destructuring 3b-4 + 42 JS defaults/rest/spread 3b-5 + 28 JS classes 3b-6 + 24 JS iterators/for-of 3b-7a + 21 JS generators 3b-7b + 35 JS collections 3b-8 + 27 JS promises 3b-9 + 25 JS async/await 3b-10 + 38 JS typed arrays 3b-11 + 19 JS modules 3b-12.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 

@@ -231,7 +231,274 @@ public sealed class JsParser
             Consume(); // async
             return ParseFunctionDeclaration(isAsync: true);
         }
+        if (Current.Kind == JsTokenKind.KeywordImport)
+        {
+            return ParseImportDeclaration();
+        }
+        if (Current.Kind == JsTokenKind.KeywordExport)
+        {
+            return ParseExportDeclaration();
+        }
         return ParseStatement();
+    }
+
+    // -------------------------------------------------------------------
+    // ES2015 modules — import / export
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// <c>import X from "mod";</c>,
+    /// <c>import { a, b as c } from "mod";</c>,
+    /// <c>import * as ns from "mod";</c>,
+    /// <c>import X, { a } from "mod";</c>,
+    /// <c>import "mod";</c> (side-effect only).
+    /// </summary>
+    private ImportDeclaration ParseImportDeclaration()
+    {
+        int start = Current.Start;
+        Consume(); // import
+        var specifiers = new List<ImportSpecifier>();
+        bool expectFrom = false;
+
+        // Side-effect-only form: `import "./mod";`
+        if (Current.Kind == JsTokenKind.StringLiteral)
+        {
+            var sourceTok = Consume();
+            ConsumeSemicolon();
+            return new ImportDeclaration(start, sourceTok.End, specifiers, sourceTok.StringValue!);
+        }
+
+        // Default import (binding name before anything else).
+        if (Current.Kind == JsTokenKind.Identifier)
+        {
+            var defTok = Consume();
+            specifiers.Add(new ImportSpecifier(
+                defTok.Start, defTok.End,
+                imported: "default",
+                local: defTok.StringValue!,
+                isDefault: true));
+            // Optionally followed by `, { ... }` or `, * as ns`.
+            if (Current.Kind == JsTokenKind.Comma)
+            {
+                Consume();
+            }
+            else
+            {
+                expectFrom = true;
+            }
+        }
+
+        if (!expectFrom)
+        {
+            // Namespace import: `* as ns`
+            if (Current.Kind == JsTokenKind.Star)
+            {
+                Consume();
+                ExpectContextualKeyword("as", "import namespace");
+                if (Current.Kind != JsTokenKind.Identifier)
+                {
+                    throw new JsParseException(
+                        "Expected identifier after 'as' in import",
+                        Current.Start);
+                }
+                var nsTok = Consume();
+                specifiers.Add(new ImportSpecifier(
+                    nsTok.Start, nsTok.End,
+                    imported: "*",
+                    local: nsTok.StringValue!,
+                    isNamespace: true));
+            }
+            // Named-imports list: `{ a, b as c }`
+            else if (Current.Kind == JsTokenKind.LeftBrace)
+            {
+                Consume();
+                while (Current.Kind != JsTokenKind.RightBrace &&
+                       Current.Kind != JsTokenKind.EndOfFile)
+                {
+                    if (Current.Kind != JsTokenKind.Identifier)
+                    {
+                        throw new JsParseException(
+                            $"Expected identifier in named import, got {Current.Kind}",
+                            Current.Start);
+                    }
+                    var importedTok = Consume();
+                    string local = importedTok.StringValue!;
+                    if (Current.Kind == JsTokenKind.Identifier &&
+                        Current.StringValue == "as")
+                    {
+                        Consume();
+                        if (Current.Kind != JsTokenKind.Identifier)
+                        {
+                            throw new JsParseException(
+                                "Expected identifier after 'as' in import",
+                                Current.Start);
+                        }
+                        var aliasTok = Consume();
+                        local = aliasTok.StringValue!;
+                    }
+                    specifiers.Add(new ImportSpecifier(
+                        importedTok.Start, importedTok.End,
+                        imported: importedTok.StringValue!,
+                        local: local));
+                    if (Current.Kind == JsTokenKind.Comma) Consume();
+                    else break;
+                }
+                Expect(JsTokenKind.RightBrace, "named imports");
+            }
+        }
+
+        ExpectContextualKeyword("from", "import");
+        if (Current.Kind != JsTokenKind.StringLiteral)
+        {
+            throw new JsParseException(
+                "Expected module specifier string after 'from'",
+                Current.Start);
+        }
+        var srcTok = Consume();
+        int end = srcTok.End;
+        ConsumeSemicolon();
+        return new ImportDeclaration(start, end, specifiers, srcTok.StringValue!);
+    }
+
+    private void ExpectContextualKeyword(string keyword, string context)
+    {
+        if (Current.Kind != JsTokenKind.Identifier ||
+            Current.StringValue != keyword)
+        {
+            throw new JsParseException(
+                $"Expected '{keyword}' in {context}, got {Current.Kind}",
+                Current.Start);
+        }
+        Consume();
+    }
+
+    /// <summary>
+    /// <c>export const x = 1;</c>, <c>export function f() {}</c>,
+    /// <c>export class C {}</c>, <c>export { a, b as c };</c>, or
+    /// <c>export default expr;</c>. Re-export forms
+    /// (<c>export * from ...</c>, <c>export { a } from ...</c>)
+    /// are not yet supported.
+    /// </summary>
+    private Statement ParseExportDeclaration()
+    {
+        int start = Current.Start;
+        Consume(); // export
+
+        // Default export
+        if (Current.Kind == JsTokenKind.KeywordDefault)
+        {
+            Consume();
+            JsNode payload;
+            if (Current.Kind == JsTokenKind.KeywordFunction)
+            {
+                // `export default function X()` is a named
+                // declaration; `export default function ()`
+                // is an anonymous function expression — in
+                // both cases the exported value is the
+                // function itself. If the next token after
+                // `function` is a bare `(`, dispatch to the
+                // expression form.
+                if (Peek(1).Kind == JsTokenKind.LeftParen ||
+                    Peek(1).Kind == JsTokenKind.Star && Peek(2).Kind == JsTokenKind.LeftParen)
+                {
+                    payload = ParseFunctionExpression();
+                }
+                else
+                {
+                    payload = ParseFunctionDeclaration();
+                }
+            }
+            else if (Current.Kind == JsTokenKind.KeywordClass)
+            {
+                // Anonymous class: `export default class {}`
+                if (Peek(1).Kind == JsTokenKind.LeftBrace ||
+                    Peek(1).Kind == JsTokenKind.KeywordExtends)
+                {
+                    payload = ParseClassExpression();
+                }
+                else
+                {
+                    payload = ParseClassDeclaration();
+                }
+            }
+            else
+            {
+                var expr = ParseAssignmentExpression(allowIn: true);
+                ConsumeSemicolon();
+                payload = expr;
+            }
+            return new ExportDefaultDeclaration(start, payload.End, payload);
+        }
+
+        // `export { a, b as c };` specifier list
+        if (Current.Kind == JsTokenKind.LeftBrace)
+        {
+            Consume();
+            var specs = new List<ExportSpecifier>();
+            while (Current.Kind != JsTokenKind.RightBrace &&
+                   Current.Kind != JsTokenKind.EndOfFile)
+            {
+                if (Current.Kind != JsTokenKind.Identifier)
+                {
+                    throw new JsParseException(
+                        $"Expected identifier in export list, got {Current.Kind}",
+                        Current.Start);
+                }
+                var localTok = Consume();
+                string exported = localTok.StringValue!;
+                if (Current.Kind == JsTokenKind.Identifier &&
+                    Current.StringValue == "as")
+                {
+                    Consume();
+                    if (Current.Kind != JsTokenKind.Identifier)
+                    {
+                        throw new JsParseException(
+                            "Expected identifier after 'as' in export",
+                            Current.Start);
+                    }
+                    var aliasTok = Consume();
+                    exported = aliasTok.StringValue!;
+                }
+                specs.Add(new ExportSpecifier(
+                    localTok.Start, localTok.End,
+                    local: localTok.StringValue!,
+                    exported: exported));
+                if (Current.Kind == JsTokenKind.Comma) Consume();
+                else break;
+            }
+            int braceEnd = Current.End;
+            Expect(JsTokenKind.RightBrace, "export specifiers");
+            ConsumeSemicolon();
+            return new ExportNamedDeclaration(start, braceEnd, declaration: null, specs);
+        }
+
+        // `export <declaration>`: var, let, const, function, class
+        Statement decl;
+        if (Current.Kind == JsTokenKind.KeywordVar ||
+            Current.Kind == JsTokenKind.KeywordLet ||
+            Current.Kind == JsTokenKind.KeywordConst)
+        {
+            decl = ParseVariableStatement();
+        }
+        else if (Current.Kind == JsTokenKind.KeywordFunction)
+        {
+            decl = ParseFunctionDeclaration();
+        }
+        else if (Current.Kind == JsTokenKind.KeywordClass)
+        {
+            decl = ParseClassDeclaration();
+        }
+        else
+        {
+            throw new JsParseException(
+                $"Unsupported export form starting with {Current.Kind}",
+                Current.Start);
+        }
+        return new ExportNamedDeclaration(
+            start,
+            decl.End,
+            declaration: decl,
+            specifiers: new List<ExportSpecifier>());
     }
 
     private Statement ParseStatement()

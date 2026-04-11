@@ -357,6 +357,80 @@ public sealed class JsVM
     }
 
     /// <summary>
+    /// Run an ES2015 module chunk. Unlike
+    /// <see cref="RunChunk"/>, this pushes a fresh
+    /// module-local env chained above the engine's globals
+    /// so module-level let/const/var bindings don't leak
+    /// into the globals, and pre-populates that env with the
+    /// import bindings the loader resolved plus the
+    /// synthetic <c>$exports</c> binding pointing at the
+    /// module's exports namespace.
+    ///
+    /// The VM's globals env is restored on exit so other
+    /// scripts sharing the same engine aren't disturbed.
+    /// </summary>
+    public void RunModuleChunk(
+        Chunk chunk,
+        Dictionary<string, object?> importBindings,
+        JsObject exportsObject)
+    {
+        // Save and build the module-scope env.
+        var savedEnv = _env;
+        try
+        {
+            // Walk up to the globals env so the new module
+            // env is chained correctly above it.
+            var rootEnv = _env;
+            while (rootEnv.Parent is not null) rootEnv = rootEnv.Parent;
+            var moduleEnv = new JsEnvironment(rootEnv);
+            // Seed imports.
+            foreach (var kv in importBindings)
+            {
+                moduleEnv.Bindings[kv.Key] = kv.Value;
+            }
+            // Seed the exports object binding — the compiler
+            // rewrites every `export ...` form to store
+            // into `$exports[...]`.
+            moduleEnv.Bindings["$exports"] = exportsObject;
+
+            _code = chunk.Code;
+            _constants = chunk.Constants;
+            _names = chunk.Names;
+            _ip = 0;
+            _sp = 0;
+            _halted = false;
+            _handlers.Clear();
+            _frames.Clear();
+            _pendingException = null;
+            _this = JsValue.Undefined;
+            _env = moduleEnv;
+            try
+            {
+                RunLoop(stopFrameDepth: -1);
+            }
+            catch (JsThrowSignal sig)
+            {
+                throw new JsRuntimeException(
+                    $"Uncaught {JsValue.ToJsString(sig.JsValue)}",
+                    sig.JsValue);
+            }
+        }
+        finally
+        {
+            _env = savedEnv;
+            // Reset IP / stack / frames back to an idle
+            // state so a subsequent Evaluate on this engine
+            // doesn't trip over leftover per-module state.
+            _ip = 0;
+            _sp = 0;
+            _halted = false;
+            _handlers.Clear();
+            _frames.Clear();
+            _pendingException = null;
+        }
+    }
+
+    /// <summary>
     /// Invoke a JS function synchronously from a native built-in.
     /// Used by callback-taking methods like
     /// <c>Array.prototype.forEach</c> to run a user-supplied
