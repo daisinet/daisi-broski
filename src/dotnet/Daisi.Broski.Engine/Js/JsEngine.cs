@@ -116,6 +116,22 @@ public sealed class JsEngine
     public JsObject PromisePrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// Module cache keyed by resolved URL. Populated and
+    /// read by <see cref="ImportModule"/>. A module is
+    /// inserted into the cache as soon as it is created
+    /// (before evaluation starts) so subsequent imports of
+    /// the same URL share the same exports object.
+    /// </summary>
+    private readonly Dictionary<string, JsModule> _moduleCache = new();
+
+    /// <summary>
+    /// Host-provided hook that turns a specifier +
+    /// referrer URL into a resolved URL + source text.
+    /// Set this before calling <see cref="ImportModule"/>.
+    /// </summary>
+    public ModuleResolver? ModuleResolver { get; set; }
+
+    /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
     /// so scheduled callbacks see bindings established by the
@@ -273,5 +289,104 @@ public sealed class JsEngine
                 $"Uncaught {JsValue.ToJsString(sig.JsValue)}",
                 sig.JsValue);
         }
+    }
+
+    /// <summary>
+    /// Top-level entry point for loading an ES2015 module.
+    /// Resolves <paramref name="specifier"/> via the
+    /// configured <see cref="ModuleResolver"/>, parses it,
+    /// loads its imports recursively, and evaluates it. The
+    /// returned <see cref="JsModule.Exports"/> object is the
+    /// module's exports namespace — its own properties are
+    /// the named exports plus optional <c>default</c>.
+    ///
+    /// Modules are cached by resolved URL, so a subsequent
+    /// import of the same specifier returns the same
+    /// <see cref="JsModule"/> without re-running the body.
+    /// </summary>
+    public JsModule ImportModule(string specifier, string? referrerUrl = null)
+    {
+        if (ModuleResolver is null)
+        {
+            throw new InvalidOperationException(
+                "JsEngine.ModuleResolver must be set before importing modules");
+        }
+        var resolved = ModuleResolver(specifier, referrerUrl);
+        if (resolved is null)
+        {
+            throw new JsRuntimeException(
+                $"Cannot find module '{specifier}'",
+                MakeTypeError($"Cannot find module '{specifier}'"));
+        }
+        var r = resolved.Value;
+        if (_moduleCache.TryGetValue(r.Url, out var cached))
+        {
+            // Even if the cached module is still loading
+            // (i.e., we're in the middle of a cycle),
+            // return it so imports resolve. Bindings that
+            // haven't been set yet will be undefined — the
+            // caller is responsible for not accessing them
+            // until after evaluation completes.
+            return cached;
+        }
+
+        var module = new JsModule(
+            url: r.Url,
+            exports: new JsObject { Prototype = ObjectPrototype });
+        _moduleCache[r.Url] = module;
+
+        // Parse.
+        var program = new JsParser(r.Source).ParseProgram();
+
+        // Recursively resolve imports — each one becomes
+        // an evaluated dependency module whose exports we
+        // copy into the current module's initial bindings.
+        var importBindings = new Dictionary<string, object?>();
+        foreach (var stmt in program.Body)
+        {
+            if (stmt is ImportDeclaration imp)
+            {
+                var dep = ImportModule(imp.Source, r.Url);
+                foreach (var spec in imp.Specifiers)
+                {
+                    if (spec.IsNamespace)
+                    {
+                        importBindings[spec.Local] = dep.Exports;
+                    }
+                    else if (spec.IsDefault)
+                    {
+                        importBindings[spec.Local] = dep.Exports.Get("default");
+                    }
+                    else
+                    {
+                        importBindings[spec.Local] = dep.Exports.Get(spec.Imported);
+                    }
+                }
+            }
+        }
+
+        // Compile in module mode: exports are redirected to
+        // module.Exports, and imported bindings are installed
+        // in a fresh module-local env chained above globals.
+        module.State = ModuleState.Evaluating;
+        var compiler = new JsCompiler();
+        var chunk = compiler.CompileModule(program, importBindings);
+
+        // Install the module's locals-env on the VM, with
+        // `$exports` pre-bound so export-rewriting can reach
+        // it by name. We temporarily swap in a fresh env
+        // chained above globals; after evaluation the old
+        // env is restored so unrelated scripts on the same
+        // engine aren't disturbed.
+        Vm.RunModuleChunk(chunk, importBindings, module.Exports);
+        module.State = ModuleState.Evaluated;
+        return module;
+    }
+
+    private JsObject MakeTypeError(string message)
+    {
+        var err = new JsObject { Prototype = TypeErrorPrototype };
+        err.Set("message", message);
+        return err;
     }
 }

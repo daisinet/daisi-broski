@@ -416,6 +416,121 @@ public sealed class AwaitExpression : Expression
     }
 }
 
+// ---------------------------------------------------------------------------
+// ES2015 modules — import / export declarations
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// One specifier inside an <c>import { a, b as c } from "..."</c>
+/// list. <see cref="Imported"/> is the name as it appears in
+/// the source module; <see cref="Local"/> is the local name
+/// it's bound to in the importing module.
+/// </summary>
+public sealed class ImportSpecifier : JsNode
+{
+    public string Imported { get; }
+    public string Local { get; }
+    /// <summary><c>true</c> for <c>import X from "..."</c>
+    /// (default import). <see cref="Imported"/> is unused
+    /// in that case; the value comes from the source
+    /// module's <c>default</c> export.</summary>
+    public bool IsDefault { get; }
+    /// <summary><c>true</c> for
+    /// <c>import * as ns from "..."</c>. The local name
+    /// binds the entire exports namespace object.</summary>
+    public bool IsNamespace { get; }
+
+    public ImportSpecifier(
+        int start,
+        int end,
+        string imported,
+        string local,
+        bool isDefault = false,
+        bool isNamespace = false) : base(start, end)
+    {
+        Imported = imported;
+        Local = local;
+        IsDefault = isDefault;
+        IsNamespace = isNamespace;
+    }
+}
+
+/// <summary>
+/// ES2015 <c>import ... from "source"</c> declaration. A
+/// zero-specifier import (<c>import "./side-effects"</c>)
+/// has an empty <see cref="Specifiers"/> list and still
+/// causes the module loader to evaluate the source module
+/// for its side effects.
+/// </summary>
+public sealed class ImportDeclaration : Statement
+{
+    public IReadOnlyList<ImportSpecifier> Specifiers { get; }
+    public string Source { get; }
+
+    public ImportDeclaration(
+        int start,
+        int end,
+        IReadOnlyList<ImportSpecifier> specifiers,
+        string source) : base(start, end)
+    {
+        Specifiers = specifiers;
+        Source = source;
+    }
+}
+
+public sealed class ExportSpecifier : JsNode
+{
+    public string Local { get; }
+    public string Exported { get; }
+
+    public ExportSpecifier(int start, int end, string local, string exported) : base(start, end)
+    {
+        Local = local;
+        Exported = exported;
+    }
+}
+
+/// <summary>
+/// <c>export const x = 1;</c>, <c>export function f() {}</c>,
+/// <c>export class C {}</c>, or a specifier list
+/// <c>export { a, b as c };</c>. When
+/// <see cref="Declaration"/> is non-null,
+/// <see cref="Specifiers"/> is empty and the names introduced
+/// by the declaration are exported under those same names.
+/// When <see cref="Specifiers"/> is non-empty,
+/// <see cref="Declaration"/> is null and the specifier list
+/// re-exports already-bound identifiers.
+/// </summary>
+public sealed class ExportNamedDeclaration : Statement
+{
+    public Statement? Declaration { get; }
+    public IReadOnlyList<ExportSpecifier> Specifiers { get; }
+
+    public ExportNamedDeclaration(
+        int start,
+        int end,
+        Statement? declaration,
+        IReadOnlyList<ExportSpecifier> specifiers) : base(start, end)
+    {
+        Declaration = declaration;
+        Specifiers = specifiers;
+    }
+}
+
+/// <summary>
+/// <c>export default expr;</c> — binds the expression's
+/// value to the module's <c>default</c> export slot.
+/// </summary>
+public sealed class ExportDefaultDeclaration : Statement
+{
+    public JsNode Declaration { get; }
+
+    public ExportDefaultDeclaration(int start, int end, JsNode declaration) : base(start, end)
+    {
+        Declaration = declaration;
+    }
+}
+
 /// <summary>
 /// ES2015 <c>yield</c> expression — only legal inside a
 /// generator function body. May appear with an argument
