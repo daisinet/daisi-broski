@@ -179,6 +179,35 @@ public sealed class JsEngine
 
         Builtins.Install(this);
 
+        // Hidden global used by the compiler to implement
+        // dynamic `import('./mod')`. Not enumerable under
+        // any user-visible name, just under a reserved
+        // prefix the parser rewrites `import(...)` to.
+        Globals["$importModule"] = new JsFunction("$importModule", (thisVal, args) =>
+        {
+            var specifier = args.Count > 0 ? JsValue.ToJsString(args[0]) : "";
+            var promise = new JsPromise(this);
+            try
+            {
+                var mod = ImportModule(specifier);
+                promise.Resolve(mod.Exports);
+            }
+            catch (JsRuntimeException rex)
+            {
+                promise.Reject(rex.JsValue);
+            }
+            catch (Exception ex)
+            {
+                // Host-side errors (missing resolver etc.)
+                // surface as rejected promises.
+                var err = new JsObject { Prototype = ErrorPrototype };
+                err.Set("name", "Error");
+                err.Set("message", ex.Message);
+                promise.Reject(err);
+            }
+            return promise;
+        });
+
         // Post-install: set [[Prototype]] = FunctionPrototype on
         // every JsFunction reachable from the engine so
         // `fn.call(...)` / `fn.apply(...)` / `fn.bind(...)`
@@ -379,6 +408,46 @@ public sealed class JsEngine
         // env is restored so unrelated scripts on the same
         // engine aren't disturbed.
         Vm.RunModuleChunk(chunk, importBindings, module.Exports);
+
+        // Re-exports: walked after the module body runs so
+        // any declarations the body added are visible and
+        // so re-exports from other modules appear on our
+        // exports object. These are pure data copies.
+        foreach (var stmt in program.Body)
+        {
+            if (stmt is ExportNamedDeclaration enx && enx.Source is not null)
+            {
+                var dep = ImportModule(enx.Source, r.Url);
+                foreach (var spec in enx.Specifiers)
+                {
+                    module.Exports.Set(spec.Exported, dep.Exports.Get(spec.Local));
+                }
+            }
+            else if (stmt is ExportAllDeclaration eax)
+            {
+                var dep = ImportModule(eax.Source, r.Url);
+                if (eax.Namespace is not null)
+                {
+                    // `export * as ns from './mod'` — wraps
+                    // the whole namespace object under a
+                    // single name.
+                    module.Exports.Set(eax.Namespace, dep.Exports);
+                }
+                else
+                {
+                    // `export * from './mod'` — copy every
+                    // own enumerable key except `default`
+                    // (the spec excludes it from wildcard
+                    // re-export).
+                    foreach (var key in dep.Exports.OwnKeys())
+                    {
+                        if (key == "default") continue;
+                        module.Exports.Set(key, dep.Exports.Get(key));
+                    }
+                }
+            }
+        }
+
         module.State = ModuleState.Evaluated;
         return module;
     }

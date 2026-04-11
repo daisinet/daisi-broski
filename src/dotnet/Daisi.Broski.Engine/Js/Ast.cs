@@ -517,15 +517,49 @@ public sealed class ExportNamedDeclaration : Statement
 {
     public Statement? Declaration { get; }
     public IReadOnlyList<ExportSpecifier> Specifiers { get; }
+    /// <summary>
+    /// Source module for a re-export of the form
+    /// <c>export { a, b as c } from './mod'</c>. Null for
+    /// the non-re-export forms. The named specifiers still
+    /// live in <see cref="Specifiers"/>; the loader reads
+    /// each specifier's <c>Local</c> from the source
+    /// module's exports and exports it under the
+    /// <c>Exported</c> name.
+    /// </summary>
+    public string? Source { get; }
 
     public ExportNamedDeclaration(
         int start,
         int end,
         Statement? declaration,
-        IReadOnlyList<ExportSpecifier> specifiers) : base(start, end)
+        IReadOnlyList<ExportSpecifier> specifiers,
+        string? source = null) : base(start, end)
     {
         Declaration = declaration;
         Specifiers = specifiers;
+        Source = source;
+    }
+}
+
+/// <summary>
+/// <c>export * from './mod'</c> / <c>export * as ns from './mod'</c>.
+/// The former copies every named export from the source
+/// module into the current module's exports; the latter
+/// wraps them under <see cref="Namespace"/>.
+/// </summary>
+public sealed class ExportAllDeclaration : Statement
+{
+    public string Source { get; }
+    /// <summary>
+    /// <c>null</c> for a wildcard re-export; a string for
+    /// <c>export * as ns from '...'</c>.
+    /// </summary>
+    public string? Namespace { get; }
+
+    public ExportAllDeclaration(int start, int end, string source, string? @namespace) : base(start, end)
+    {
+        Source = source;
+        Namespace = @namespace;
     }
 }
 

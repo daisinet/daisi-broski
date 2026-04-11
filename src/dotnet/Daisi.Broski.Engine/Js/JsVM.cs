@@ -374,23 +374,37 @@ public sealed class JsVM
         Dictionary<string, object?> importBindings,
         JsObject exportsObject)
     {
-        // Save and build the module-scope env.
+        // Save the full VM state — module evaluation can
+        // happen mid-script (dynamic `import()`), so we
+        // can't just clobber _code / _ip / _stack / etc.
+        var savedCode = _code;
+        var savedConstants = _constants;
+        var savedNames = _names;
+        int savedIp = _ip;
+        int savedSp = _sp;
         var savedEnv = _env;
+        var savedThis = _this;
+        var savedHalted = _halted;
+        var savedCurrentFn = _currentFn;
+        var savedPendingException = _pendingException;
+        // Snapshot frames and handlers so RunLoop can push
+        // new ones on its own stack slice.
+        int savedFramesCount = _frames.Count;
+        int savedHandlersCount = _handlers.Count;
+        var savedStackSnapshot = new object?[_sp];
+        System.Array.Copy(_stack, savedStackSnapshot, _sp);
+
         try
         {
             // Walk up to the globals env so the new module
             // env is chained correctly above it.
-            var rootEnv = _env;
+            var rootEnv = savedEnv;
             while (rootEnv.Parent is not null) rootEnv = rootEnv.Parent;
             var moduleEnv = new JsEnvironment(rootEnv);
-            // Seed imports.
             foreach (var kv in importBindings)
             {
                 moduleEnv.Bindings[kv.Key] = kv.Value;
             }
-            // Seed the exports object binding — the compiler
-            // rewrites every `export ...` form to store
-            // into `$exports[...]`.
             moduleEnv.Bindings["$exports"] = exportsObject;
 
             _code = chunk.Code;
@@ -399,11 +413,11 @@ public sealed class JsVM
             _ip = 0;
             _sp = 0;
             _halted = false;
-            _handlers.Clear();
-            _frames.Clear();
             _pendingException = null;
             _this = JsValue.Undefined;
             _env = moduleEnv;
+            _currentFn = null;
+
             try
             {
                 RunLoop(stopFrameDepth: -1);
@@ -417,16 +431,23 @@ public sealed class JsVM
         }
         finally
         {
+            // Pop any frames / handlers the module pushed
+            // and didn't cleanly retire.
+            while (_frames.Count > savedFramesCount) _frames.Pop();
+            while (_handlers.Count > savedHandlersCount) _handlers.Pop();
+
+            // Restore caller state verbatim.
+            _code = savedCode;
+            _constants = savedConstants;
+            _names = savedNames;
+            _ip = savedIp;
+            _sp = savedSp;
             _env = savedEnv;
-            // Reset IP / stack / frames back to an idle
-            // state so a subsequent Evaluate on this engine
-            // doesn't trip over leftover per-module state.
-            _ip = 0;
-            _sp = 0;
-            _halted = false;
-            _handlers.Clear();
-            _frames.Clear();
-            _pendingException = null;
+            _this = savedThis;
+            _halted = savedHalted;
+            _currentFn = savedCurrentFn;
+            _pendingException = savedPendingException;
+            System.Array.Copy(savedStackSnapshot, _stack, savedSp);
         }
     }
 

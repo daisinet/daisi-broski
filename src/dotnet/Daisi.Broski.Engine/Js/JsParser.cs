@@ -233,6 +233,14 @@ public sealed class JsParser
         }
         if (Current.Kind == JsTokenKind.KeywordImport)
         {
+            // Static `import ... from '...'` is a source
+            // element; dynamic `import(specifier)` is an
+            // expression that happens to start with the
+            // keyword. Disambiguate by peeking.
+            if (Peek(1).Kind == JsTokenKind.LeftParen)
+            {
+                return ParseStatement();
+            }
             return ParseImportDeclaration();
         }
         if (Current.Kind == JsTokenKind.KeywordExport)
@@ -430,7 +438,38 @@ public sealed class JsParser
             return new ExportDefaultDeclaration(start, payload.End, payload);
         }
 
-        // `export { a, b as c };` specifier list
+        // `export * from '...'` or `export * as ns from '...'`.
+        if (Current.Kind == JsTokenKind.Star)
+        {
+            Consume();
+            string? nsName = null;
+            if (Current.Kind == JsTokenKind.Identifier && Current.StringValue == "as")
+            {
+                Consume();
+                if (Current.Kind != JsTokenKind.Identifier)
+                {
+                    throw new JsParseException(
+                        "Expected identifier after 'as' in export",
+                        Current.Start);
+                }
+                var nsTok = Consume();
+                nsName = nsTok.StringValue!;
+            }
+            ExpectContextualKeyword("from", "export *");
+            if (Current.Kind != JsTokenKind.StringLiteral)
+            {
+                throw new JsParseException(
+                    "Expected module specifier after 'from'",
+                    Current.Start);
+            }
+            var srcTok = Consume();
+            int starEnd = srcTok.End;
+            ConsumeSemicolon();
+            return new ExportAllDeclaration(start, starEnd, srcTok.StringValue!, nsName);
+        }
+
+        // `export { a, b as c };` specifier list (optionally
+        // `export { ... } from './mod'`).
         if (Current.Kind == JsTokenKind.LeftBrace)
         {
             Consume();
@@ -438,14 +477,31 @@ public sealed class JsParser
             while (Current.Kind != JsTokenKind.RightBrace &&
                    Current.Kind != JsTokenKind.EndOfFile)
             {
-                if (Current.Kind != JsTokenKind.Identifier)
+                // `default` is a valid source name in a
+                // re-export: `export { default as x } from '...'`.
+                string localName;
+                int localStart, localEnd;
+                if (Current.Kind == JsTokenKind.KeywordDefault)
+                {
+                    var defTok = Consume();
+                    localName = "default";
+                    localStart = defTok.Start;
+                    localEnd = defTok.End;
+                }
+                else if (Current.Kind == JsTokenKind.Identifier)
+                {
+                    var localTok = Consume();
+                    localName = localTok.StringValue!;
+                    localStart = localTok.Start;
+                    localEnd = localTok.End;
+                }
+                else
                 {
                     throw new JsParseException(
                         $"Expected identifier in export list, got {Current.Kind}",
                         Current.Start);
                 }
-                var localTok = Consume();
-                string exported = localTok.StringValue!;
+                string exported = localName;
                 if (Current.Kind == JsTokenKind.Identifier &&
                     Current.StringValue == "as")
                 {
@@ -460,16 +516,33 @@ public sealed class JsParser
                     exported = aliasTok.StringValue!;
                 }
                 specs.Add(new ExportSpecifier(
-                    localTok.Start, localTok.End,
-                    local: localTok.StringValue!,
+                    localStart, localEnd,
+                    local: localName,
                     exported: exported));
                 if (Current.Kind == JsTokenKind.Comma) Consume();
                 else break;
             }
             int braceEnd = Current.End;
             Expect(JsTokenKind.RightBrace, "export specifiers");
+
+            // Optional re-export source: `export { ... } from './mod'`.
+            string? source = null;
+            if (Current.Kind == JsTokenKind.Identifier && Current.StringValue == "from")
+            {
+                Consume();
+                if (Current.Kind != JsTokenKind.StringLiteral)
+                {
+                    throw new JsParseException(
+                        "Expected module specifier after 'from'",
+                        Current.Start);
+                }
+                var srcTok = Consume();
+                source = srcTok.StringValue!;
+                braceEnd = srcTok.End;
+            }
+
             ConsumeSemicolon();
-            return new ExportNamedDeclaration(start, braceEnd, declaration: null, specs);
+            return new ExportNamedDeclaration(start, braceEnd, declaration: null, specs, source);
         }
 
         // `export <declaration>`: var, let, const, function, class
@@ -2097,6 +2170,27 @@ public sealed class JsParser
             case JsTokenKind.KeywordSuper:
                 Consume();
                 return new Super(tok.Start, tok.End);
+
+            case JsTokenKind.KeywordImport when Peek(1).Kind == JsTokenKind.LeftParen:
+                {
+                    // Dynamic `import(specifier)`. Lowered
+                    // to a call to a hidden built-in
+                    // `$importModule` that returns a Promise
+                    // resolving to the target module's
+                    // exports namespace.
+                    int importStart = Current.Start;
+                    Consume(); // import
+                    Expect(JsTokenKind.LeftParen, "import call");
+                    var specArg = ParseAssignmentExpression(allowIn: true);
+                    int importEnd = Current.End;
+                    Expect(JsTokenKind.RightParen, "import call");
+                    var callee = new Identifier(importStart, importStart + 6, "$importModule");
+                    return new CallExpression(
+                        importStart,
+                        importEnd,
+                        callee,
+                        new List<Expression> { specArg });
+                }
 
             case JsTokenKind.NoSubstitutionTemplate:
                 Consume();

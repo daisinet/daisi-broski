@@ -240,6 +240,12 @@ public sealed class JsCompiler
     /// </summary>
     private void CompileExportNamed(ExportNamedDeclaration ex)
     {
+        // Re-export forms (`export { a } from './mod'`) are
+        // handled by the engine's module loader after the
+        // module body finishes running — nothing to emit
+        // at compile time.
+        if (ex.Source is not null) return;
+
         if (ex.Declaration is not null)
         {
             // Compile the underlying declaration first — it
@@ -948,6 +954,12 @@ public sealed class JsCompiler
 
             case ExportDefaultDeclaration exportDefault:
                 CompileExportDefault(exportDefault);
+                return;
+
+            case ExportAllDeclaration:
+                // `export * from '...'` — handled entirely
+                // by the engine's module loader; no bytecode
+                // emitted here.
                 return;
 
             case ClassDeclaration cd:

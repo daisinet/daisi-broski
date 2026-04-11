@@ -56,7 +56,7 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 1064/1064 passing.** Phase 3b's main slices (3b-1 through 3b-12) are complete; polish slices (3b-13+) are closing out the deferrals. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1073/1073 passing.** Phase 3b's main slices (3b-1 through 3b-12) are complete; polish slices (3b-13+) are closing out the deferrals. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
