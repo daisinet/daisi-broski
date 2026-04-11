@@ -316,11 +316,19 @@ public sealed class JsParser
 
     private VariableDeclarator ParseVariableDeclarator(bool allowIn)
     {
-        var id = ParseBindingIdentifier();
+        var id = ParseBindingTarget();
         Expression? init = null;
         if (Match(JsTokenKind.Assign))
         {
             init = ParseAssignmentExpression(allowIn);
+        }
+        else if (id is not Identifier)
+        {
+            // ES2015: BindingPattern in a VariableDeclaration
+            // requires an initializer. Simple identifiers don't.
+            throw new JsParseException(
+                "Destructuring declaration requires an initializer",
+                id.Start);
         }
         int end = init?.End ?? id.End;
         return new VariableDeclarator(id.Start, end, id, init);
@@ -682,6 +690,123 @@ public sealed class JsParser
         }
         var tok = Consume();
         return new Identifier(tok.Start, tok.End, tok.StringValue!);
+    }
+
+    /// <summary>
+    /// Binding target — either a simple identifier or a
+    /// destructuring pattern (<c>{...}</c> or <c>[...]</c>).
+    /// Returned as a <see cref="JsNode"/> because the three
+    /// concrete node types don't share a closer common base.
+    /// </summary>
+    private JsNode ParseBindingTarget()
+    {
+        return Current.Kind switch
+        {
+            JsTokenKind.LeftBrace => ParseObjectPattern(),
+            JsTokenKind.LeftBracket => ParseArrayPattern(),
+            _ => ParseBindingIdentifier(),
+        };
+    }
+
+    /// <summary>
+    /// <c>{ a, b: x, c = 1, d: { e } = def }</c>. Shorthand
+    /// (<c>{a}</c>) becomes a property whose Key equals its
+    /// target name. Defaults are stored on the property, not
+    /// on the inner target, so that nested patterns can still
+    /// be destructured against the resolved value.
+    /// </summary>
+    private ObjectPattern ParseObjectPattern()
+    {
+        int start = Current.Start;
+        Expect(JsTokenKind.LeftBrace, "object pattern");
+        var props = new List<ObjectPatternProperty>();
+        if (Current.Kind != JsTokenKind.RightBrace)
+        {
+            props.Add(ParseObjectPatternProperty());
+            while (Match(JsTokenKind.Comma))
+            {
+                // Trailing comma allowed.
+                if (Current.Kind == JsTokenKind.RightBrace) break;
+                props.Add(ParseObjectPatternProperty());
+            }
+        }
+        int end = Current.End;
+        Expect(JsTokenKind.RightBrace, "object pattern");
+        return new ObjectPattern(start, end, props);
+    }
+
+    private ObjectPatternProperty ParseObjectPatternProperty()
+    {
+        int start = Current.Start;
+        if (Current.Kind != JsTokenKind.Identifier)
+        {
+            throw new JsParseException(
+                $"Expected identifier in object pattern, got {Current.Kind}",
+                Current.Start);
+        }
+        var keyTok = Consume();
+        string key = keyTok.StringValue!;
+        JsNode target;
+        if (Match(JsTokenKind.Colon))
+        {
+            // Rename or nested pattern: { key: target }
+            target = ParseBindingTarget();
+        }
+        else
+        {
+            // Shorthand: { key } — target is an Identifier with same name.
+            target = new Identifier(keyTok.Start, keyTok.End, key);
+        }
+        Expression? @default = null;
+        if (Match(JsTokenKind.Assign))
+        {
+            @default = ParseAssignmentExpression(allowIn: true);
+        }
+        int end = @default?.End ?? target.End;
+        return new ObjectPatternProperty(start, end, key, target, @default);
+    }
+
+    /// <summary>
+    /// <c>[ a, , b = 1, [c, d] ]</c>. Elisions (missing
+    /// elements between commas) produce <c>null</c> entries
+    /// in the element list.
+    /// </summary>
+    private ArrayPattern ParseArrayPattern()
+    {
+        int start = Current.Start;
+        Expect(JsTokenKind.LeftBracket, "array pattern");
+        var elements = new List<ArrayPatternElement?>();
+        while (Current.Kind != JsTokenKind.RightBracket)
+        {
+            if (Current.Kind == JsTokenKind.Comma)
+            {
+                // Elision — advance past the comma with a null slot.
+                elements.Add(null);
+                Consume();
+                continue;
+            }
+            elements.Add(ParseArrayPatternElement());
+            if (Current.Kind != JsTokenKind.RightBracket)
+            {
+                Expect(JsTokenKind.Comma, "array pattern");
+            }
+        }
+        int end = Current.End;
+        Expect(JsTokenKind.RightBracket, "array pattern");
+        return new ArrayPattern(start, end, elements);
+    }
+
+    private ArrayPatternElement ParseArrayPatternElement()
+    {
+        int start = Current.Start;
+        var target = ParseBindingTarget();
+        Expression? @default = null;
+        if (Match(JsTokenKind.Assign))
+        {
+            @default = ParseAssignmentExpression(allowIn: true);
+        }
+        int end = @default?.End ?? target.End;
+        return new ArrayPatternElement(start, end, target, @default);
     }
 
     // -------------------------------------------------------------------

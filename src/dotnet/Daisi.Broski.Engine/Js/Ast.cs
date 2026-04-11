@@ -571,13 +571,115 @@ public enum VariableDeclarationKind
 
 public sealed class VariableDeclarator : JsNode
 {
-    public Identifier Id { get; }
+    /// <summary>
+    /// The left-hand side of the declarator. May be an
+    /// <see cref="Identifier"/> (simple binding: <c>var x</c>),
+    /// an <see cref="ObjectPattern"/> (object destructuring:
+    /// <c>var {a, b} = obj</c>), or an <see cref="ArrayPattern"/>
+    /// (array destructuring: <c>var [x, y] = arr</c>).
+    /// </summary>
+    public JsNode Id { get; }
     public Expression? Init { get; }
 
-    public VariableDeclarator(int start, int end, Identifier id, Expression? init) : base(start, end)
+    public VariableDeclarator(int start, int end, JsNode id, Expression? init) : base(start, end)
     {
         Id = id;
         Init = init;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Destructuring patterns
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// Object destructuring pattern — <c>{a, b: x, c = 1}</c>.
+/// Used as the left-hand side of a variable declarator for
+/// destructuring assignment. Each property has a source-side
+/// <see cref="ObjectPatternProperty.Key"/>, a target-side
+/// binding (which may itself be another pattern, for nesting),
+/// and an optional default expression used when the source
+/// property is <c>undefined</c>.
+/// </summary>
+public sealed class ObjectPattern : JsNode
+{
+    public IReadOnlyList<ObjectPatternProperty> Properties { get; }
+
+    public ObjectPattern(
+        int start,
+        int end,
+        IReadOnlyList<ObjectPatternProperty> properties) : base(start, end)
+    {
+        Properties = properties;
+    }
+}
+
+public sealed class ObjectPatternProperty : JsNode
+{
+    /// <summary>Property name to read from the source object.</summary>
+    public string Key { get; }
+
+    /// <summary>
+    /// Binding target. For <c>{a}</c> and <c>{a = 1}</c> this
+    /// is an <see cref="Identifier"/> with the same name as
+    /// <see cref="Key"/> (shorthand). For <c>{a: x}</c> it's
+    /// an <see cref="Identifier"/> with a different name. For
+    /// <c>{a: {b}}</c> it's an inner <see cref="ObjectPattern"/>
+    /// or <see cref="ArrayPattern"/>.
+    /// </summary>
+    public JsNode Value { get; }
+
+    /// <summary>
+    /// Default expression used when the source property
+    /// resolves to <c>undefined</c>. Evaluated lazily — only
+    /// if the default is actually needed at runtime.
+    /// </summary>
+    public Expression? Default { get; }
+
+    public ObjectPatternProperty(
+        int start,
+        int end,
+        string key,
+        JsNode value,
+        Expression? @default) : base(start, end)
+    {
+        Key = key;
+        Value = value;
+        Default = @default;
+    }
+}
+
+/// <summary>
+/// Array destructuring pattern — <c>[a, b = 1, [c, d]]</c>.
+/// Elements may be <c>null</c> to represent an elision
+/// (<c>[a, , c]</c> skips the middle slot).
+/// </summary>
+public sealed class ArrayPattern : JsNode
+{
+    public IReadOnlyList<ArrayPatternElement?> Elements { get; }
+
+    public ArrayPattern(
+        int start,
+        int end,
+        IReadOnlyList<ArrayPatternElement?> elements) : base(start, end)
+    {
+        Elements = elements;
+    }
+}
+
+public sealed class ArrayPatternElement : JsNode
+{
+    public JsNode Target { get; }
+    public Expression? Default { get; }
+
+    public ArrayPatternElement(
+        int start,
+        int end,
+        JsNode target,
+        Expression? @default) : base(start, end)
+    {
+        Target = target;
+        Default = @default;
     }
 }
 
