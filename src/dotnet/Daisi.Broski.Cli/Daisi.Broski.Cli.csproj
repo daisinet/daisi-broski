@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Daisi.Broski.Cli</RootNamespace>
+    <AssemblyName>daisi-broski</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+  </ItemGroup>
+</Project>
