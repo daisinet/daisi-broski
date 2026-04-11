@@ -159,6 +159,18 @@ public sealed class JsEngine
     public ModuleResolver? ModuleResolver { get; set; }
 
     /// <summary>
+    /// Pluggable handler for the <c>fetch</c> global. The
+    /// default handler (installed at construction) wraps
+    /// the engine's <see cref="Net.HttpFetcher"/> so real
+    /// HTTPS requests run through the same phase-1 network
+    /// stack the CLI and sandbox already use. Tests install
+    /// a stub handler that returns canned responses without
+    /// touching the network, keeping the engine test suite
+    /// offline.
+    /// </summary>
+    public FetchHandler? FetchHandler { get; set; }
+
+    /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
     /// so scheduled callbacks see bindings established by the
@@ -223,6 +235,15 @@ public sealed class JsEngine
         EventLoop = new JsEventLoop(this);
 
         Builtins.Install(this);
+
+        // Default fetch handler: delegates to a shared
+        // HttpFetcher instance owned by the engine. Tests
+        // overwrite this with a stub before invoking any
+        // fetch from script so the suite stays offline.
+        // The HttpFetcher is lazily constructed on first
+        // use to avoid creating an HttpClient when script
+        // never touches fetch.
+        FetchHandler = DefaultFetchHandler;
 
         // Hidden global used by the compiler to implement
         // dynamic `import('./mod')`. Not enumerable under
@@ -296,6 +317,55 @@ public sealed class JsEngine
         {
             Globals["window"] = new JsWindowProxy(this);
         }
+    }
+
+    /// <summary>
+    /// Shared <see cref="Net.HttpFetcher"/> for the default
+    /// fetch handler. Lazily constructed on first request
+    /// so engines that never call fetch don't pay the
+    /// <see cref="HttpClient"/> startup cost.
+    /// </summary>
+    private Net.HttpFetcher? _sharedHttpFetcher;
+
+    /// <summary>
+    /// Default implementation of <see cref="FetchHandler"/>.
+    /// Runs the request synchronously on the VM thread via
+    /// <c>.GetAwaiter().GetResult()</c> — the VM is
+    /// single-threaded anyway, so blocking here is
+    /// equivalent to the script awaiting a real promise.
+    /// Returns a <see cref="JsFetchResponse"/> populated
+    /// from the <see cref="Net.FetchResult"/>.
+    /// </summary>
+    private JsFetchResponse DefaultFetchHandler(JsFetchRequest request)
+    {
+        _sharedHttpFetcher ??= new Net.HttpFetcher();
+        if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException($"Invalid URL: '{request.Url}'");
+        }
+        var result = _sharedHttpFetcher.FetchAsync(uri).GetAwaiter().GetResult();
+        var headers = new JsHeaders();
+        if (Globals.TryGetValue("Headers", out var hctor) &&
+            hctor is JsFunction hfn &&
+            hfn.Get("prototype") is JsObject hproto)
+        {
+            headers.Prototype = hproto;
+        }
+        foreach (var kv in result.Headers)
+        {
+            foreach (var value in kv.Value)
+            {
+                headers.Append(kv.Key, value);
+            }
+        }
+        return new JsFetchResponse
+        {
+            Status = (int)result.Status,
+            StatusText = result.Status.ToString(),
+            Url = result.FinalUrl.ToString(),
+            Headers = headers,
+            Body = result.Body,
+        };
     }
 
     /// <summary>
