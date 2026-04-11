@@ -117,28 +117,48 @@ public sealed class JsVM
     /// </summary>
     public object? CompletionValue { get; private set; } = JsValue.Undefined;
 
-    public JsVM(Chunk chunk, JsEngine engine)
+    public JsVM(JsEngine engine)
     {
         _engine = engine;
-        _code = chunk.Code;
-        _constants = chunk.Constants;
-        _names = chunk.Names;
+        // Start with empty code; RunChunk replaces it on demand.
+        _code = Array.Empty<byte>();
+        _constants = Array.Empty<object?>();
+        _names = Array.Empty<string>();
         // The globals env wraps the engine's globals dictionary
         // so mutations made by the VM are observable through
-        // <see cref="JsEngine.Globals"/>.
+        // <see cref="JsEngine.Globals"/>. This env persists
+        // across successive <see cref="RunChunk"/> calls so
+        // event-loop tasks scheduled from one script can read
+        // the bindings another script established.
         _env = new JsEnvironment(engine.Globals, parent: null);
         _this = JsValue.Undefined;
     }
 
     /// <summary>
-    /// Run the chunk to completion. Returns the completion value
-    /// (same as <see cref="CompletionValue"/>). Throws
-    /// <see cref="JsRuntimeException"/> on a runtime error like
-    /// reading an undeclared global.
+    /// Run a compiled chunk to completion against this VM's
+    /// persistent environment. Each call replaces the current
+    /// code / IP / constant-pool view but reuses the globals
+    /// env, so successive invocations see each other's
+    /// bindings. Returns the top-level completion value per
+    /// ECMA §14. Throws <see cref="JsRuntimeException"/> on
+    /// an uncaught runtime error.
     /// </summary>
-    public object? Run()
+    public object? RunChunk(Chunk chunk)
     {
+        _code = chunk.Code;
+        _constants = chunk.Constants;
+        _names = chunk.Names;
+        _ip = 0;
+        _sp = 0;
         _halted = false;
+        _handlers.Clear();
+        _frames.Clear();
+        _pendingException = null;
+        _this = JsValue.Undefined;
+        // Reset the env to the globals env — any nested function
+        // scopes from a prior run are no longer live and we
+        // don't want their bindings leaking into this run.
+        while (_env.Parent is not null) _env = _env.Parent;
         RunLoop(stopFrameDepth: -1);
         return CompletionValue;
     }
@@ -196,7 +216,7 @@ public sealed class JsVM
             RunLoop(stopFrameDepth: enterDepth);
             return Pop();
         }
-        catch (JsThrowSignal)
+        catch (JsThrowSignal sig)
         {
             // Nested call aborted via a cross-boundary throw.
             // Discard any frames / handlers that belonged to the
@@ -217,6 +237,15 @@ public sealed class JsVM
             _this = savedThis;
             _sp = savedSp;
             _pendingException = null;
+
+            // Re-throw so a parent native-call frame can catch
+            // the signal and dispatch it through DoThrow from
+            // its own (safer) context. If there is no parent
+            // frame — i.e., we're running from the event loop
+            // or another host entry point — the signal
+            // escapes all the way to <see cref="JsEngine"/>,
+            // which is responsible for converting it to a
+            // <see cref="JsRuntimeException"/>.
             throw;
         }
         finally
@@ -229,8 +258,19 @@ public sealed class JsVM
     {
         while (true)
         {
-            if (_halted) return;
-            if (stopFrameDepth >= 0 && _frames.Count <= stopFrameDepth) return;
+            // Halt only terminates the outermost dispatch loop
+            // (stopFrameDepth < 0). Nested invocations set a
+            // concrete frame-depth exit condition and ignore
+            // _halted, which stays set from a prior RunChunk so
+            // the script's completion isn't lost.
+            if (stopFrameDepth < 0)
+            {
+                if (_halted) return;
+            }
+            else
+            {
+                if (_frames.Count <= stopFrameDepth) return;
+            }
 
             var op = (OpCode)_code[_ip++];
             switch (op)
