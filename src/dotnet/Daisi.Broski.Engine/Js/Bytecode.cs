@@ -92,6 +92,21 @@ public enum OpCode : byte
     /// </summary>
     DeclareGlobal,
     /// <summary>
+    /// <c>let x</c> / <c>const x</c> — declare a binding in the
+    /// current env marked as uninitialized (the temporal dead
+    /// zone per ECMA §13.3.1). Unlike <see cref="DeclareGlobal"/>
+    /// this always overwrites any existing binding with the
+    /// same name — block-scoped declarations do not cooperate
+    /// with hoisted vars in the enclosing function. Accessing
+    /// the binding before its initializer runs throws
+    /// <c>ReferenceError</c> (even via <c>typeof</c>). The
+    /// compiler emits this at block entry for every let/const
+    /// declaration in the block, then the actual declaration
+    /// statement overwrites the sentinel with the real value
+    /// via <see cref="StoreGlobal"/>. Operand: u16 name index.
+    /// </summary>
+    DeclareLet,
+    /// <summary>
     /// <c>delete x</c> on an unqualified identifier. In ES5
     /// non-strict mode this returns <c>false</c> (the variable was
     /// declared) unless the binding was created implicitly — we

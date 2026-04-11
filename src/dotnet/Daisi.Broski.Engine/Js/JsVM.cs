@@ -216,7 +216,7 @@ public sealed class JsVM
             RunLoop(stopFrameDepth: enterDepth);
             return Pop();
         }
-        catch (JsThrowSignal sig)
+        catch (JsThrowSignal)
         {
             // Nested call aborted via a cross-boundary throw.
             // Discard any frames / handlers that belonged to the
@@ -315,13 +315,37 @@ public sealed class JsVM
                             RaiseError("ReferenceError", $"{name} is not defined");
                             break;
                         }
+                        if (v is JsUninitialized)
+                        {
+                            RaiseError("ReferenceError",
+                                $"Cannot access '{name}' before initialization");
+                            break;
+                        }
                         Push(v);
                     }
                     break;
                 case OpCode.LoadGlobalOrUndefined:
                     {
+                        // Used by `typeof identifier`. For a
+                        // completely undeclared name we return
+                        // undefined — but per ECMA §13.3.1, a
+                        // TDZ binding throws even through
+                        // typeof.
                         var name = _names[ReadU16()];
-                        Push(_env.TryResolve(name, out var v) ? v : JsValue.Undefined);
+                        if (_env.TryResolve(name, out var v))
+                        {
+                            if (v is JsUninitialized)
+                            {
+                                RaiseError("ReferenceError",
+                                    $"Cannot access '{name}' before initialization");
+                                break;
+                            }
+                            Push(v);
+                        }
+                        else
+                        {
+                            Push(JsValue.Undefined);
+                        }
                     }
                     break;
                 case OpCode.StoreGlobal:
@@ -337,6 +361,18 @@ public sealed class JsVM
                         // function's own scope.
                         var name = _names[ReadU16()];
                         _env.DeclareLocal(name);
+                    }
+                    break;
+                case OpCode.DeclareLet:
+                    {
+                        // Create a block-scoped binding in the
+                        // current env initialized to the TDZ
+                        // sentinel. Unconditional overwrite:
+                        // a fresh block always introduces fresh
+                        // let/const bindings, shadowing any
+                        // outer binding with the same name.
+                        var name = _names[ReadU16()];
+                        _env.Bindings[name] = JsValue.Uninitialized;
                     }
                     break;
                 case OpCode.DeleteGlobal:

@@ -7,9 +7,9 @@
 
 ## Current state
 
-**Phase 0, 1, 3a, and 4 are complete.** The full ES5 JavaScript engine ships end-to-end — lexer, parser, bytecode compiler, stack VM, exception handling, the complete ES5 built-in library (Array, String, Object, Math, Error, Number, Boolean, Function.prototype, JSON, Date, globals), and a host-side event loop wired to `console`, `setTimeout`/`setInterval`, and `queueMicrotask`. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
+**Phase 0, 1, 3a, and 4 are complete. Phase 3b has started** with block-scoped `let`/`const` as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
 
-**Combined test suite: 629/629 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7).
+**Combined test suite: 650/650 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7 + 21 JS let/const 3b-1).
 
 What works today from a clean clone:
 
@@ -109,9 +109,9 @@ returns 30 story links, identical to what Chrome sees.
 
 **Ship gate:** test262 ES5 subset >80% pass.
 
-### Phase 3b — ES2015 core
+### Phase 3b — ES2015 core (in progress)
 
-- `let`/`const` with temporal dead zone, block scoping.
+- **`let`/`const` with temporal dead zone + block scoping (slice 3b-1)** ✅ — new `JsUninitialized` sentinel and `DeclareLet` opcode; `BlockStatement` now pushes a fresh env, pre-scans the block for let/const and function declarations, and pops the env on exit. `LoadGlobal` / `LoadGlobalOrUndefined` both check for the sentinel and throw `ReferenceError` so `typeof` of a TDZ binding also throws per spec. For-loop `let` init wraps the whole loop in an env. Function declarations at block scope now hoist into the block env (not the enclosing function), so inner closures capture the block env and can read `let` bindings declared alongside them. Top-level `let` / `const` persist in the globals env across successive `Evaluate` calls (pragmatic REPL-friendly deviation from the spec's module record). Per-iteration freshness for `for (let i ...)` is deferred. 21 end-to-end tests.
 - Arrow functions, classes (including static fields, `super`), template literals.
 - Destructuring, default params, rest/spread.
 - `Symbol`, iterators, `for..of`, generators.

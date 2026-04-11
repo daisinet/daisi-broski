@@ -23,6 +23,20 @@ public sealed class JsNull
 }
 
 /// <summary>
+/// Sentinel value used to represent a <c>let</c> or <c>const</c>
+/// binding that has been created but not yet initialized — the
+/// ECMA §13.3.1 "temporal dead zone". Loading a binding in this
+/// state throws <c>ReferenceError</c> per the spec, even via
+/// <c>typeof</c>. Not user-visible: no script value ever equals
+/// this sentinel.
+/// </summary>
+public sealed class JsUninitialized
+{
+    internal JsUninitialized() { }
+    public override string ToString() => "<tdz>";
+}
+
+/// <summary>
 /// Singletons and coercion helpers for the ES5 value model. Phase 3a
 /// uses boxed .NET objects as the value representation (DD-05 option
 /// A): numbers are boxed <see cref="double"/>s, strings are C# strings,
@@ -42,6 +56,12 @@ public static class JsValue
     public static readonly object Null = new JsNull();
     public static readonly object True = true;
     public static readonly object False = false;
+    /// <summary>
+    /// Singleton TDZ sentinel. See <see cref="JsUninitialized"/>.
+    /// Used by <see cref="OpCode.DeclareLet"/> to mark a binding
+    /// as uninitialized until its declaration runs.
+    /// </summary>
+    public static readonly object Uninitialized = new JsUninitialized();
 
     public static object Box(double n) => n;
     public static object Box(bool b) => b ? True : False;
