@@ -1139,20 +1139,57 @@ public sealed class JsCompiler
 
     private void CompileObjectPatternBinding(ObjectPattern pattern)
     {
-        // Source value sits at TOS. For each property:
+        // Source value sits at TOS. For each non-rest property:
         //   Dup                     // [src, src]
         //   GetProperty <key>       // [src, val]
         //   (default handling)
         //   CompilePatternBinding   // consumes val, leaves [src]
-        // Then Pop to drop the source.
+        //
+        // A trailing rest element (ES2018 `{a, ...rest}`)
+        // collects every own enumerable property of the
+        // source that wasn't named by a preceding element,
+        // bundled into a fresh object. We lower it as:
+        //   Dup                     // [src, src]
+        //   CreateObject            // [src, src, rest]
+        //   Swap                    // [src, rest, src]
+        //   ObjectSpread            // [src, rest]  (rest = clone of src)
+        //   DeleteProperty <key>    // (one per matched key)
+        //   Pop                     // discard the delete's bool result
+        //   CompilePatternBinding(restTarget)   // [src]
+        //
+        // Final Pop drops the source.
+        var matchedKeys = new List<string>();
+        ObjectPatternProperty? rest = null;
         foreach (var prop in pattern.Properties)
         {
+            if (prop.IsRest) { rest = prop; continue; }
             _chunk.Emit(OpCode.Dup);
             int keyIdx = _chunk.AddName(prop.Key);
             _chunk.EmitWithU16(OpCode.GetProperty, keyIdx);
             EmitDefaultIfUndefined(prop.Default);
             CompilePatternBinding(prop.Value);
+            matchedKeys.Add(prop.Key);
         }
+
+        if (rest is not null)
+        {
+            // Build a clone of src and delete every key that
+            // was already destructured into a named target.
+            _chunk.Emit(OpCode.Dup);                 // [src, src]
+            _chunk.Emit(OpCode.CreateObject);        // [src, src, rest]
+            _chunk.Emit(OpCode.Swap);                // [src, rest, src]
+            _chunk.Emit(OpCode.ObjectSpread);        // [src, rest]
+            foreach (var key in matchedKeys)
+            {
+                _chunk.Emit(OpCode.Dup);              // [src, rest, rest]
+                int kIdx = _chunk.AddName(key);
+                _chunk.EmitWithU16(OpCode.DeleteProperty, kIdx);  // [src, rest, bool]
+                _chunk.Emit(OpCode.Pop);              // [src, rest]
+            }
+            // Bind the rest object to the target.
+            CompilePatternBinding(rest.Value);        // [src]
+        }
+
         _chunk.Emit(OpCode.Pop);
     }
 
@@ -1734,11 +1771,100 @@ public sealed class JsCompiler
             case MemberExpression m:
                 CompileAssignmentToMember(a, m);
                 return;
+            case ObjectExpression oe when a.Operator == AssignmentOperator.Assign:
+                CompileAssignmentToPattern(ConvertObjectExpressionToPattern(oe), a.Right);
+                return;
+            case ArrayExpression ae when a.Operator == AssignmentOperator.Assign:
+                CompileAssignmentToPattern(ConvertArrayExpressionToPattern(ae), a.Right);
+                return;
             default:
                 throw new JsCompileException(
                     "Invalid assignment target", a.Start);
         }
     }
+
+    /// <summary>
+    /// Compile a destructuring assignment. Evaluates the
+    /// right-hand source, then destructures it into the
+    /// pattern's target names via the normal pattern-
+    /// binding machinery — which writes into already-
+    /// existing bindings via <see cref="OpCode.StoreGlobal"/>
+    /// (no declarations are emitted). Leaves the source on
+    /// the stack as the expression's result so it can be
+    /// used as an rvalue in chained assignments.
+    /// </summary>
+    private void CompileAssignmentToPattern(JsNode pattern, Expression right)
+    {
+        CompileExpression(right);
+        // Duplicate the source so we can destructure one
+        // copy and leave the other on the stack as the
+        // assignment's result value.
+        _chunk.Emit(OpCode.Dup);
+        CompilePatternBinding(pattern);
+    }
+
+    /// <summary>
+    /// Reinterpret an <see cref="ObjectExpression"/> parsed
+    /// on the left-hand side of an assignment as an
+    /// <see cref="ObjectPattern"/>. ES2015's cover grammar
+    /// lets the parser produce an ObjectLiteral first and
+    /// promote it to a pattern when the <c>=</c> shows up.
+    /// </summary>
+    private ObjectPattern ConvertObjectExpressionToPattern(ObjectExpression oe)
+    {
+        var props = new List<ObjectPatternProperty>();
+        foreach (var p in oe.Properties)
+        {
+            if (p.IsSpread)
+            {
+                throw new JsCompileException(
+                    "Object rest in assignment pattern is not supported",
+                    p.Start);
+            }
+            if (p.Kind != PropertyKind.Init)
+            {
+                throw new JsCompileException(
+                    "Accessor property in assignment pattern is not valid",
+                    p.Start);
+            }
+            string key = PropertyKeyToName(p.Key);
+            JsNode target = ConvertExpressionToPatternTarget(p.Value);
+            props.Add(new ObjectPatternProperty(p.Start, p.End, key, target, null));
+        }
+        return new ObjectPattern(oe.Start, oe.End, props);
+    }
+
+    private ArrayPattern ConvertArrayExpressionToPattern(ArrayExpression ae)
+    {
+        var elements = new List<ArrayPatternElement?>();
+        foreach (var e in ae.Elements)
+        {
+            if (e is null)
+            {
+                elements.Add(null); // elision
+                continue;
+            }
+            if (e is SpreadElement sp)
+            {
+                var restTarget = ConvertExpressionToPatternTarget(sp.Argument);
+                elements.Add(new ArrayPatternElement(sp.Start, sp.End, restTarget, null, isRest: true));
+                continue;
+            }
+            var target = ConvertExpressionToPatternTarget(e);
+            elements.Add(new ArrayPatternElement(e.Start, e.End, target, null));
+        }
+        return new ArrayPattern(ae.Start, ae.End, elements);
+    }
+
+    private JsNode ConvertExpressionToPatternTarget(Expression expr) => expr switch
+    {
+        Identifier id => id,
+        ObjectExpression oe => ConvertObjectExpressionToPattern(oe),
+        ArrayExpression ae => ConvertArrayExpressionToPattern(ae),
+        _ => throw new JsCompileException(
+            "Invalid destructuring assignment target",
+            expr.Start),
+    };
 
     private void CompileAssignmentToIdentifier(AssignmentExpression a, Identifier id)
     {
