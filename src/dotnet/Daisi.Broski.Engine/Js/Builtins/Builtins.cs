@@ -33,6 +33,9 @@ internal static class Builtins
         BuiltinCollections.Install(engine);
         BuiltinPromise.Install(engine);
         BuiltinTypedArrays.Install(engine);
+        BuiltinUrl.Install(engine);
+        BuiltinTextCoding.Install(engine);
+        BuiltinBase64.Install(engine);
     }
 
     /// <summary>

@@ -2154,6 +2154,29 @@ public sealed class JsVM
             }
             catch (JsThrowSignal sig)
             {
+                // JsThrow.* helpers construct a bare JsObject
+                // with {name, message} and no prototype — if
+                // we throw it as-is, `e instanceof TypeError`
+                // from script returns false because the error
+                // object's chain is empty. Attach the matching
+                // engine prototype on the way through so
+                // user-visible errors from native built-ins
+                // walk the canonical Error hierarchy.
+                if (sig.JsValue is JsObject errObj && errObj.Prototype is null)
+                {
+                    if (errObj.Properties.TryGetValue("name", out var nameVal) &&
+                        nameVal is string errName)
+                    {
+                        errObj.Prototype = errName switch
+                        {
+                            "TypeError" => _engine.TypeErrorPrototype,
+                            "RangeError" => _engine.RangeErrorPrototype,
+                            "SyntaxError" => _engine.SyntaxErrorPrototype,
+                            "ReferenceError" => _engine.ReferenceErrorPrototype,
+                            _ => _engine.ErrorPrototype,
+                        };
+                    }
+                }
                 DoThrow(sig.JsValue);
                 return;
             }
