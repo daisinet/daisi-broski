@@ -26,11 +26,26 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer** and **parser** are shipped — the lexer scans ES5 source into a typed token stream (all punctuators including `>>>=`, all number / string / identifier / keyword forms, line + block comments); the parser consumes it and produces an ESTree-shaped AST covering every ES5 statement and expression form, with correct operator precedence, right-associative assignment and ternary, automatic semicolon insertion including the restricted productions, and the `for..in` / `in`-operator disambiguation. The bytecode VM, built-ins, and event loop are the next deliverables.
+**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, and a first slice of the **bytecode compiler + stack VM** are shipped. The pipeline runs primitive-valued programs end-to-end:
+
+```csharp
+var eng = new JsEngine();
+eng.Evaluate(@"
+    var a = 0, b = 1;
+    for (var i = 0; i < 10; i++) {
+        var t = a + b;
+        a = b;
+        b = t;
+    }
+");
+// eng.Globals["a"] is now 55
+```
+
+The slice covers `var` hoisting, every unary / binary / logical / conditional / sequence / update operator, correct `typeof` (including on undeclared identifiers), `if`/`else`/`while`/`do..while`/C-style `for`/`break`/`continue`, loose and strict equality per ECMA §11.9, and the bitwise / shift operators per §9.5 / §9.6. Functions, objects, arrays, exceptions, and the built-in library are the next slices.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 292/292 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser.) All engine, DOM, selector, lexer, and parser tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 344/344 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
