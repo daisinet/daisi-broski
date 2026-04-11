@@ -127,6 +127,22 @@ public sealed class JsEngine
     public JsObject UrlSearchParamsPrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// <c>Event.prototype</c> — installed by
+    /// <c>BuiltinDomEvents</c>. Used as the chain root for
+    /// every <c>Event</c> / <c>CustomEvent</c> instance so
+    /// <c>evt instanceof Event</c> walks the right prototype
+    /// chain.
+    /// </summary>
+    public JsObject EventPrototype { get; internal set; } = null!;
+
+    /// <summary>
+    /// <c>CustomEvent.prototype</c>. Chains to
+    /// <see cref="EventPrototype"/> so a <c>CustomEvent</c>
+    /// is also an <c>Event</c> via <c>instanceof</c>.
+    /// </summary>
+    public JsObject CustomEventPrototype { get; internal set; } = null!;
+
+    /// <summary>
     /// Module cache keyed by resolved URL. Populated and
     /// read by <see cref="ImportModule"/>. A module is
     /// inserted into the cache as soon as it is created
