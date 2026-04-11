@@ -1,4 +1,6 @@
 using System.Text;
+using Daisi.Broski.Engine.Dom;
+using Daisi.Broski.Engine.Js.Dom;
 
 namespace Daisi.Broski.Engine.Js;
 
@@ -155,6 +157,24 @@ public sealed class JsEngine
     /// </summary>
     public StringBuilder ConsoleOutput { get; } = new();
 
+    /// <summary>
+    /// DOM wrapper factory. Null until
+    /// <see cref="AttachDocument"/> is called — the JS engine
+    /// runs perfectly well without a DOM for headless scripting,
+    /// test262, and standalone tool use. When a document is
+    /// attached, this is the bridge that issues one
+    /// <see cref="JsDomNode"/> per backing <see cref="Node"/>.
+    /// </summary>
+    public JsDomBridge? DomBridge { get; private set; }
+
+    /// <summary>
+    /// The currently attached document, exposed so host code
+    /// that already holds the C# <see cref="Document"/> doesn't
+    /// need to thread it separately. Matches the
+    /// <c>document</c> global visible to script.
+    /// </summary>
+    public Document? AttachedDocument { get; private set; }
+
     public JsEngine()
     {
         // Seed the read-only globals before installing built-ins
@@ -216,6 +236,41 @@ public sealed class JsEngine
         // opcode get their Prototype set at creation time by
         // the VM.
         FixupFunctionPrototypes();
+    }
+
+    /// <summary>
+    /// Attach a <see cref="Document"/> to this engine, installing
+    /// the script-visible <c>document</c> global (and <c>window</c>
+    /// as a self-reference to <see cref="Globals"/>). After this
+    /// call, script code can reach every DOM node through
+    /// <c>document.querySelector</c> / <c>getElementById</c> /
+    /// etc., and any node returned into JS flows through the
+    /// wrapper cache so <c>===</c> identity is stable.
+    ///
+    /// Calling <c>AttachDocument</c> a second time replaces the
+    /// previous binding — the old wrappers are not invalidated
+    /// (scripts still holding a reference can keep using them)
+    /// but new lookups go through a fresh bridge against the
+    /// new document. This matches the way a host process
+    /// typically reuses one engine across page loads.
+    /// </summary>
+    public void AttachDocument(Document document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        AttachedDocument = document;
+        DomBridge = new JsDomBridge(this);
+        Globals["document"] = DomBridge.Wrap(document);
+        // `window` is the global object in a browser. We
+        // expose a minimal shim: reads and writes go through
+        // the engine's Globals dictionary, so
+        // `window.location` etc. can be populated by host
+        // code via `Globals["location"] = ...`. Future slices
+        // can layer a richer wrapper on top without breaking
+        // existing users.
+        if (!Globals.ContainsKey("window"))
+        {
+            Globals["window"] = new JsWindowProxy(this);
+        }
     }
 
     /// <summary>
