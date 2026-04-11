@@ -78,10 +78,12 @@ public sealed class JsFunction : JsObject
 
         // Every user function gets a prototype object. constructor
         // on that object points back at us so `new F().constructor === F`.
+        // Both prototype and constructor are non-enumerable to match
+        // how browsers expose them (they shouldn't appear in for..in).
         var proto = new JsObject();
-        proto.Set("constructor", this);
+        proto.SetNonEnumerable("constructor", this);
         FunctionPrototype = proto;
-        Set("prototype", proto);
+        SetNonEnumerable("prototype", proto);
     }
 
     /// <summary>

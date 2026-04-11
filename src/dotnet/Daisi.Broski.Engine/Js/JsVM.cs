@@ -29,6 +29,12 @@ namespace Daisi.Broski.Engine.Js;
 /// </summary>
 public sealed class JsVM
 {
+    // Reference to the owning engine so we can reach the
+    // well-known prototypes (ArrayPrototype, StringPrototype, ...)
+    // when constructing arrays and resolving property access on
+    // primitive values.
+    private readonly JsEngine _engine;
+
     // Per-execution-context view of the currently running chunk.
     // These change on every Call/Return via the _frames stack.
     private byte[] _code;
@@ -97,15 +103,16 @@ public sealed class JsVM
     /// </summary>
     public object? CompletionValue { get; private set; } = JsValue.Undefined;
 
-    public JsVM(Chunk chunk, Dictionary<string, object?> globals)
+    public JsVM(Chunk chunk, JsEngine engine)
     {
+        _engine = engine;
         _code = chunk.Code;
         _constants = chunk.Constants;
         _names = chunk.Names;
-        // The globals env wraps the caller-owned dictionary so
-        // mutations made by the VM are observable through
+        // The globals env wraps the engine's globals dictionary
+        // so mutations made by the VM are observable through
         // <see cref="JsEngine.Globals"/>.
-        _env = new JsEnvironment(globals, parent: null);
+        _env = new JsEnvironment(engine.Globals, parent: null);
         _this = JsValue.Undefined;
     }
 
@@ -463,12 +470,12 @@ public sealed class JsVM
 
                 // ---- Object / array construction ----
                 case OpCode.CreateObject:
-                    Push(new JsObject());
+                    Push(new JsObject { Prototype = _engine.ObjectPrototype });
                     break;
                 case OpCode.CreateArray:
                     {
                         int count = ReadU16();
-                        var arr = new JsArray();
+                        var arr = new JsArray { Prototype = _engine.ArrayPrototype };
                         // Elements were pushed bottom-to-top, so we
                         // pop them in reverse to rebuild the order.
                         for (int i = count - 1; i >= 0; i--)
@@ -498,26 +505,22 @@ public sealed class JsVM
                     {
                         var name = _names[ReadU16()];
                         var target = _stack[_sp - 1];
-                        if (target is not JsObject jo)
+                        if (TryLookupProperty(target, name, out var value))
                         {
-                            RaiseError("TypeError",
-                                $"Cannot read property '{name}' of {JsValue.ToJsString(target)}");
-                            break;
+                            _stack[_sp - 1] = value;
                         }
-                        _stack[_sp - 1] = jo.Get(name);
+                        // else: RaiseError moved _ip to the handler;
+                        // skip assignment and let dispatch fall through.
                     }
                     break;
                 case OpCode.GetPropertyComputed:
                     {
                         var key = Pop();
                         var target = _stack[_sp - 1];
-                        if (target is not JsObject jo)
+                        if (TryLookupProperty(target, JsValue.ToJsString(key), out var value))
                         {
-                            RaiseError("TypeError",
-                                $"Cannot read property of {JsValue.ToJsString(target)}");
-                            break;
+                            _stack[_sp - 1] = value;
                         }
-                        _stack[_sp - 1] = jo.Get(JsValue.ToJsString(key));
                     }
                     break;
                 case OpCode.SetProperty:
@@ -772,7 +775,7 @@ public sealed class JsVM
     /// Raise a catchable JS error with the given <c>name</c> and
     /// <c>message</c>. Constructs a plain <see cref="JsObject"/>
     /// with those two properties (the full <c>Error</c> constructor
-    /// is a slice-6 built-in) and routes it through
+    /// is a slice-6b built-in) and routes it through
     /// <see cref="DoThrow"/> so script-level <c>try</c>/<c>catch</c>
     /// can inspect it.
     /// </summary>
@@ -782,6 +785,89 @@ public sealed class JsVM
         err.Set("name", name);
         err.Set("message", message);
         DoThrow(err);
+    }
+
+    /// <summary>
+    /// Resolve a property access for a <see cref="OpCode.GetProperty"/>
+    /// or <see cref="OpCode.GetPropertyComputed"/> opcode. Supports:
+    ///
+    /// - Object / array / function targets via the usual
+    ///   prototype-chain walk.
+    /// - String primitives: <c>length</c>, numeric indices (as
+    ///   single-char strings), and prototype-chain methods on
+    ///   <see cref="JsEngine.StringPrototype"/>.
+    /// - Number primitives: delegate to
+    ///   <see cref="JsEngine.NumberPrototype"/>.
+    /// - Boolean primitives: delegate to
+    ///   <see cref="JsEngine.BooleanPrototype"/>.
+    /// - <c>null</c> / <c>undefined</c>: raise a
+    ///   <c>TypeError</c> and return <c>false</c>; the caller
+    ///   must not overwrite the stack slot because
+    ///   <see cref="DoThrow"/> already unwound <c>_ip</c> to the
+    ///   handler.
+    /// </summary>
+    private bool TryLookupProperty(object? target, string name, out object? value)
+    {
+        if (target is JsObject jo)
+        {
+            value = jo.Get(name);
+            return true;
+        }
+        if (target is string s)
+        {
+            value = LookupStringProperty(s, name);
+            return true;
+        }
+        if (target is double)
+        {
+            value = _engine.NumberPrototype.Get(name);
+            return true;
+        }
+        if (target is bool)
+        {
+            value = _engine.BooleanPrototype.Get(name);
+            return true;
+        }
+        // null, undefined, any other primitive → TypeError.
+        RaiseError("TypeError",
+            $"Cannot read property '{name}' of {JsValue.ToJsString(target)}");
+        value = null;
+        return false;
+    }
+
+    /// <summary>
+    /// String primitive property lookup. <c>"abc".length</c>
+    /// returns 3; <c>"abc"[1]</c> returns <c>"b"</c>. Anything
+    /// else walks <see cref="JsEngine.StringPrototype"/>.
+    /// </summary>
+    private object? LookupStringProperty(string s, string name)
+    {
+        if (name == "length") return (double)s.Length;
+        if (IsCanonicalIndex(name, out int idx) && idx >= 0 && idx < s.Length)
+        {
+            return s[idx].ToString();
+        }
+        return _engine.StringPrototype.Get(name);
+    }
+
+    /// <summary>
+    /// Only canonical integer strings (<c>"0"</c>, <c>"1"</c>,
+    /// ...) are valid array indices — <c>"01"</c>, <c>"1.0"</c>,
+    /// and <c>"  1"</c> are not. Matches the spec definition of
+    /// an "array index" in ES2015+.
+    /// </summary>
+    private static bool IsCanonicalIndex(string s, out int idx)
+    {
+        idx = 0;
+        if (s.Length == 0) return false;
+        if (s == "0") { idx = 0; return true; }
+        if (s[0] == '0') return false;
+        foreach (var c in s)
+        {
+            if (c < '0' || c > '9') return false;
+        }
+        return int.TryParse(s, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out idx);
     }
 
     // -------------------------------------------------------------------
@@ -833,19 +919,19 @@ public sealed class JsVM
                 $"{JsValue.ToJsString(calleeValue)} is not a constructor");
             return;
         }
-        if (fn.NativeImpl is not null)
-        {
-            RaiseError("TypeError",
-                "'new' on native functions is not supported in this slice");
-            return;
-        }
 
-        // Read `F.prototype` live so user reassignment
-        // (`Dog.prototype = new Animal()`) takes effect.
+        // Native constructors (like Array / String) are
+        // responsible for returning a fully-formed object. We
+        // still allocate an instance linked to fn.prototype so
+        // that a native function declining to take over gets a
+        // reasonable this binding, but since ECMA §13.2.2 says
+        // the return value wins when it is an object, native
+        // factories that return a JsObject effectively discard
+        // the pre-allocated one.
         var protoValue = fn.Get("prototype");
         var instance = new JsObject
         {
-            Prototype = protoValue as JsObject,
+            Prototype = protoValue as JsObject ?? _engine.ObjectPrototype,
         };
         InvokeFunction(fn, instance, args, isConstructor: true, newInstance: instance);
     }
@@ -871,7 +957,19 @@ public sealed class JsVM
         if (fn.NativeImpl is not null)
         {
             // Synchronous native call — no frame push needed.
-            var result = fn.NativeImpl(thisVal, args);
+            // Native built-ins signal exceptions via JsThrowSignal,
+            // which we catch here and route to DoThrow so the
+            // throw behaves exactly like a script-level throw.
+            object? result;
+            try
+            {
+                result = fn.NativeImpl(thisVal, args);
+            }
+            catch (JsThrowSignal sig)
+            {
+                DoThrow(sig.JsValue);
+                return;
+            }
             if (isConstructor)
             {
                 Push(result is JsObject ? result : newInstance);

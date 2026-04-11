@@ -81,6 +81,18 @@ public class JsObject
     public Dictionary<string, object?> Properties { get; } = new();
 
     /// <summary>
+    /// Names that have been marked non-enumerable (skipped by
+    /// <c>for..in</c> and <see cref="OwnKeys"/>). Phase 3a does
+    /// not yet implement the full ES5 property descriptor model
+    /// (configurable / writable / enumerable triples); this
+    /// single-dimension flag is enough to keep built-in
+    /// prototype methods from showing up during script-level
+    /// enumeration, which is the only case that matters before
+    /// slice 6b lands property descriptors properly.
+    /// </summary>
+    private HashSet<string>? _nonEnumerable;
+
+    /// <summary>
     /// Get a property by name, walking the prototype chain.
     /// Returns <see cref="JsValue.Undefined"/> if the property
     /// is not found anywhere along the chain — JavaScript does
@@ -107,6 +119,31 @@ public class JsObject
     }
 
     /// <summary>
+    /// Assign a property and mark it non-enumerable (so
+    /// <c>for..in</c> skips it). Used by the built-in library
+    /// to install prototype methods without polluting script
+    /// enumeration, matching the spec's
+    /// <c>[[Enumerable]] = false</c> on standard prototypes.
+    /// </summary>
+    public void SetNonEnumerable(string key, object? value)
+    {
+        Properties[key] = value;
+        _nonEnumerable ??= new HashSet<string>();
+        _nonEnumerable.Add(key);
+    }
+
+    /// <summary>
+    /// True if the given own property name is enumerable.
+    /// Defaults to true for everything except names registered
+    /// via <see cref="SetNonEnumerable"/>.
+    /// </summary>
+    public bool IsEnumerable(string key)
+    {
+        if (_nonEnumerable is null) return true;
+        return !_nonEnumerable.Contains(key);
+    }
+
+    /// <summary>
     /// ES <c>in</c> operator: does the object (or any prototype
     /// in its chain) have an own or inherited property with this
     /// key?
@@ -130,12 +167,19 @@ public class JsObject
     }
 
     /// <summary>
-    /// Enumerate the own string-keyed property names in insertion
-    /// order. Used by <c>for..in</c> (slice 4b) and by the
-    /// <see cref="JsValue.ToJsString(object?)"/> fallback to
-    /// render an object's shape during debugging.
+    /// Enumerate the own <i>enumerable</i> string-keyed property
+    /// names in insertion order. Used by <c>for..in</c> and by
+    /// <see cref="ForInIterator.From"/>. Non-enumerable
+    /// properties (installed via <see cref="SetNonEnumerable"/>)
+    /// are skipped.
     /// </summary>
-    public virtual IEnumerable<string> OwnKeys() => Properties.Keys;
+    public virtual IEnumerable<string> OwnKeys()
+    {
+        foreach (var k in Properties.Keys)
+        {
+            if (IsEnumerable(k)) yield return k;
+        }
+    }
 }
 
 /// <summary>
