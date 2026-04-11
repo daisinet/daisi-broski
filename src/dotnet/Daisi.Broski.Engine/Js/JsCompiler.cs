@@ -223,7 +223,8 @@ public sealed class JsCompiler
                     fd.Id.Name,
                     fd.Params,
                     fd.Body,
-                    fd.End - fd.Start);
+                    fd.End - fd.Start,
+                    isGenerator: fd.IsGenerator);
                 int templateIdx = _chunk.AddConstant(template);
                 int nameIdx = _chunk.AddName(fd.Id.Name);
                 _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
@@ -310,7 +311,8 @@ public sealed class JsCompiler
                     fd.Id.Name,
                     fd.Params,
                     fd.Body,
-                    fd.End - fd.Start);
+                    fd.End - fd.Start,
+                    isGenerator: fd.IsGenerator);
                 int templateIdx = _chunk.AddConstant(template);
                 int nameIdx = _chunk.AddName(fd.Id.Name);
                 // Declare in the current env with undefined
@@ -440,7 +442,8 @@ public sealed class JsCompiler
         IReadOnlyList<FunctionParameter> paramNodes,
         BlockStatement body,
         int sourceLength,
-        bool isArrow = false)
+        bool isArrow = false,
+        bool isGenerator = false)
     {
         PushFrame(isFunction: true);
 
@@ -489,7 +492,14 @@ public sealed class JsCompiler
             paramNames.Add(idName.Name);
             if (p.IsRest) restIndex = i;
         }
-        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength, isArrow, restIndex);
+        return new JsFunctionTemplate(
+            chunk,
+            paramNames,
+            name,
+            sourceLength,
+            isArrow,
+            restIndex,
+            isGenerator);
     }
 
     /// <summary>
@@ -1171,6 +1181,22 @@ public sealed class JsCompiler
             case ClassExpression ce2:
                 CompileClassAssembly(ce2.Id?.Name, ce2.SuperClass, ce2.Body);
                 return;
+            case YieldExpression ye:
+                // yield arg: push the argument (or undefined),
+                // then YieldValue halts the generator. On
+                // resume, YieldResume pushes the sent value as
+                // the result of the yield expression.
+                if (ye.Argument is null)
+                {
+                    _chunk.Emit(OpCode.PushUndefined);
+                }
+                else
+                {
+                    CompileExpression(ye.Argument);
+                }
+                _chunk.Emit(OpCode.YieldValue);
+                _chunk.Emit(OpCode.YieldResume);
+                return;
             case Super sup:
                 // Bare `super` by itself is not valid — only as
                 // the object of a member access or as the callee
@@ -1764,7 +1790,8 @@ public sealed class JsCompiler
             fe.Id?.Name,
             fe.Params,
             fe.Body,
-            fe.End - fe.Start);
+            fe.End - fe.Start,
+            isGenerator: fe.IsGenerator);
         int idx = _chunk.AddConstant(template);
         _chunk.EmitWithU16(OpCode.MakeFunction, idx);
     }

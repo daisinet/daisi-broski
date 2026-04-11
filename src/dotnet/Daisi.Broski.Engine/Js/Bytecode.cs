@@ -243,6 +243,28 @@ public enum OpCode : byte
     /// (including any exception handling).
     /// </summary>
     ForOfNext,
+
+    // ---- ES2015 generators ----
+    /// <summary>
+    /// Generator <c>yield expr</c> — suspend the current
+    /// generator VM with the top-of-stack as the yielded
+    /// value. Stack <c>[value]</c> → <c>[]</c>. The opcode
+    /// stores <c>value</c> into the VM's yield slot and sets
+    /// the <c>_halted</c> flag so <c>RunLoop</c> exits. Always
+    /// paired with a <see cref="YieldResume"/> at the next
+    /// instruction; when <c>gen.next(sent)</c> resumes the
+    /// VM, <c>YieldResume</c> is the first opcode that runs.
+    /// </summary>
+    YieldValue,
+    /// <summary>
+    /// Companion to <see cref="YieldValue"/>: pushes the
+    /// most recently "sent" value (passed in via
+    /// <c>gen.next(arg)</c>) onto the stack as the result
+    /// of the yield expression. On the very first resume
+    /// (when we reach a yield point for the first time), the
+    /// sent value is <c>undefined</c>.
+    /// </summary>
+    YieldResume,
     /// <summary>
     /// Return from the current function call. Pops the top of
     /// stack as the return value, restores the calling frame, and

@@ -127,6 +127,166 @@ public sealed class JsVM
     private JsFunction? _currentFn;
 
     /// <summary>
+    /// Most recent value produced by a <see cref="OpCode.YieldValue"/>.
+    /// Read by <see cref="JsGenerator.Next"/> immediately
+    /// after <see cref="RunLoop"/> returns from a halt so the
+    /// host can package it into the iterator result object.
+    /// </summary>
+    internal object? YieldedValue { get; set; }
+
+    /// <summary>
+    /// Most recent value passed to <see cref="JsGenerator.Next"/>
+    /// as the "sent" argument. Pushed onto the stack by
+    /// <see cref="OpCode.YieldResume"/> so the yield
+    /// expression resolves to the sent value. Defaults to
+    /// <c>undefined</c> for the initial <c>gen.next()</c> call
+    /// and resets to <c>undefined</c> after each resume.
+    /// </summary>
+    internal object? YieldSentValue { get; set; } = JsValue.Undefined;
+
+    /// <summary>
+    /// Bypass flag for the generator-short-circuit inside
+    /// <see cref="InvokeFunction"/>. When set,
+    /// <c>InvokeFunction</c> treats a generator function
+    /// template as if it were an ordinary function and runs
+    /// its body directly — used by
+    /// <see cref="StartGeneratorExecution"/> to actually wire
+    /// up a generator's body on its own VM instance.
+    /// </summary>
+    private bool _startingGenerator;
+
+    /// <summary>
+    /// Public access to the engine this VM belongs to. Used by
+    /// <see cref="JsGenerator"/> when building the per-step
+    /// iterator result objects.
+    /// </summary>
+    public JsEngine Engine => _engine;
+
+    /// <summary>
+    /// Result of a single generator step — mirrors the
+    /// <c>{value, done}</c> pair that JS code expects from
+    /// <c>iter.next()</c>, but expressed as a C# struct so
+    /// the host doesn't allocate a JsObject until
+    /// <see cref="JsGenerator.Next"/> packages it.
+    /// </summary>
+    public readonly struct GeneratorStepOutcome
+    {
+        public object? Value { get; }
+        public bool Done { get; }
+        public GeneratorStepOutcome(object? value, bool done)
+        {
+            Value = value;
+            Done = done;
+        }
+    }
+
+    /// <summary>
+    /// One-byte chunk containing a single <see cref="OpCode.Halt"/>.
+    /// Used as the "caller code" for a generator's outermost
+    /// call frame — when the generator's body <c>Return</c>s,
+    /// the frame pop restores this chunk as the active code
+    /// stream, and the next dispatch step runs <c>Halt</c>
+    /// which cleanly exits <see cref="RunLoop"/>.
+    /// </summary>
+    private static readonly Chunk GeneratorSentinelChunk = BuildSentinelChunk();
+
+    private static Chunk BuildSentinelChunk()
+    {
+        var c = new Chunk();
+        c.Emit(OpCode.Halt);
+        return c;
+    }
+
+    /// <summary>
+    /// Initial setup for a generator's own VM: push a
+    /// sentinel frame whose "return code" is a single Halt,
+    /// then set up the generator function's call frame the
+    /// same way <see cref="InvokeFunction"/> does. Does not
+    /// run the loop — the caller follows up with
+    /// <see cref="ContinueGeneratorExecution"/> to actually
+    /// execute bytecode up to the first yield.
+    /// </summary>
+    public void StartGeneratorExecution(
+        JsFunction fn,
+        object? thisVal,
+        object?[] args)
+    {
+        // Sentinel: a pretend caller whose code is a single
+        // Halt instruction. When the generator's final Return
+        // pops back to it, dispatch falls through to Halt and
+        // the run loop exits cleanly.
+        _code = GeneratorSentinelChunk.Code;
+        _constants = GeneratorSentinelChunk.Constants;
+        _names = GeneratorSentinelChunk.Names;
+        _ip = 0;
+        _env = new JsEnvironment(_engine.Globals, parent: null);
+        _this = JsValue.Undefined;
+        _currentFn = null;
+        _halted = false;
+
+        // Invoke the generator body — this pushes a call
+        // frame whose "caller state" is the sentinel we just
+        // set. When the body returns, that state restores.
+        //
+        // We bypass the ordinary re-entrant native-boundary
+        // machinery because the generator VM is a fresh,
+        // isolated instance — there is no outer native frame
+        // to worry about. The `_startingGenerator` flag also
+        // turns off InvokeFunction's "return a generator
+        // object" shortcut so the body actually runs.
+        _startingGenerator = true;
+        try
+        {
+            InvokeFunction(fn, thisVal, args, isConstructor: false, newInstance: null);
+        }
+        finally
+        {
+            _startingGenerator = false;
+        }
+    }
+
+    /// <summary>
+    /// Run (or resume) the generator VM until it hits a
+    /// <see cref="OpCode.YieldValue"/> halt or until the
+    /// body returns. Returns the yielded or returned value
+    /// and whether the generator is done.
+    /// </summary>
+    public GeneratorStepOutcome ContinueGeneratorExecution()
+    {
+        _halted = false;
+        YieldedValue = null;
+        try
+        {
+            RunLoop(stopFrameDepth: -1);
+        }
+        catch (JsThrowSignal sig)
+        {
+            // Uncaught exception inside the generator body
+            // — surface it to the host.
+            throw new JsRuntimeException(
+                $"Uncaught {JsValue.ToJsString(sig.JsValue)}",
+                sig.JsValue);
+        }
+
+        // If a YieldValue caused the halt, YieldedValue is
+        // populated and frames are still live — the
+        // generator is paused, not done.
+        //
+        // If the generator body completed normally, Return
+        // popped its frame back to the sentinel and Halt
+        // exited the loop. The return value is on the
+        // sentinel's stack slot.
+        if (_frames.Count > 0)
+        {
+            return new GeneratorStepOutcome(YieldedValue, done: false);
+        }
+        // Done: the return value (or undefined) is on TOS
+        // from the frame-pop restore.
+        object? returnVal = _sp > 0 ? Pop() : JsValue.Undefined;
+        return new GeneratorStepOutcome(returnVal, done: true);
+    }
+
+    /// <summary>
     /// The most recent value stored by a
     /// <see cref="OpCode.StoreCompletion"/>, or <c>undefined</c> if
     /// the program had no top-level expression statements.
@@ -840,6 +1000,25 @@ public sealed class JsVM
                             _sp--;
                             _ip += offset;
                         }
+                    }
+                    break;
+                case OpCode.YieldValue:
+                    {
+                        // Pop the yielded value, stash it in
+                        // the VM's yield slot, and halt. The
+                        // host (JsGenerator.Next) reads it back
+                        // out after RunLoop returns.
+                        YieldedValue = Pop();
+                        _halted = true;
+                    }
+                    break;
+                case OpCode.YieldResume:
+                    {
+                        // Resume from a suspended yield —
+                        // push the most recent sent value as
+                        // the result of the yield expression.
+                        Push(YieldSentValue);
+                        YieldSentValue = JsValue.Undefined;
                     }
                     break;
                 case OpCode.ForOfStart:
@@ -1622,6 +1801,24 @@ public sealed class JsVM
             {
                 Push(result);
             }
+            return;
+        }
+
+        // Calling a generator function does not run its body —
+        // per spec, it returns a fresh generator object bound
+        // to the call's arguments and captured environment.
+        // The generator's own per-instance VM runs the body
+        // incrementally as `gen.next()` is called.
+        //
+        // Skip this path when `_startingGenerator` is set:
+        // that flag marks the recursive InvokeFunction call
+        // inside StartGeneratorExecution that deliberately
+        // bypasses the generator-object short-circuit so the
+        // body actually gets wired up.
+        if (fn.Template?.IsGenerator == true && !_startingGenerator)
+        {
+            var gen = new JsGenerator(_engine, fn, thisVal, args);
+            Push(gen);
             return;
         }
 

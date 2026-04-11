@@ -33,6 +33,17 @@ public sealed class JsFunctionTemplate
     public bool IsArrow { get; }
 
     /// <summary>
+    /// True for ES2015 generator functions
+    /// (<c>function* foo(){}</c>). Calling a generator
+    /// function does not run its body — the VM's call
+    /// machinery returns a fresh <see cref="JsGenerator"/>
+    /// instead, and the body is executed incrementally by
+    /// <see cref="JsGenerator.Next"/> via a separate
+    /// per-generator <see cref="JsVM"/> instance.
+    /// </summary>
+    public bool IsGenerator { get; }
+
+    /// <summary>
     /// Index of the ES2015 rest parameter in
     /// <see cref="ParamNames"/>, or <c>-1</c> if the function
     /// has no rest parameter. At call time the VM binds
@@ -52,7 +63,8 @@ public sealed class JsFunctionTemplate
         string? name,
         int sourceLength,
         bool isArrow = false,
-        int restParamIndex = -1)
+        int restParamIndex = -1,
+        bool isGenerator = false)
     {
         Body = body;
         ParamNames = paramNames;
@@ -60,6 +72,7 @@ public sealed class JsFunctionTemplate
         SourceLength = sourceLength;
         IsArrow = isArrow;
         RestParamIndex = restParamIndex;
+        IsGenerator = isGenerator;
     }
 }
 
