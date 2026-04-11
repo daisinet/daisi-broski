@@ -182,7 +182,7 @@ Phase 1 explicitly ships selectors without the cascade because selectors are imm
 
 **Critical design call:** the DOM is *not* a JS object. It's a plain C# object graph. The JS engine (arriving in phase 3) will expose it via "host objects" — proxy-like wrappers that route property access and method calls back into the C# DOM. This means the DOM can be tested, serialized, and mutated without booting the JS engine (which is exactly how phase 1 uses it), and the JS engine has no special knowledge of "this is an HTMLElement." The separation is already concrete today: every `Daisi.Broski.Engine.Dom.*` test runs without any JS engine present, because there is no JS engine yet.
 
-### 5.5 JavaScript engine — the hardest part
+### 5.5 JavaScript engine — the hardest part (phase 3a in progress)
 
 This is where the most engineering effort goes. We are not going to write a performance-competitive V8. We are going to write a **correctness-first, pragmatic-subset** JavaScript engine that runs the JS real sites actually ship.
 
@@ -192,7 +192,7 @@ This is where the most engineering effort goes. We are not going to write a perf
 Source text
   │
   ▼
-Lexer ──► Token stream
+Lexer ──► Token stream          ✅ Daisi.Broski.Engine.Js.JsLexer
              │
              ▼
           Parser ──► AST (ESTree-shaped)
@@ -206,6 +206,8 @@ Lexer ──► Token stream
                                               ▼
                                         Heap + Realm + Built-ins
 ```
+
+**Shipped so far (phase 3a slice 1):** `JsLexer` — scans ES5 source into a stream of `JsToken`s. Recognizes all ES5 keywords plus the ES2015+ future-reserved keywords, ASCII identifiers, decimal / scientific / hex number literals, single- and double-quoted string literals with standard escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\v`, `\0`, `\x`, `\u`, line continuations), line and block comments (skipped), and every ES5 punctuator including greedy long matches (`>>>=`, `===`, `!==`). Regex literals, template literals, BigInt literals, and Unicode identifiers are deferred. 43 tests covering every token kind, escape form, number edge case, and disambiguation rule. Parser / AST / bytecode VM / built-ins still ahead.
 
 **Why a bytecode VM, not a tree-walking interpreter?**
 

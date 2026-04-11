@@ -7,9 +7,9 @@
 
 ## Current state
 
-**Phase 0, 1, and 4 are complete.** Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 (JS) is in. Phase 3 is the next major milestone; phase 2 will likely be absorbed into the front of phase 3 rather than shipping as its own unit.
+**Phase 0, 1, and 4 are complete. Phase 3a has started** with the JavaScript lexer as its first deliverable; the parser, AST, bytecode VM, and built-ins are still ahead. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 (JS) is in. Phase 2 will likely be absorbed into phase 3 rather than shipping as its own unit.
 
-**Combined test suite: 180/180 passing** (152 engine + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke).
+**Combined test suite: 223/223 passing** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer).
 
 What works today from a clean clone:
 
@@ -87,9 +87,10 @@ returns 30 story links, identical to what Chrome sees.
 
 **This is the single largest phase.** See [js-engine.md](js-engine.md) (planned) for the detailed breakdown. Three sub-phases:
 
-### Phase 3a — ES5 core
+### Phase 3a — ES5 core (in progress)
 
-- Lexer, parser, AST.
+- **Lexer** ✅ — `Daisi.Broski.Engine.Js.JsLexer` and `JsTokenKind` / `JsToken`. Recognizes every ES5 keyword, the ES2015+ future-reserved keywords, decimal + scientific + hex number literals, single- and double-quoted string literals with the common escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\v`, `\0`, `\'`, `\"`, `\\`, `\xXX`, `\uXXXX`, line continuations), line and block comments (skipped, not emitted), and all ES5 punctuators including greedy long matches (`>>>=`, `===`, etc.). Deferred: regex literals (context-sensitive, needs parser cooperation), template literals (ES2015 — phase 3b), BigInt literals (phase 3c), Unicode identifiers beyond ASCII. 43 tests passing.
+- Parser, AST.
 - Bytecode compiler + stack VM.
 - Built-ins: `Object`, `Function`, `Array`, `String`, `Number`, `Boolean`, `Math`, `Date`, `RegExp`, `Error`, `JSON`, `arguments`.
 - Prototypes, `this`, closures, `try`/`catch`, strict mode.
@@ -122,7 +123,7 @@ returns 30 story links, identical to what Chrome sees.
 
 **Ship gate:** load `news.ycombinator.com` with scripts enabled, run them, and confirm the DOM after script execution matches what Chrome produces within a small tolerance.
 
-**Current status:** not started. This is the next major milestone.
+**Current status:** phase 3a in progress — lexer shipped. Parser / AST / bytecode VM / built-ins / event loop still ahead.
 
 ## Phase 4 — Sandbox host ✅ (infrastructure) / ⏸ (full ship gate blocked on phase 3)
 
