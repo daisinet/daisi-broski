@@ -1003,6 +1003,56 @@ public sealed class JsVM
                         fn.HomeSuper = classFn.Prototype;
                     }
                     break;
+                case OpCode.InstallAccessor:
+                    {
+                        // Stack [class, fn] → [class]. Operand:
+                        // u16 nameIdx, u8 flags (bit0=static, bit1=setter).
+                        int accNameIdx = ReadU16();
+                        int flags = _code[_ip++];
+                        bool isStatic = (flags & 1) != 0;
+                        bool isSetter = (flags & 2) != 0;
+                        var accName = _names[accNameIdx];
+                        var accFnVal = Pop();
+                        var accClassVal = _stack[_sp - 1];
+                        if (accClassVal is not JsFunction accClassFn || accFnVal is not JsFunction accFn)
+                        {
+                            RaiseError("TypeError",
+                                "Invalid class accessor installation");
+                            break;
+                        }
+                        // Target is class itself for static,
+                        // class.prototype otherwise.
+                        JsObject? target = isStatic
+                            ? (JsObject)accClassFn
+                            : accClassFn.Get("prototype") as JsObject;
+                        if (target is null) break;
+
+                        // Merge with an existing getter/setter
+                        // under the same name so a `get/set`
+                        // pair shares one descriptor.
+                        JsFunction? existingGet = null;
+                        JsFunction? existingSet = null;
+                        if (target.TryFindAccessor(accName, out var existing))
+                        {
+                            existingGet = existing.Getter;
+                            existingSet = existing.Setter;
+                        }
+                        if (isSetter)
+                        {
+                            target.SetAccessor(accName, existingGet, accFn);
+                        }
+                        else
+                        {
+                            target.SetAccessor(accName, accFn, existingSet);
+                        }
+
+                        // Accessor functions also get HomeSuper
+                        // so `super.x` inside them resolves.
+                        accFn.HomeSuper = isStatic
+                            ? accClassFn.Prototype
+                            : (target.Prototype);
+                    }
+                    break;
                 case OpCode.LinkConstructorSuper:
                     {
                         // Stack [class] → [class]. Sets
@@ -1488,6 +1538,20 @@ public sealed class JsVM
                     {
                         var name = _names[ReadU16()];
                         var target = _stack[_sp - 1];
+                        // Accessor getter takes priority over a
+                        // data-property lookup: `class { get x() {} }`
+                        // on the prototype must fire even when an
+                        // instance doesn't shadow the name with a
+                        // data slot.
+                        if (target is JsObject accObj &&
+                            accObj.TryFindAccessor(name, out var accDesc) &&
+                            accDesc.Getter is not null)
+                        {
+                            _sp--; // pop target
+                            var got = InvokeJsFunction(accDesc.Getter, accObj, Array.Empty<object?>());
+                            Push(got);
+                            break;
+                        }
                         if (TryLookupProperty(target, name, out var value))
                         {
                             _stack[_sp - 1] = value;
@@ -1505,9 +1569,9 @@ public sealed class JsVM
                             // Symbol-keyed property — walk the
                             // symbol-property bags up the
                             // prototype chain.
-                            if (target is JsObject jo)
+                            if (target is JsObject joSym)
                             {
-                                _stack[_sp - 1] = jo.GetSymbol(sym);
+                                _stack[_sp - 1] = joSym.GetSymbol(sym);
                             }
                             else
                             {
@@ -1517,7 +1581,17 @@ public sealed class JsVM
                             }
                             break;
                         }
-                        if (TryLookupProperty(target, JsValue.ToJsString(key), out var value))
+                        string keyStr = JsValue.ToJsString(key);
+                        if (target is JsObject accObj &&
+                            accObj.TryFindAccessor(keyStr, out var accDesc) &&
+                            accDesc.Getter is not null)
+                        {
+                            _sp--;
+                            var got = InvokeJsFunction(accDesc.Getter, accObj, Array.Empty<object?>());
+                            Push(got);
+                            break;
+                        }
+                        if (TryLookupProperty(target, keyStr, out var value))
                         {
                             _stack[_sp - 1] = value;
                         }
@@ -1533,6 +1607,20 @@ public sealed class JsVM
                         {
                             RaiseError("TypeError",
                                 $"Cannot assign property '{name}' on {JsValue.ToJsString(target)}");
+                            break;
+                        }
+                        // Accessor setter takes priority over the
+                        // data-property slot, walking the prototype
+                        // chain so inherited `set x(v)` fires.
+                        if (jo.TryFindAccessor(name, out var accDescSet) &&
+                            accDescSet.Setter is not null)
+                        {
+                            _sp -= 2; // pop obj, value
+                            InvokeJsFunction(accDescSet.Setter, jo, new object?[] { value });
+                            // The assignment expression's result
+                            // is the rvalue, not the setter's
+                            // return value. Push it back.
+                            Push(value);
                             break;
                         }
                         jo.Set(name, value);
@@ -1555,11 +1643,20 @@ public sealed class JsVM
                         if (key is JsSymbol sym)
                         {
                             jo.SetSymbol(sym, value);
+                            _stack[_sp - 3] = value;
+                            _sp -= 2;
+                            break;
                         }
-                        else
+                        string keyStr = JsValue.ToJsString(key);
+                        if (jo.TryFindAccessor(keyStr, out var accDescSet) &&
+                            accDescSet.Setter is not null)
                         {
-                            jo.Set(JsValue.ToJsString(key), value);
+                            _sp -= 3;
+                            InvokeJsFunction(accDescSet.Setter, jo, new object?[] { value });
+                            Push(value);
+                            break;
                         }
+                        jo.Set(keyStr, value);
                         _stack[_sp - 3] = value;
                         _sp -= 2;
                     }

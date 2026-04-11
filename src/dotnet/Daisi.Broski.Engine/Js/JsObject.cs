@@ -132,6 +132,36 @@ public class JsObject
     private Dictionary<JsSymbol, object?>? _symbolProperties;
 
     /// <summary>
+    /// Accessor-property descriptors — a name maps to a
+    /// getter/setter pair of <see cref="JsFunction"/>s.
+    /// Lazily allocated. The VM checks this first on a
+    /// property read/write so <c>class { get prop() {} }</c>
+    /// works even on inherited getters. Keys stored here
+    /// are masked out of the normal data-property slot so
+    /// shadowing "just works" without special casing.
+    /// </summary>
+    private Dictionary<string, AccessorDescriptor>? _accessors;
+
+    /// <summary>
+    /// Getter / setter pair for an accessor property. Either
+    /// function may be null (for a write-only or read-only
+    /// property). Reading an accessor with no getter yields
+    /// <c>undefined</c>; writing to one with no setter is a
+    /// silent no-op in our non-strict runtime.
+    /// </summary>
+    public readonly struct AccessorDescriptor
+    {
+        public JsFunction? Getter { get; }
+        public JsFunction? Setter { get; }
+
+        public AccessorDescriptor(JsFunction? getter, JsFunction? setter)
+        {
+            Getter = getter;
+            Setter = setter;
+        }
+    }
+
+    /// <summary>
     /// Get a property by name, walking the prototype chain.
     /// Returns <see cref="JsValue.Undefined"/> if the property
     /// is not found anywhere along the chain — JavaScript does
@@ -218,6 +248,42 @@ public class JsObject
         {
             if (IsEnumerable(k)) yield return k;
         }
+    }
+
+    // -------- Accessor (getter / setter) properties --------
+
+    /// <summary>
+    /// Install a getter / setter pair for <paramref name="key"/>.
+    /// At most one getter and one setter per name; callers
+    /// merging a <c>get</c> and <c>set</c> method from a
+    /// class body pass the accumulated pair.
+    /// </summary>
+    public void SetAccessor(string key, JsFunction? getter, JsFunction? setter)
+    {
+        _accessors ??= new Dictionary<string, AccessorDescriptor>();
+        _accessors[key] = new AccessorDescriptor(getter, setter);
+    }
+
+    /// <summary>
+    /// Walk the prototype chain looking for an accessor
+    /// descriptor under <paramref name="key"/>. Returns the
+    /// descriptor + the owning object (the latter isn't
+    /// currently used but exists for future spec-alignment
+    /// work around <c>[[Set]]</c> receiver handling).
+    /// </summary>
+    public bool TryFindAccessor(string key, out AccessorDescriptor descriptor)
+    {
+        for (var cursor = this; cursor is not null; cursor = cursor.Prototype)
+        {
+            if (cursor._accessors is not null &&
+                cursor._accessors.TryGetValue(key, out var d))
+            {
+                descriptor = d;
+                return true;
+            }
+        }
+        descriptor = default;
+        return false;
     }
 
     // -------- Symbol-keyed property access (slice 3b-7a) --------
