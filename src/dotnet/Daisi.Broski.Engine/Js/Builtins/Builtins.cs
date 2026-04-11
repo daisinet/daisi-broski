@@ -36,6 +36,7 @@ internal static class Builtins
         BuiltinUrl.Install(engine);
         BuiltinTextCoding.Install(engine);
         BuiltinBase64.Install(engine);
+        BuiltinDomEvents.Install(engine);
     }
 
     /// <summary>
