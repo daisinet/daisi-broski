@@ -32,6 +32,7 @@ internal static class Builtins
         BuiltinTimers.Install(engine);
         BuiltinCollections.Install(engine);
         BuiltinPromise.Install(engine);
+        BuiltinTypedArrays.Install(engine);
     }
 
     /// <summary>
