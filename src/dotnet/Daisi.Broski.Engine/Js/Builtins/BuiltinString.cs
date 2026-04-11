@@ -52,6 +52,42 @@ internal static class BuiltinString
         proto.SetNonEnumerable("constructor", ctor);
         Builtins.Method(ctor, "fromCharCode", FromCharCode);
         engine.Globals["String"] = ctor;
+
+        // String.prototype[Symbol.iterator] — yields each
+        // UTF-16 code unit as a single-char string. Proper
+        // code-point iteration (surrogate pair combining) is
+        // deferred; it matches the common ASCII case correctly.
+        proto.SetSymbol(
+            engine.IteratorSymbol,
+            new JsFunction(
+                "[Symbol.iterator]",
+                (thisVal, args) => CreateStringIterator(engine, thisVal)));
+    }
+
+    private static JsObject CreateStringIterator(JsEngine engine, object? thisVal)
+    {
+        var source = JsValue.ToJsString(thisVal);
+        int index = 0;
+        var iter = new JsObject { Prototype = engine.ObjectPrototype };
+        iter.SetNonEnumerable(
+            "next",
+            new JsFunction(
+                "next",
+                (t, a) =>
+                {
+                    var result = new JsObject { Prototype = engine.ObjectPrototype };
+                    if (index >= source.Length)
+                    {
+                        result.Set("value", JsValue.Undefined);
+                        result.Set("done", JsValue.True);
+                        return result;
+                    }
+                    result.Set("value", source[index].ToString());
+                    result.Set("done", JsValue.False);
+                    index++;
+                    return result;
+                }));
+        return iter;
     }
 
     // -------------------------------------------------------------------

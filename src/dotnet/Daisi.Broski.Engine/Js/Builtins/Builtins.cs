@@ -23,6 +23,7 @@ internal static class Builtins
         BuiltinMath.Install(engine);
         BuiltinJson.Install(engine);
         BuiltinGlobal.Install(engine);
+        BuiltinSymbol.Install(engine);
         BuiltinArray.Install(engine);
         BuiltinString.Install(engine);
         BuiltinNumberBoolean.Install(engine);

@@ -100,6 +100,16 @@ public sealed class JsEngine
     public JsObject ReferenceErrorPrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// Well-known <c>Symbol.iterator</c> — the unique key used
+    /// to look up the iterator factory method on an iterable.
+    /// Every built-in iterable (Array, String) installs its
+    /// iterator factory under this key on its prototype; user
+    /// code can install its own by storing a function under
+    /// <c>obj[Symbol.iterator] = function() { ... }</c>.
+    /// </summary>
+    public JsSymbol IteratorSymbol { get; } = new JsSymbol("Symbol.iterator");
+
+    /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
     /// so scheduled callbacks see bindings established by the

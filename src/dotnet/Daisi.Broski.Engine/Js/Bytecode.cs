@@ -219,6 +219,30 @@ public enum OpCode : byte
     /// <c>extends</c> clause).
     /// </summary>
     LoadSuper,
+
+    // ---- ES2015 iterator protocol ----
+    /// <summary>
+    /// Start iterating an iterable value via the ES2015
+    /// iterator protocol. Stack <c>[iterable]</c> →
+    /// <c>[iter]</c>. Looks up <c>[Symbol.iterator]</c> on
+    /// the iterable, calls it with the iterable as
+    /// <c>this</c>, and pushes the returned iterator object.
+    /// Throws <c>TypeError</c> when the iterable is null /
+    /// undefined or has no Symbol.iterator method.
+    /// </summary>
+    ForOfStart,
+    /// <summary>
+    /// Advance a for-of iterator by one step. Stack before:
+    /// <c>[iter]</c>. On a non-done step the opcode leaves
+    /// the iterator at its position and pushes the step's
+    /// <c>value</c> onto the stack (result: <c>[iter, value]</c>).
+    /// On done, it pops the iterator and jumps to the u16
+    /// operand offset, which the compiler patches to point
+    /// past the loop body. The calling step's <c>next()</c>
+    /// method runs through the normal VM call machinery
+    /// (including any exception handling).
+    /// </summary>
+    ForOfNext,
     /// <summary>
     /// Return from the current function call. Pops the top of
     /// stack as the return value, restores the calling frame, and

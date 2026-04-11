@@ -60,6 +60,50 @@ internal static class BuiltinArray
         proto.SetNonEnumerable("constructor", ctor);
         Builtins.Method(ctor, "isArray", IsArray);
         engine.Globals["Array"] = ctor;
+
+        // Array.prototype[Symbol.iterator] — returns an
+        // iterator that walks the array's dense storage
+        // (capturing a live reference, not a snapshot).
+        proto.SetSymbol(
+            engine.IteratorSymbol,
+            new JsFunction(
+                "[Symbol.iterator]",
+                (thisVal, args) => CreateArrayIterator(engine, thisVal)));
+    }
+
+    /// <summary>
+    /// Build an iterator object for an array-like receiver.
+    /// The iterator captures the array reference and an
+    /// index; each <c>next()</c> call advances the index and
+    /// returns <c>{value, done}</c>. Iteration follows the
+    /// live <c>length</c> so mutations during iteration are
+    /// observed — consistent with how real engines treat
+    /// array iteration.
+    /// </summary>
+    private static JsObject CreateArrayIterator(JsEngine engine, object? thisVal)
+    {
+        var iter = new JsObject { Prototype = engine.ObjectPrototype };
+        int index = 0;
+        iter.SetNonEnumerable(
+            "next",
+            new JsFunction(
+                "next",
+                (t, a) =>
+                {
+                    var src = thisVal as JsArray;
+                    var result = new JsObject { Prototype = engine.ObjectPrototype };
+                    if (src is null || index >= src.Elements.Count)
+                    {
+                        result.Set("value", JsValue.Undefined);
+                        result.Set("done", JsValue.True);
+                        return result;
+                    }
+                    result.Set("value", src.Elements[index]);
+                    result.Set("done", JsValue.False);
+                    index++;
+                    return result;
+                }));
+        return iter;
     }
 
     // -------------------------------------------------------------------

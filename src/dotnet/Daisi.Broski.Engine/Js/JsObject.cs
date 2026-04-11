@@ -4,6 +4,36 @@ using System.Text;
 namespace Daisi.Broski.Engine.Js;
 
 /// <summary>
+/// ES2015 Symbol value. We represent every JS symbol as a
+/// unique .NET object — identity is the symbol's identity,
+/// regardless of description. This is not a spec-faithful
+/// primitive type (there is no real "symbol" typeof tag), but
+/// it gives us the only feature symbols are actually used for
+/// in practice: as unique keys for well-known extension points
+/// like <c>Symbol.iterator</c>. Phase 3b-7a ships this as the
+/// minimum-viable Symbol implementation. A proper primitive
+/// representation can be layered later without user-visible
+/// breakage if a site ever needs it.
+/// </summary>
+public sealed class JsSymbol
+{
+    /// <summary>
+    /// Human-readable description used by <c>toString</c> and
+    /// error messages. Has no effect on identity — two
+    /// symbols with the same description are still distinct.
+    /// </summary>
+    public string? Description { get; }
+
+    public JsSymbol(string? description = null)
+    {
+        Description = description;
+    }
+
+    public override string ToString() =>
+        Description is null ? "Symbol()" : $"Symbol({Description})";
+}
+
+/// <summary>
 /// Internal iterator state used by the <c>for..in</c> bytecode.
 /// Holds a pre-collected snapshot of the enumerable string keys
 /// in enumeration order (own properties first, then up the
@@ -93,6 +123,15 @@ public class JsObject
     private HashSet<string>? _nonEnumerable;
 
     /// <summary>
+    /// Symbol-keyed properties. Lazily allocated because most
+    /// objects never use symbol keys. Slice 3b-7a introduces
+    /// <c>Symbol.iterator</c>, which is currently the only
+    /// well-known symbol we consult; the bag exists to make
+    /// future symbol keys work without further plumbing.
+    /// </summary>
+    private Dictionary<JsSymbol, object?>? _symbolProperties;
+
+    /// <summary>
     /// Get a property by name, walking the prototype chain.
     /// Returns <see cref="JsValue.Undefined"/> if the property
     /// is not found anywhere along the chain — JavaScript does
@@ -179,6 +218,46 @@ public class JsObject
         {
             if (IsEnumerable(k)) yield return k;
         }
+    }
+
+    // -------- Symbol-keyed property access (slice 3b-7a) --------
+
+    /// <summary>
+    /// Look up a symbol-keyed property, walking the prototype
+    /// chain. Returns <see cref="JsValue.Undefined"/> when the
+    /// symbol is not found.
+    /// </summary>
+    public object? GetSymbol(JsSymbol key)
+    {
+        if (_symbolProperties is not null && _symbolProperties.TryGetValue(key, out var v))
+        {
+            return v;
+        }
+        return Prototype?.GetSymbol(key) ?? JsValue.Undefined;
+    }
+
+    /// <summary>
+    /// True if this object (or any prototype in its chain) has
+    /// a property under the given symbol key.
+    /// </summary>
+    public bool HasSymbol(JsSymbol key)
+    {
+        if (_symbolProperties is not null && _symbolProperties.ContainsKey(key))
+        {
+            return true;
+        }
+        return Prototype?.HasSymbol(key) ?? false;
+    }
+
+    /// <summary>
+    /// Store a value under a symbol key. Always goes to this
+    /// object's own symbol bag, shadowing any inherited
+    /// property.
+    /// </summary>
+    public void SetSymbol(JsSymbol key, object? value)
+    {
+        _symbolProperties ??= new Dictionary<JsSymbol, object?>();
+        _symbolProperties[key] = value;
     }
 }
 
