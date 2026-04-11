@@ -31,6 +31,30 @@ public enum OpCode : byte
     Pop,
     /// <summary>Duplicate the top of stack.</summary>
     Dup,
+    /// <summary>
+    /// Duplicate the top <i>two</i> values, preserving their order.
+    /// Stack <c>[..., a, b]</c> → <c>[..., a, b, a, b]</c>. Used
+    /// when compiling compound assignment and postfix update to a
+    /// computed member, where both the object and the key need to
+    /// be consumed twice (once to read the old value, once to
+    /// write the new one).
+    /// </summary>
+    Dup2,
+    /// <summary>
+    /// Pop the top of stack into a single VM-internal scratch
+    /// slot. Used by the compiler to save the "old value" of a
+    /// postfix update-to-member expression while the rest of the
+    /// read-modify-write sequence runs against the object and
+    /// key on the main stack. The slot is not observable to user
+    /// code and is overwritten by each subsequent
+    /// <see cref="StoreScratch"/>; nested postfix expressions are
+    /// safe because each completes its read of
+    /// <see cref="LoadScratch"/> before the next nested
+    /// expression writes its own scratch.
+    /// </summary>
+    StoreScratch,
+    /// <summary>Push the scratch slot to the top of stack.</summary>
+    LoadScratch,
 
     // ---- Globals ----
     /// <summary>Load a global by name. Operand: u16 name index. Throws if undeclared.</summary>
@@ -80,6 +104,66 @@ public enum OpCode : byte
 
     // ---- Type operators ----
     TypeOf,
+    /// <summary>
+    /// ES <c>in</c> operator. Stack <c>[key, obj]</c> →
+    /// <c>[bool]</c>. Coerces <c>key</c> to string and walks
+    /// <c>obj</c>'s prototype chain. Throws at runtime if
+    /// <c>obj</c> is not an object — ECMA §11.8.7.
+    /// </summary>
+    In,
+
+    // ---- Object / array construction ----
+    /// <summary>Push a fresh empty <see cref="JsObject"/>.</summary>
+    CreateObject,
+    /// <summary>
+    /// Pop the top <c>count</c> values, construct a
+    /// <see cref="JsArray"/> with those elements in stack order
+    /// (bottom-to-top), and push the array. Operand: u16 count.
+    /// </summary>
+    CreateArray,
+    /// <summary>
+    /// Initialize a property on the object currently under a
+    /// single value. Stack <c>[obj, value]</c> → <c>[obj]</c>.
+    /// Unlike <see cref="SetProperty"/>, this leaves the object
+    /// on the stack so successive <c>InitProperty</c>s can chain
+    /// cleanly inside an object literal. Operand: u16 name index.
+    /// </summary>
+    InitProperty,
+
+    // ---- Object / array member access ----
+    /// <summary>
+    /// Dotted member load. Stack <c>[obj]</c> → <c>[value]</c>.
+    /// Operand: u16 name index.
+    /// </summary>
+    GetProperty,
+    /// <summary>
+    /// Computed member load (<c>obj[key]</c>). Stack
+    /// <c>[obj, key]</c> → <c>[value]</c>. Key is coerced to
+    /// string via <see cref="JsValue.ToJsString"/>.
+    /// </summary>
+    GetPropertyComputed,
+    /// <summary>
+    /// Dotted member store. Stack <c>[obj, value]</c> →
+    /// <c>[value]</c>. Leaves the assigned value on the stack
+    /// so <c>obj.x = 1</c> has the expression value <c>1</c>.
+    /// Operand: u16 name index.
+    /// </summary>
+    SetProperty,
+    /// <summary>
+    /// Computed member store. Stack <c>[obj, key, value]</c> →
+    /// <c>[value]</c>.
+    /// </summary>
+    SetPropertyComputed,
+    /// <summary>
+    /// <c>delete obj.x</c>. Stack <c>[obj]</c> → <c>[bool]</c>.
+    /// Operand: u16 name index.
+    /// </summary>
+    DeleteProperty,
+    /// <summary>
+    /// <c>delete obj[key]</c>. Stack <c>[obj, key]</c> →
+    /// <c>[bool]</c>.
+    /// </summary>
+    DeletePropertyComputed,
 
     // ---- Control flow (operand: s16 relative offset) ----
     Jump,

@@ -67,7 +67,9 @@ public static class JsValue
         if (v is bool b) return b;
         if (v is double d) return d != 0 && !double.IsNaN(d);
         if (v is string s) return s.Length > 0;
-        // Objects always coerce to true. Slice 3 has no objects.
+        // Objects (including arrays, functions when we add them)
+        // always coerce to true — even empty arrays and boxed
+        // zero-like objects like `new Number(0)`.
         return true;
     }
 
@@ -82,6 +84,13 @@ public static class JsValue
         if (v is bool b) return b ? 1.0 : 0.0;
         if (v is double d) return d;
         if (v is string s) return StringToNumber(s);
+        // ECMA §9.3 also defines ToPrimitive(object, hint: Number)
+        // which, for arrays, delegates to join(',') and then
+        // StringToNumber. Empty array → "" → 0, single-element
+        // numeric array → the element as a number, etc. Plain
+        // objects → "[object Object]" → NaN.
+        if (v is JsArray arr) return StringToNumber(arr.Join(","));
+        if (v is JsObject) return double.NaN;
         return double.NaN;
     }
 
@@ -135,6 +144,14 @@ public static class JsValue
         if (v is bool b) return b ? "true" : "false";
         if (v is double d) return NumberToString(d);
         if (v is string s) return s;
+        // Array.prototype.toString delegates to join(',') per spec;
+        // we inline that to avoid a dependency on the built-in
+        // library (which slice 6 will ship).
+        if (v is JsArray arr) return arr.Join(",");
+        // Plain objects render as the canonical "[object Object]"
+        // string that `Object.prototype.toString` produces for
+        // untagged objects.
+        if (v is JsObject) return "[object Object]";
         return v?.ToString() ?? "null";
     }
 

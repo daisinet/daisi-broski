@@ -409,6 +409,18 @@ public sealed class JsCompiler
                 _chunk.Emit(BinaryOpCode(b.Operator));
                 return;
 
+            case MemberExpression m:
+                CompileMemberRead(m);
+                return;
+
+            case ArrayExpression ae:
+                CompileArrayExpression(ae);
+                return;
+
+            case ObjectExpression oe:
+                CompileObjectExpression(oe);
+                return;
+
             case LogicalExpression l:
                 CompileLogical(l);
                 return;
@@ -429,15 +441,6 @@ public sealed class JsCompiler
                 }
                 return;
 
-            case ArrayExpression ae:
-                throw new JsCompileException(
-                    "Array literals are not supported in this slice (phase 3a slice 4)", ae.Start);
-            case ObjectExpression oe:
-                throw new JsCompileException(
-                    "Object literals are not supported in this slice (phase 3a slice 4)", oe.Start);
-            case MemberExpression me:
-                throw new JsCompileException(
-                    "Member access is not supported in this slice (phase 3a slice 4)", me.Start);
             case CallExpression ce:
                 throw new JsCompileException(
                     "Function calls are not supported in this slice (phase 3a slice 4)", ce.Start);
@@ -492,11 +495,28 @@ public sealed class JsCompiler
         {
             // delete on an identifier — non-strict ES5 allows it and
             // returns false for declared bindings, true for anything
-            // that was never a binding. Member-access delete is slice 4.
+            // that was never a binding.
             if (u.Argument is Identifier idDel)
             {
                 int idx = _chunk.AddName(idDel.Name);
                 _chunk.EmitWithU16(OpCode.DeleteGlobal, idx);
+                return;
+            }
+            // delete on a member access — the common case: remove
+            // an own property from an object.
+            if (u.Argument is MemberExpression mDel)
+            {
+                CompileExpression(mDel.Object);
+                if (mDel.Computed)
+                {
+                    CompileExpression(mDel.Property);
+                    _chunk.Emit(OpCode.DeletePropertyComputed);
+                }
+                else
+                {
+                    int nameIdx = _chunk.AddName(((Identifier)mDel.Property).Name);
+                    _chunk.EmitWithU16(OpCode.DeleteProperty, nameIdx);
+                }
                 return;
             }
             // delete of a non-reference is a no-op that returns true.
@@ -525,38 +545,117 @@ public sealed class JsCompiler
 
     private void CompileUpdate(UpdateExpression upd)
     {
-        if (upd.Argument is not Identifier id)
-        {
-            throw new JsCompileException(
-                "Only identifier targets are supported for ++/-- in this slice", upd.Start);
-        }
-        int nameIdx = _chunk.AddName(id.Name);
         var addOrSub = upd.Operator == UpdateOperator.Increment ? OpCode.Add : OpCode.Sub;
 
-        if (upd.Prefix)
+        if (upd.Argument is Identifier id)
         {
-            // ++x: load, add 1 (via a const), store (store leaves new on stack).
-            _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
-            int oneIdx = _chunk.AddConstant(1.0);
-            _chunk.EmitWithU16(OpCode.PushConst, oneIdx);
-            _chunk.Emit(addOrSub);
-            _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+            int nameIdx = _chunk.AddName(id.Name);
+            if (upd.Prefix)
+            {
+                // ++x: load, add 1, store (store leaves new on stack).
+                _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+                EmitPushOne();
+                _chunk.Emit(addOrSub);
+                _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+            }
+            else
+            {
+                // x++: load, UnaryPlus to coerce to Number (ES5 §11.3.1:
+                // the result of postfix is the numeric version of the
+                // old value), dup, add 1, store, pop — leaves old.
+                _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+                _chunk.Emit(OpCode.UnaryPlus);
+                _chunk.Emit(OpCode.Dup);
+                EmitPushOne();
+                _chunk.Emit(addOrSub);
+                _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                _chunk.Emit(OpCode.Pop);
+            }
+            return;
         }
-        else
+
+        if (upd.Argument is MemberExpression m)
         {
-            // x++: load, UnaryPlus to coerce to Number (ES5 §11.3.1:
-            // the result of postfix is the numeric version of the old
-            // value, so `var s = '1'; s++;` leaves 1 not '1' in the
-            // completion), dup, add 1, store, pop — leaves old Number.
-            _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
-            _chunk.Emit(OpCode.UnaryPlus);
-            _chunk.Emit(OpCode.Dup);
-            int oneIdx = _chunk.AddConstant(1.0);
-            _chunk.EmitWithU16(OpCode.PushConst, oneIdx);
-            _chunk.Emit(addOrSub);
-            _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
-            _chunk.Emit(OpCode.Pop);
+            if (!m.Computed)
+            {
+                int nameIdx = _chunk.AddName(((Identifier)m.Property).Name);
+                if (upd.Prefix)
+                {
+                    // ++obj.x  →  [obj] [obj old] [obj oldN] [obj oldN 1] [obj new] set → [new]
+                    CompileExpression(m.Object);
+                    _chunk.Emit(OpCode.Dup);
+                    _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+                    _chunk.Emit(OpCode.UnaryPlus);
+                    EmitPushOne();
+                    _chunk.Emit(addOrSub);
+                    _chunk.EmitWithU16(OpCode.SetProperty, nameIdx);
+                }
+                else
+                {
+                    // obj.x++  →  compute new via scratch to save old.
+                    // [obj] [obj obj] [obj old] [obj oldN]
+                    // StoreScratch → [obj]  (scratch = oldN)
+                    // LoadScratch → [obj oldN]
+                    // [obj oldN 1] [obj new]
+                    // SetProperty → [new]
+                    // Pop → []
+                    // LoadScratch → [oldN]
+                    CompileExpression(m.Object);
+                    _chunk.Emit(OpCode.Dup);
+                    _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+                    _chunk.Emit(OpCode.UnaryPlus);
+                    _chunk.Emit(OpCode.StoreScratch);
+                    _chunk.Emit(OpCode.LoadScratch);
+                    EmitPushOne();
+                    _chunk.Emit(addOrSub);
+                    _chunk.EmitWithU16(OpCode.SetProperty, nameIdx);
+                    _chunk.Emit(OpCode.Pop);
+                    _chunk.Emit(OpCode.LoadScratch);
+                }
+                return;
+            }
+
+            // Computed member update — obj[key]++
+            if (upd.Prefix)
+            {
+                // ++obj[k]
+                CompileExpression(m.Object);
+                CompileExpression(m.Property);
+                _chunk.Emit(OpCode.Dup2);
+                _chunk.Emit(OpCode.GetPropertyComputed);
+                _chunk.Emit(OpCode.UnaryPlus);
+                EmitPushOne();
+                _chunk.Emit(addOrSub);
+                _chunk.Emit(OpCode.SetPropertyComputed);
+            }
+            else
+            {
+                // obj[k]++  — same scratch pattern as obj.x++.
+                CompileExpression(m.Object);
+                CompileExpression(m.Property);
+                _chunk.Emit(OpCode.Dup2);
+                _chunk.Emit(OpCode.GetPropertyComputed);
+                _chunk.Emit(OpCode.UnaryPlus);
+                _chunk.Emit(OpCode.StoreScratch);
+                _chunk.Emit(OpCode.LoadScratch);
+                EmitPushOne();
+                _chunk.Emit(addOrSub);
+                _chunk.Emit(OpCode.SetPropertyComputed);
+                _chunk.Emit(OpCode.Pop);
+                _chunk.Emit(OpCode.LoadScratch);
+            }
+            return;
         }
+
+        throw new JsCompileException(
+            "Invalid target for ++/--",
+            upd.Start);
+    }
+
+    private void EmitPushOne()
+    {
+        int oneIdx = _chunk.AddConstant(1.0);
+        _chunk.EmitWithU16(OpCode.PushConst, oneIdx);
     }
 
     private void CompileLogical(LogicalExpression l)
@@ -576,11 +675,22 @@ public sealed class JsCompiler
 
     private void CompileAssignment(AssignmentExpression a)
     {
-        if (a.Left is not Identifier id)
+        switch (a.Left)
         {
-            throw new JsCompileException(
-                "Only identifier targets are supported for assignment in this slice", a.Start);
+            case Identifier id:
+                CompileAssignmentToIdentifier(a, id);
+                return;
+            case MemberExpression m:
+                CompileAssignmentToMember(a, m);
+                return;
+            default:
+                throw new JsCompileException(
+                    "Invalid assignment target", a.Start);
         }
+    }
+
+    private void CompileAssignmentToIdentifier(AssignmentExpression a, Identifier id)
+    {
         int nameIdx = _chunk.AddName(id.Name);
 
         if (a.Operator == AssignmentOperator.Assign)
@@ -597,6 +707,53 @@ public sealed class JsCompiler
         _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
     }
 
+    private void CompileAssignmentToMember(AssignmentExpression a, MemberExpression m)
+    {
+        if (!m.Computed)
+        {
+            // obj.name = value  or  obj.name += value
+            var name = ((Identifier)m.Property).Name;
+            int nameIdx = _chunk.AddName(name);
+
+            if (a.Operator == AssignmentOperator.Assign)
+            {
+                CompileExpression(m.Object);
+                CompileExpression(a.Right);
+                _chunk.EmitWithU16(OpCode.SetProperty, nameIdx);
+                return;
+            }
+
+            // Compound: compile obj, dup for read-then-write,
+            // read old, compile rhs, combine, set.
+            CompileExpression(m.Object);
+            _chunk.Emit(OpCode.Dup);
+            _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+            CompileExpression(a.Right);
+            _chunk.Emit(CompoundAssignmentOpCode(a.Operator));
+            _chunk.EmitWithU16(OpCode.SetProperty, nameIdx);
+            return;
+        }
+
+        // obj[key] = value  or  obj[key] += value
+        if (a.Operator == AssignmentOperator.Assign)
+        {
+            CompileExpression(m.Object);
+            CompileExpression(m.Property);
+            CompileExpression(a.Right);
+            _chunk.Emit(OpCode.SetPropertyComputed);
+            return;
+        }
+
+        // Compound — need obj and key twice.
+        CompileExpression(m.Object);
+        CompileExpression(m.Property);
+        _chunk.Emit(OpCode.Dup2);
+        _chunk.Emit(OpCode.GetPropertyComputed);
+        CompileExpression(a.Right);
+        _chunk.Emit(CompoundAssignmentOpCode(a.Operator));
+        _chunk.Emit(OpCode.SetPropertyComputed);
+    }
+
     private void CompileConditional(ConditionalExpression c)
     {
         CompileExpression(c.Test);
@@ -607,6 +764,77 @@ public sealed class JsCompiler
         CompileExpression(c.Alternate);
         _chunk.PatchJump(endJump);
     }
+
+    private void CompileMemberRead(MemberExpression m)
+    {
+        CompileExpression(m.Object);
+        if (m.Computed)
+        {
+            CompileExpression(m.Property);
+            _chunk.Emit(OpCode.GetPropertyComputed);
+        }
+        else
+        {
+            var name = ((Identifier)m.Property).Name;
+            int nameIdx = _chunk.AddName(name);
+            _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+        }
+    }
+
+    private void CompileArrayExpression(ArrayExpression ae)
+    {
+        // Holes (null entries) are approximated as undefined —
+        // phase-3a slice 4a does not distinguish a true array hole
+        // from an explicit undefined slot. Tests cover the common
+        // cases; the spec distinction matters only for `in` on the
+        // index and for sparse iteration, neither of which is
+        // reachable yet.
+        foreach (var e in ae.Elements)
+        {
+            if (e is null)
+            {
+                _chunk.Emit(OpCode.PushUndefined);
+            }
+            else
+            {
+                CompileExpression(e);
+            }
+        }
+        _chunk.EmitWithU16(OpCode.CreateArray, ae.Elements.Count);
+    }
+
+    private void CompileObjectExpression(ObjectExpression oe)
+    {
+        _chunk.Emit(OpCode.CreateObject);
+        foreach (var prop in oe.Properties)
+        {
+            if (prop.Kind != PropertyKind.Init)
+            {
+                throw new JsCompileException(
+                    "Getter / setter accessor properties are not supported in this slice (phase 3a slice 6)",
+                    prop.Start);
+            }
+            var name = PropertyKeyToName(prop.Key);
+            int nameIdx = _chunk.AddName(name);
+            CompileExpression(prop.Value);
+            _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
+        }
+    }
+
+    /// <summary>
+    /// Normalize an object-literal property key to its string form.
+    /// The parser accepts identifiers (including reserved words as
+    /// ES5 bare keys), string literals, and number literals; the
+    /// compiler and VM only deal with string names, so we coerce
+    /// once here.
+    /// </summary>
+    private static string PropertyKeyToName(Expression key) => key switch
+    {
+        Identifier id => id.Name,
+        Literal { Kind: LiteralKind.String, Value: string s } => s,
+        Literal { Kind: LiteralKind.Number, Value: double n } => JsValue.ToJsString(n),
+        _ => throw new JsCompileException($"Unsupported property key: {key.GetType().Name}", key.Start),
+    };
 
     // -------------------------------------------------------------------
     // Operator tables
@@ -633,9 +861,10 @@ public sealed class JsCompiler
         BinaryOperator.LeftShift => OpCode.Shl,
         BinaryOperator.RightShift => OpCode.Shr,
         BinaryOperator.UnsignedRightShift => OpCode.Ushr,
-        BinaryOperator.InstanceOf or BinaryOperator.In =>
+        BinaryOperator.In => OpCode.In,
+        BinaryOperator.InstanceOf =>
             throw new JsCompileException(
-                $"'{op}' requires object semantics (phase 3a slice 4)", 0),
+                "'instanceof' requires function objects (phase 3a slice 4b)", 0),
         _ => throw new ArgumentOutOfRangeException(nameof(op), op, null),
     };
 
