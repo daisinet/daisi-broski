@@ -414,11 +414,13 @@ Fuzzing (phase 5+):
 
 ## 11. Open questions
 
-1. **Should we ship an NFA regex engine, or reuse `System.Text.RegularExpressions`?** BCL regex has different Unicode behavior and doesn't match ECMA-262 regex in several edge cases. Most sites' regexes are simple enough that BCL works; a site that relies on ECMA regex `\p{...}` semantics or lookbehind edge cases would break. Tentative: BCL regex with a compatibility wrapper that translates the common differences, escalate to a custom engine only when needed.
+Long-form write-ups of the non-trivial choices live in [design-decisions.md](design-decisions.md). The short versions:
+
+1. **Regex engine — BCL vs. hand-written ECMA-262.** BCL regex has different Unicode behavior and doesn't match ECMA-262 in several edge cases, and it doesn't expose a step budget so catastrophic-backtracking is a DoS risk. Full analysis in [DD-01](design-decisions.md#dd-01--regex-engine). Tentative: BCL as a phase 3a placeholder, hand-written NFA by phase 3c.
 2. **How aggressive should we be about spoofing fingerprints?** Beyond User-Agent, sites fingerprint on `navigator.platform`, `window.screen`, Canvas API output, WebGL vendor strings, etc. We can supply deterministic fake values, but this crosses into evasion territory. Default: report honestly where possible, supply plausible defaults only for the APIs every site checks.
 3. **HTTP/3?** `HttpClient` supports it in .NET 10 but it's not default-on. Some sites negotiate HTTP/3 only. Enable behind a flag initially, make default later.
 4. **Process-per-session vs process-per-origin?** Start with per-session (simpler). If we grow multi-tab use cases, the sandbox launcher already supports per-origin — it's just "spawn more children, route navigations by origin."
-5. **GC strategy for the JS heap.** Currently we lean on .NET's GC, treating JS objects as regular C# references. This is fast and correct but means every JS object pays the C# object header (~16 bytes on 64-bit). For sites with millions of small JS objects (think: graph libraries, big JSON payloads), this is significant overhead. A pooled/arena allocator for short-lived JS values is a phase 6+ optimization.
+5. **GC strategy for the JS heap.** Lean on .NET GC initially; the alternatives are a tagged-union `JsValue` struct, a pooled struct-of-arrays heap, or a V8-style young-gen arena over managed old gen. Full analysis in [DD-05](design-decisions.md#dd-05--js-heap-and-gc-strategy). Tentative: .NET GC in phase 3a–3b, refactor to tagged-union struct in phase 3c, decide on arena/pool only after phase-7 profiling.
 
 ## 12. What a minimum-viable phase-1 success looks like
 
