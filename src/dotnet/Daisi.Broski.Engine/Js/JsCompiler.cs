@@ -210,8 +210,11 @@ public sealed class JsCompiler
             {
                 foreach (var d in vd.Declarations)
                 {
-                    int idx = _chunk.AddName(d.Id.Name);
-                    _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                    foreach (var name in CollectPatternNames(d.Id))
+                    {
+                        int idx = _chunk.AddName(name);
+                        _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                    }
                 }
             }
             else if (stmt is FunctionDeclaration fd)
@@ -289,8 +292,11 @@ public sealed class JsCompiler
             {
                 foreach (var d in vd.Declarations)
                 {
-                    int idx = _chunk.AddName(d.Id.Name);
-                    _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                    foreach (var name in CollectPatternNames(d.Id))
+                    {
+                        int idx = _chunk.AddName(name);
+                        _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                    }
                 }
             }
             else if (stmt is FunctionDeclaration fd)
@@ -347,8 +353,11 @@ public sealed class JsCompiler
                 if (vd.Kind != VariableDeclarationKind.Var) break;
                 foreach (var d in vd.Declarations)
                 {
-                    int idx = _chunk.AddName(d.Id.Name);
-                    _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+                    foreach (var name in CollectPatternNames(d.Id))
+                    {
+                        int idx = _chunk.AddName(name);
+                        _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+                    }
                 }
                 break;
             case FunctionDeclaration:
@@ -377,8 +386,11 @@ public sealed class JsCompiler
                 {
                     foreach (var d in fvd.Declarations)
                     {
-                        int idx = _chunk.AddName(d.Id.Name);
-                        _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+                        foreach (var name in CollectPatternNames(d.Id))
+                        {
+                            int idx = _chunk.AddName(name);
+                            _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+                        }
                     }
                 }
                 HoistInStatement(f.Body);
@@ -627,10 +639,172 @@ public sealed class JsCompiler
             {
                 continue;
             }
-            int idx = _chunk.AddName(d.Id.Name);
-            _chunk.EmitWithU16(OpCode.StoreGlobal, idx);
-            _chunk.Emit(OpCode.Pop); // Statement position, discard the value.
+            // Bind the init value (now on TOS) to the declarator
+            // target. For a simple identifier this is just a
+            // StoreGlobal+Pop; for object/array patterns it is a
+            // recursive walk that emits Dup+GetProperty chains.
+            CompilePatternBinding(d.Id);
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Destructuring patterns (slice 3b-4)
+    // -------------------------------------------------------------------
+    //
+    // Patterns are a purely compile-time lowering to the existing
+    // Dup / GetProperty / GetPropertyComputed / StoreGlobal opcodes.
+    // The VM never sees a pattern node directly. Each pattern-binding
+    // emit consumes the single source value that sits at TOS when
+    // CompilePatternBinding is called, and leaves the stack net-zero.
+    //
+    // Default values (e.g. `{a = 1}`) are evaluated lazily — the
+    // generated code tests the extracted slot against `undefined`
+    // via a strict-equal and only evaluates the default expression
+    // if needed.
+    //
+    // Limitations intentionally deferred from this slice:
+    //   - rest elements  (`...rest`) in patterns
+    //   - function parameter destructuring
+    //   - assignment-expression destructuring (non-declaration LHS)
+    //   - destructuring inside for..in / for..of heads
+    // These are picked up in later phase-3b slices.
+
+    /// <summary>
+    /// Walk a binding target (simple identifier or destructuring
+    /// pattern) and collect the set of variable names it
+    /// introduces. Used by all hoisting call sites that need to
+    /// emit <see cref="OpCode.DeclareGlobal"/> or
+    /// <see cref="OpCode.DeclareLet"/> for each bound name before
+    /// the initializer runs.
+    /// </summary>
+    private static IEnumerable<string> CollectPatternNames(JsNode target)
+    {
+        var names = new List<string>();
+        WalkPatternNames(target, names);
+        return names;
+    }
+
+    private static void WalkPatternNames(JsNode target, List<string> names)
+    {
+        switch (target)
+        {
+            case Identifier id:
+                names.Add(id.Name);
+                break;
+            case ObjectPattern op:
+                foreach (var p in op.Properties)
+                {
+                    WalkPatternNames(p.Value, names);
+                }
+                break;
+            case ArrayPattern ap:
+                foreach (var e in ap.Elements)
+                {
+                    if (e is not null) WalkPatternNames(e.Target, names);
+                }
+                break;
+            default:
+                throw new JsCompileException(
+                    $"Unsupported binding target: {target.GetType().Name}",
+                    target.Start);
+        }
+    }
+
+    /// <summary>
+    /// Emit code that binds the value currently on top of the
+    /// VM stack to the given pattern target, consuming the
+    /// value. For an <see cref="Identifier"/> this is the simple
+    /// StoreGlobal+Pop sequence; for object and array patterns
+    /// it recursively destructures the source value.
+    /// </summary>
+    private void CompilePatternBinding(JsNode target)
+    {
+        switch (target)
+        {
+            case Identifier id:
+                {
+                    int nameIdx = _chunk.AddName(id.Name);
+                    _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                    _chunk.Emit(OpCode.Pop);
+                    return;
+                }
+            case ObjectPattern op:
+                CompileObjectPatternBinding(op);
+                return;
+            case ArrayPattern ap:
+                CompileArrayPatternBinding(ap);
+                return;
+            default:
+                throw new JsCompileException(
+                    $"Unsupported binding target: {target.GetType().Name}",
+                    target.Start);
+        }
+    }
+
+    private void CompileObjectPatternBinding(ObjectPattern pattern)
+    {
+        // Source value sits at TOS. For each property:
+        //   Dup                     // [src, src]
+        //   GetProperty <key>       // [src, val]
+        //   (default handling)
+        //   CompilePatternBinding   // consumes val, leaves [src]
+        // Then Pop to drop the source.
+        foreach (var prop in pattern.Properties)
+        {
+            _chunk.Emit(OpCode.Dup);
+            int keyIdx = _chunk.AddName(prop.Key);
+            _chunk.EmitWithU16(OpCode.GetProperty, keyIdx);
+            EmitDefaultIfUndefined(prop.Default);
+            CompilePatternBinding(prop.Value);
+        }
+        _chunk.Emit(OpCode.Pop);
+    }
+
+    private void CompileArrayPatternBinding(ArrayPattern pattern)
+    {
+        // Source value sits at TOS. For each non-null element:
+        //   Dup                     // [src, src]
+        //   PushConst <index>       // [src, src, i]
+        //   GetPropertyComputed     // [src, val]
+        //   (default handling)
+        //   CompilePatternBinding   // consumes val, leaves [src]
+        // Null elements are elisions — skip them but still advance
+        // the source index.
+        for (int i = 0; i < pattern.Elements.Count; i++)
+        {
+            var e = pattern.Elements[i];
+            if (e is null) continue;
+            _chunk.Emit(OpCode.Dup);
+            int constIdx = _chunk.AddConstant((double)i);
+            _chunk.EmitWithU16(OpCode.PushConst, constIdx);
+            _chunk.Emit(OpCode.GetPropertyComputed);
+            EmitDefaultIfUndefined(e.Default);
+            CompilePatternBinding(e.Target);
+        }
+        _chunk.Emit(OpCode.Pop);
+    }
+
+    /// <summary>
+    /// If <paramref name="defaultExpr"/> is non-null, emit code
+    /// that inspects the value currently at TOS and, if it is
+    /// strictly equal to <c>undefined</c>, replaces it with
+    /// the evaluated default expression. Leaves the chosen
+    /// value at TOS either way. No-op if there is no default.
+    /// </summary>
+    private void EmitDefaultIfUndefined(Expression? defaultExpr)
+    {
+        if (defaultExpr is null) return;
+        // Stack: [val]
+        _chunk.Emit(OpCode.Dup);                   // [val, val]
+        _chunk.Emit(OpCode.PushUndefined);         // [val, val, undef]
+        _chunk.Emit(OpCode.StrictEq);              // [val, isUndef]
+        int notUndef = _chunk.EmitJump(OpCode.JumpIfFalse); // consumes bool
+        // val === undefined branch: discard val, push default.
+        _chunk.Emit(OpCode.Pop);                   // []
+        CompileExpression(defaultExpr);            // [defval]
+        int afterDefault = _chunk.EmitJump(OpCode.Jump);
+        _chunk.PatchJump(notUndef);                // land here: [val]
+        _chunk.PatchJump(afterDefault);            // both branches converge with chosen value at TOS
     }
 
     // -------------------------------------------------------------------
@@ -720,8 +894,11 @@ public sealed class JsCompiler
             var vdInit = (VariableDeclaration)stmt.Init!;
             foreach (var d in vdInit.Declarations)
             {
-                int idx = _chunk.AddName(d.Id.Name);
-                _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                foreach (var name in CollectPatternNames(d.Id))
+                {
+                    int idx = _chunk.AddName(name);
+                    _chunk.EmitWithU16(OpCode.DeclareLet, idx);
+                }
             }
         }
 
@@ -1317,7 +1494,8 @@ public sealed class JsCompiler
         {
             Identifier id => id.Name,
             VariableDeclaration vd when vd.Declarations.Count == 1
-                => vd.Declarations[0].Id.Name,
+                && vd.Declarations[0].Id is Identifier ident
+                => ident.Name,
             _ => null,
         };
         if (bindingName is null)

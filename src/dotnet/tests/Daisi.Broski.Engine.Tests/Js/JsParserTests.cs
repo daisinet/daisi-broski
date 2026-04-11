@@ -364,7 +364,7 @@ public class JsParserTests
         var stmt = ParseSingleStatement<VariableDeclaration>("var x = 1;");
         Assert.Equal(VariableDeclarationKind.Var, stmt.Kind);
         Assert.Single(stmt.Declarations);
-        Assert.Equal("x", stmt.Declarations[0].Id.Name);
+        Assert.Equal("x", Assert.IsType<Identifier>(stmt.Declarations[0].Id).Name);
         Assert.NotNull(stmt.Declarations[0].Init);
     }
 
@@ -455,7 +455,7 @@ public class JsParserTests
         var stmt = ParseSingleStatement<ForInStatement>("for (var k in obj) foo(k);");
         var decl = Assert.IsType<VariableDeclaration>(stmt.Left);
         Assert.Single(decl.Declarations);
-        Assert.Equal("k", decl.Declarations[0].Id.Name);
+        Assert.Equal("k", Assert.IsType<Identifier>(decl.Declarations[0].Id).Name);
     }
 
     [Fact]
