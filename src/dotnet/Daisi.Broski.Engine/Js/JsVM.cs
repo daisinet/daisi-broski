@@ -57,6 +57,23 @@ public sealed class JsVM
     // env, this, plus constructor metadata for `new`.
     private readonly Stack<CallFrame> _frames = new();
 
+    // Exception handler stack + pending-exception slot. Handlers
+    // are registered by PushCatchHandler / PushFinallyHandler and
+    // consumed on Throw. A finally-only handler sets
+    // <see cref="_pendingException"/> when it fires; EndFinally
+    // checks that slot and re-throws if non-null.
+    private readonly Stack<HandlerRecord> _handlers = new();
+    private object? _pendingException;
+
+    private sealed class HandlerRecord
+    {
+        public int HandlerIp;
+        public bool IsCatch;
+        public int StackBase;
+        public int FrameDepth;
+        public JsEnvironment Env = null!;
+    }
+
     private sealed class CallFrame
     {
         public byte[] Code = null!;
@@ -142,7 +159,8 @@ public sealed class JsVM
                         var name = _names[ReadU16()];
                         if (!_env.TryResolve(name, out var v))
                         {
-                            throw new JsRuntimeException($"{name} is not defined");
+                            RaiseError("ReferenceError", $"{name} is not defined");
+                            break;
                         }
                         Push(v);
                     }
@@ -208,6 +226,14 @@ public sealed class JsVM
                             // because the compiler rejects it.
                             return CompletionValue;
                         }
+                        // Drop any handlers installed in this frame —
+                        // we're returning normally, so they no
+                        // longer apply.
+                        while (_handlers.Count > 0 &&
+                               _handlers.Peek().FrameDepth == _frames.Count)
+                        {
+                            _handlers.Pop();
+                        }
                         var frame = _frames.Pop();
                         // Restore caller state.
                         _code = frame.Code;
@@ -234,7 +260,13 @@ public sealed class JsVM
                     {
                         var ctor = Pop();
                         var obj = Pop();
-                        Push(IsInstanceOf(obj, ctor));
+                        if (ctor is not JsFunction fn)
+                        {
+                            RaiseError("TypeError",
+                                "Right-hand side of instanceof is not a function");
+                            break;
+                        }
+                        Push(IsInstanceOf(obj, fn));
                     }
                     break;
                 case OpCode.LoadThis:
@@ -246,6 +278,57 @@ public sealed class JsVM
                         _stack[_sp - 1] = _stack[_sp - 2];
                         _stack[_sp - 2] = top;
                     }
+                    break;
+
+                // ---- Exception handling ----
+                case OpCode.PushCatchHandler:
+                    {
+                        short offset = ReadS16();
+                        _handlers.Push(new HandlerRecord
+                        {
+                            HandlerIp = _ip + offset,
+                            IsCatch = true,
+                            StackBase = _sp,
+                            FrameDepth = _frames.Count,
+                            Env = _env,
+                        });
+                    }
+                    break;
+                case OpCode.PushFinallyHandler:
+                    {
+                        short offset = ReadS16();
+                        _handlers.Push(new HandlerRecord
+                        {
+                            HandlerIp = _ip + offset,
+                            IsCatch = false,
+                            StackBase = _sp,
+                            FrameDepth = _frames.Count,
+                            Env = _env,
+                        });
+                    }
+                    break;
+                case OpCode.PopHandler:
+                    _handlers.Pop();
+                    break;
+                case OpCode.Throw:
+                    {
+                        var value = Pop();
+                        DoThrow(value);
+                    }
+                    break;
+                case OpCode.EndFinally:
+                    if (_pendingException is not null)
+                    {
+                        var pending = _pendingException;
+                        _pendingException = null;
+                        DoThrow(pending);
+                    }
+                    break;
+                case OpCode.PushEnv:
+                    _env = new JsEnvironment(_env);
+                    break;
+                case OpCode.PopEnv:
+                    _env = _env.Parent!;
                     break;
 
                 // ---- for-in iteration ----
@@ -370,8 +453,9 @@ public sealed class JsVM
                         var key = Pop();
                         if (obj is not JsObject jo)
                         {
-                            throw new JsRuntimeException(
+                            RaiseError("TypeError",
                                 "Cannot use 'in' operator on non-object");
+                            break;
                         }
                         Push(jo.Has(JsValue.ToJsString(key)));
                     }
@@ -416,8 +500,9 @@ public sealed class JsVM
                         var target = _stack[_sp - 1];
                         if (target is not JsObject jo)
                         {
-                            throw new JsRuntimeException(
-                                $"Cannot read property '{name}' of non-object");
+                            RaiseError("TypeError",
+                                $"Cannot read property '{name}' of {JsValue.ToJsString(target)}");
+                            break;
                         }
                         _stack[_sp - 1] = jo.Get(name);
                     }
@@ -428,8 +513,9 @@ public sealed class JsVM
                         var target = _stack[_sp - 1];
                         if (target is not JsObject jo)
                         {
-                            throw new JsRuntimeException(
-                                "Cannot read property of non-object");
+                            RaiseError("TypeError",
+                                $"Cannot read property of {JsValue.ToJsString(target)}");
+                            break;
                         }
                         _stack[_sp - 1] = jo.Get(JsValue.ToJsString(key));
                     }
@@ -442,8 +528,9 @@ public sealed class JsVM
                         var target = _stack[_sp - 2];
                         if (target is not JsObject jo)
                         {
-                            throw new JsRuntimeException(
-                                $"Cannot assign property '{name}' on non-object");
+                            RaiseError("TypeError",
+                                $"Cannot assign property '{name}' on {JsValue.ToJsString(target)}");
+                            break;
                         }
                         jo.Set(name, value);
                         _stack[_sp - 2] = value;
@@ -458,8 +545,9 @@ public sealed class JsVM
                         var target = _stack[_sp - 3];
                         if (target is not JsObject jo)
                         {
-                            throw new JsRuntimeException(
-                                "Cannot assign property on non-object");
+                            RaiseError("TypeError",
+                                $"Cannot assign property on {JsValue.ToJsString(target)}");
+                            break;
                         }
                         jo.Set(JsValue.ToJsString(key), value);
                         _stack[_sp - 3] = value;
@@ -611,6 +699,92 @@ public sealed class JsVM
     }
 
     // -------------------------------------------------------------------
+    // Exception handling
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Unwind handlers and call frames to find the nearest
+    /// <c>try</c> handler for <paramref name="value"/>. On success,
+    /// restores the stack and env to the state at handler-push
+    /// time and jumps execution to the handler target. On
+    /// failure (no handler anywhere), throws
+    /// <see cref="JsRuntimeException"/> with the value attached —
+    /// this escapes the VM as a .NET exception.
+    /// </summary>
+    private void DoThrow(object? value)
+    {
+        while (true)
+        {
+            // Drop any stale handlers whose frame has been
+            // unwound past (shouldn't happen if frame-pop cleans
+            // up, but belt-and-suspenders).
+            while (_handlers.Count > 0 &&
+                   _handlers.Peek().FrameDepth > _frames.Count)
+            {
+                _handlers.Pop();
+            }
+
+            if (_handlers.Count > 0 &&
+                _handlers.Peek().FrameDepth == _frames.Count)
+            {
+                var h = _handlers.Pop();
+                _sp = h.StackBase;
+                _env = h.Env;
+                _ip = h.HandlerIp;
+                if (h.IsCatch)
+                {
+                    // Push the thrown value onto the stack for the
+                    // catch binding sequence to consume.
+                    Push(value);
+                    _pendingException = null;
+                }
+                else
+                {
+                    // Finally-only — carry the pending throw
+                    // through the finally body; EndFinally will
+                    // re-throw it.
+                    _pendingException = value;
+                }
+                return;
+            }
+
+            // No handler in the current frame — unwind to the
+            // caller. If there's no caller, the throw escapes
+            // as a .NET exception.
+            if (_frames.Count == 0)
+            {
+                throw new JsRuntimeException(
+                    $"Uncaught {JsValue.ToJsString(value)}",
+                    value);
+            }
+
+            var frame = _frames.Pop();
+            _code = frame.Code;
+            _constants = frame.Constants;
+            _names = frame.Names;
+            _ip = frame.Ip;
+            _env = frame.Env;
+            _this = frame.This;
+        }
+    }
+
+    /// <summary>
+    /// Raise a catchable JS error with the given <c>name</c> and
+    /// <c>message</c>. Constructs a plain <see cref="JsObject"/>
+    /// with those two properties (the full <c>Error</c> constructor
+    /// is a slice-6 built-in) and routes it through
+    /// <see cref="DoThrow"/> so script-level <c>try</c>/<c>catch</c>
+    /// can inspect it.
+    /// </summary>
+    private void RaiseError(string name, string message)
+    {
+        var err = new JsObject();
+        err.Set("name", name);
+        err.Set("message", message);
+        DoThrow(err);
+    }
+
+    // -------------------------------------------------------------------
     // Call / New / Return helpers
     // -------------------------------------------------------------------
 
@@ -632,7 +806,9 @@ public sealed class JsVM
 
         if (calleeValue is not JsFunction fn)
         {
-            throw new JsRuntimeException("Call target is not a function");
+            RaiseError("TypeError",
+                $"{JsValue.ToJsString(calleeValue)} is not a function");
+            return;
         }
 
         InvokeFunction(fn, thisVal, args, isConstructor: false, newInstance: null);
@@ -653,12 +829,15 @@ public sealed class JsVM
 
         if (calleeValue is not JsFunction fn)
         {
-            throw new JsRuntimeException("'new' target is not a function");
+            RaiseError("TypeError",
+                $"{JsValue.ToJsString(calleeValue)} is not a constructor");
+            return;
         }
         if (fn.NativeImpl is not null)
         {
-            throw new JsRuntimeException(
+            RaiseError("TypeError",
                 "'new' on native functions is not supported in this slice");
+            return;
         }
 
         // Read `F.prototype` live so user reassignment
@@ -767,13 +946,8 @@ public sealed class JsVM
     /// (per spec, <c>1 instanceof Number</c> is false, not an
     /// error).
     /// </summary>
-    private static bool IsInstanceOf(object? obj, object? ctor)
+    private static bool IsInstanceOf(object? obj, JsFunction fn)
     {
-        if (ctor is not JsFunction fn)
-        {
-            throw new JsRuntimeException(
-                "Right-hand side of instanceof is not a function");
-        }
         if (obj is not JsObject target) return false;
 
         // Read F.prototype live so user-reassigned prototypes
@@ -820,12 +994,27 @@ public sealed class JsVM
 
 /// <summary>
 /// Runtime error thrown by <see cref="JsVM"/> when execution cannot
-/// continue — typically reading an undeclared global or encountering
-/// an unknown opcode. Once slice 5 lands <c>try</c> / <c>catch</c>
-/// these will become catchable JS exceptions; for now they are
-/// uncaught .NET exceptions that propagate to the host.
+/// continue. Two cases:
+///
+/// - <b>Uncaught JS exceptions.</b> A <c>throw</c> in script that
+///   escapes all <c>try</c>/<c>catch</c> handlers becomes a
+///   <see cref="JsRuntimeException"/> whose <see cref="JsValue"/>
+///   is the thrown value and whose message is its string form.
+///   Hosts can inspect <see cref="JsValue"/> to inspect the
+///   structured error (e.g., to read <c>.name</c> and
+///   <c>.message</c> on a thrown <c>Error</c>-shaped object).
+///
+/// - <b>Internal VM invariant violations.</b> Unknown opcodes,
+///   stack underflow, and similar bugs still throw this exception
+///   with a null <see cref="JsValue"/>. These are not catchable
+///   from script and indicate a compiler or VM defect.
 /// </summary>
 public sealed class JsRuntimeException : Exception
 {
-    public JsRuntimeException(string message) : base(message) { }
+    public object? JsValue { get; }
+
+    public JsRuntimeException(string message, object? jsValue = null) : base(message)
+    {
+        JsValue = jsValue;
+    }
 }

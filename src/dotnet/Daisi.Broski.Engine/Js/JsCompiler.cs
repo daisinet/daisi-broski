@@ -404,12 +404,13 @@ public sealed class JsCompiler
                 return;
 
             case ThrowStatement ts:
-                throw new JsCompileException(
-                    "'throw' requires the exception machinery (phase 3a slice 5)", ts.Start);
+                CompileExpression(ts.Argument);
+                _chunk.Emit(OpCode.Throw);
+                return;
 
             case TryStatement tr:
-                throw new JsCompileException(
-                    "'try' requires the exception machinery (phase 3a slice 5)", tr.Start);
+                CompileTry(tr);
+                return;
 
             case SwitchStatement sw:
                 CompileSwitch(sw);
@@ -1253,6 +1254,169 @@ public sealed class JsCompiler
         {
             _chunk.PatchJump(noMatchJump);
         }
+    }
+
+    // -------------------------------------------------------------------
+    // try / catch / finally
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Dispatch to one of the three try-statement shapes. Each
+    /// shape has a tailored code layout to minimize redundant
+    /// finally-body duplication; see the individual methods.
+    /// </summary>
+    private void CompileTry(TryStatement stmt)
+    {
+        bool hasCatch = stmt.Handler is not null;
+        bool hasFinally = stmt.Finalizer is not null;
+        if (hasCatch && hasFinally)
+        {
+            CompileTryCatchFinally(stmt);
+        }
+        else if (hasCatch)
+        {
+            CompileTryCatch(stmt);
+        }
+        else
+        {
+            CompileTryFinally(stmt);
+        }
+    }
+
+    /// <summary>
+    /// Layout:
+    /// <code>
+    /// PushCatchHandler catch_label
+    /// &lt;try body&gt;
+    /// PopHandler
+    /// Jump end
+    /// catch_label:
+    ///     PushEnv
+    ///     DeclareVar e
+    ///     StoreName e
+    ///     Pop                    (discard value left by Store)
+    ///     &lt;catch body&gt;
+    ///     PopEnv
+    /// end:
+    /// </code>
+    /// </summary>
+    private void CompileTryCatch(TryStatement stmt)
+    {
+        var handler = stmt.Handler!;
+        int catchJump = _chunk.EmitJump(OpCode.PushCatchHandler);
+
+        CompileStatement(stmt.Block);
+        _chunk.Emit(OpCode.PopHandler);
+        int endJump = _chunk.EmitJump(OpCode.Jump);
+
+        _chunk.PatchJump(catchJump);
+        EmitCatchParamBind(handler.Param.Name);
+        CompileStatement(handler.Body);
+        _chunk.Emit(OpCode.PopEnv);
+        _chunk.PatchJump(endJump);
+    }
+
+    /// <summary>
+    /// Layout:
+    /// <code>
+    /// PushFinallyHandler finally_label
+    /// &lt;try body&gt;
+    /// PopHandler
+    /// &lt;finally body&gt;          (normal path)
+    /// Jump end
+    /// finally_label:
+    ///     &lt;finally body&gt;      (exception path — separate copy)
+    ///     EndFinally             (re-throw if pending)
+    /// end:
+    /// </code>
+    /// The finally body is emitted twice for simplicity. A
+    /// future optimization could use a small subroutine
+    /// convention if profiling shows finally-heavy code matters.
+    /// </summary>
+    private void CompileTryFinally(TryStatement stmt)
+    {
+        int handlerJump = _chunk.EmitJump(OpCode.PushFinallyHandler);
+
+        CompileStatement(stmt.Block);
+        _chunk.Emit(OpCode.PopHandler);
+        CompileStatement(stmt.Finalizer!);
+        int endJump = _chunk.EmitJump(OpCode.Jump);
+
+        _chunk.PatchJump(handlerJump);
+        CompileStatement(stmt.Finalizer!);
+        _chunk.Emit(OpCode.EndFinally);
+
+        _chunk.PatchJump(endJump);
+    }
+
+    /// <summary>
+    /// Layout:
+    /// <code>
+    /// PushCatchHandler catch_label
+    /// &lt;try body&gt;
+    /// PopHandler
+    /// &lt;finally body&gt;          (normal-after-try path)
+    /// Jump end_1
+    /// catch_label:
+    ///     PushFinallyHandler finally_label
+    ///     PushEnv; DeclareVar e; StoreName e; Pop
+    ///     &lt;catch body&gt;
+    ///     PopEnv
+    ///     PopHandler             (the nested finally handler)
+    ///     &lt;finally body&gt;      (normal-after-catch path)
+    ///     Jump end_2
+    /// finally_label:
+    ///     &lt;finally body&gt;      (exception path — throw from catch body)
+    ///     EndFinally
+    /// end:
+    /// </code>
+    /// Three copies of the finally body — one for each exit.
+    /// Installing the <see cref="OpCode.PushFinallyHandler"/>
+    /// inside the catch body ensures a throw during catch still
+    /// runs the finally.
+    /// </summary>
+    private void CompileTryCatchFinally(TryStatement stmt)
+    {
+        var handler = stmt.Handler!;
+        int catchJump = _chunk.EmitJump(OpCode.PushCatchHandler);
+
+        CompileStatement(stmt.Block);
+        _chunk.Emit(OpCode.PopHandler);
+        CompileStatement(stmt.Finalizer!);
+        int endJump1 = _chunk.EmitJump(OpCode.Jump);
+
+        _chunk.PatchJump(catchJump);
+        int finallyExcJump = _chunk.EmitJump(OpCode.PushFinallyHandler);
+        EmitCatchParamBind(handler.Param.Name);
+        CompileStatement(handler.Body);
+        _chunk.Emit(OpCode.PopEnv);
+        _chunk.Emit(OpCode.PopHandler);
+        CompileStatement(stmt.Finalizer!);
+        int endJump2 = _chunk.EmitJump(OpCode.Jump);
+
+        _chunk.PatchJump(finallyExcJump);
+        CompileStatement(stmt.Finalizer!);
+        _chunk.Emit(OpCode.EndFinally);
+
+        _chunk.PatchJump(endJump1);
+        _chunk.PatchJump(endJump2);
+    }
+
+    /// <summary>
+    /// Emit the catch-parameter binding sequence. Pushes a fresh
+    /// env so the parameter is block-scoped to the catch body,
+    /// then declares the name in that env and stores the thrown
+    /// value (pushed by the VM when the handler activated) into
+    /// it. Callers must emit <see cref="OpCode.PopEnv"/> at the
+    /// end of the catch body to leave the outer env.
+    /// </summary>
+    private void EmitCatchParamBind(string name)
+    {
+        _chunk.Emit(OpCode.PushEnv);
+        int idx = _chunk.AddName(name);
+        _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
+        _chunk.EmitWithU16(OpCode.StoreGlobal, idx);
+        _chunk.Emit(OpCode.Pop);
     }
 
     // -------------------------------------------------------------------
