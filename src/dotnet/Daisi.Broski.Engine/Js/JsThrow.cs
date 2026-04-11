@@ -56,4 +56,16 @@ public static class JsThrow
         err.Set("message", message);
         throw new JsThrowSignal(err);
     }
+
+    /// <summary>
+    /// Throw an arbitrary JS value (object or primitive)
+    /// as if the user had written <c>throw value</c>. Used
+    /// by native callbacks like
+    /// <c>Promise.prototype.finally</c> to re-raise the
+    /// settlement they got from the upstream promise.
+    /// </summary>
+    public static object? Raise(object? value)
+    {
+        throw new JsThrowSignal(value);
+    }
 }
