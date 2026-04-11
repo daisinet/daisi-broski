@@ -195,7 +195,7 @@ Source text
 Lexer ──► Token stream          ✅ Daisi.Broski.Engine.Js.JsLexer
              │
              ▼
-          Parser ──► AST (ESTree-shaped)
+          Parser ──► AST (ESTree-shaped) ✅ Daisi.Broski.Engine.Js.JsParser
                        │
                        ▼
                    Bytecode compiler ──► Bytecode (stack VM)
@@ -207,7 +207,10 @@ Lexer ──► Token stream          ✅ Daisi.Broski.Engine.Js.JsLexer
                                         Heap + Realm + Built-ins
 ```
 
-**Shipped so far (phase 3a slice 1):** `JsLexer` — scans ES5 source into a stream of `JsToken`s. Recognizes all ES5 keywords plus the ES2015+ future-reserved keywords, ASCII identifiers, decimal / scientific / hex number literals, single- and double-quoted string literals with standard escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\v`, `\0`, `\x`, `\u`, line continuations), line and block comments (skipped), and every ES5 punctuator including greedy long matches (`>>>=`, `===`, `!==`). Regex literals, template literals, BigInt literals, and Unicode identifiers are deferred. 43 tests covering every token kind, escape form, number edge case, and disambiguation rule. Parser / AST / bytecode VM / built-ins still ahead.
+**Shipped so far (phase 3a slices 1–2):**
+
+- **`JsLexer`** — scans ES5 source into a stream of `JsToken`s. Recognizes all ES5 keywords plus the ES2015+ future-reserved keywords, ASCII identifiers, decimal / scientific / hex number literals, single- and double-quoted string literals with standard escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\v`, `\0`, `\x`, `\u`, line continuations), line and block comments (skipped), and every ES5 punctuator including greedy long matches (`>>>=`, `===`, `!==`). Regex literals, template literals, BigInt literals, and Unicode identifiers are deferred. 43 tests.
+- **`JsParser` + `Ast`** — recursive-descent parser with precedence climbing for binary operators. Produces an ESTree-shaped sealed-class tree (`Program`, `Expression`, `Statement`, and ~45 concrete node types). Covers every ES5 statement form (`var`/`function`/`if`/`while`/`do..while`/C-style `for`/`for..in`/`break`/`continue`/`return`/`throw`/`try`/`catch`/`finally`/`switch` with fall-through/`with`/`debugger`/labeled/block/empty/expression) and every ES5 expression form (literals, identifiers, `this`, member / computed-member / call / `new`, unary + prefix / postfix update, the full binary operator table with correct precedence and left-associativity, right-associative assignment and ternary, array literals with holes and trailing commas, object literals with reserved-word keys and `get`/`set` accessors, named and anonymous function expressions, sequence expressions). Handles automatic semicolon insertion including restricted productions (`return`/`throw`/`break`/`continue`, postfix `++`/`--`) and the `for..in` / `in`-operator ambiguity via a threaded `allowIn` flag. `let`/`const` are tagged for future block scoping; other ES2015+ forms are rejected with a descriptive `JsParseException` carrying the source offset. Regex literals are still deferred pending the `ReLex` entry point the parser will grow in phase 3c. 69 tests. Bytecode VM / built-ins / event loop still ahead.
 
 **Why a bytecode VM, not a tree-walking interpreter?**
 
