@@ -229,12 +229,14 @@ public class JsBuiltinTests
     }
 
     [Fact]
-    public void Array_sort_with_compareFn_throws_in_slice_6a()
+    public void Array_sort_with_compareFn_now_works()
     {
-        var ex = Assert.Throws<JsRuntimeException>(() =>
+        // Slice 6b adds compareFn support via the re-entrant VM.
+        var arr = Assert.IsType<JsArray>(
             Eval("[3, 1, 2].sort(function (a, b) { return a - b; });"));
-        var obj = Assert.IsType<JsObject>(ex.JsValue);
-        Assert.Equal("TypeError", obj.Properties["name"]);
+        Assert.Equal(1.0, arr.Elements[0]);
+        Assert.Equal(2.0, arr.Elements[1]);
+        Assert.Equal(3.0, arr.Elements[2]);
     }
 
     // -------- String constructor --------

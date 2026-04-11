@@ -58,6 +58,18 @@ public sealed class JsFunction : JsObject
     public Func<object?, IReadOnlyList<object?>, object?>? NativeImpl { get; }
 
     /// <summary>
+    /// Alternative native implementation for built-ins that
+    /// need to invoke JS functions (e.g., <c>Array.prototype.forEach</c>
+    /// calling its callback). These receive a
+    /// <see cref="JsVM"/> reference so they can call
+    /// <c>vm.InvokeJsFunction</c> to run a user-supplied
+    /// callback synchronously. Only one of
+    /// <see cref="NativeImpl"/> or <see cref="NativeCallable"/>
+    /// is set on any given <see cref="JsFunction"/>.
+    /// </summary>
+    public Func<JsVM, object?, IReadOnlyList<object?>, object?>? NativeCallable { get; }
+
+    /// <summary>
     /// User functions have a <c>prototype</c> property, a fresh
     /// object whose <c>constructor</c> points back to the function.
     /// <c>new F(...)</c> uses this as the prototype of the allocated
@@ -88,15 +100,30 @@ public sealed class JsFunction : JsObject
 
     /// <summary>
     /// Construct a native-backed function. Host code uses this to
-    /// install built-ins like <c>console.log</c>. The function has
-    /// no <c>prototype</c> property and cannot normally be used as
-    /// a constructor (the VM throws if you <c>new</c> one, unless
-    /// slice 6 extends the native-function protocol).
+    /// install built-ins like <c>console.log</c>. The function
+    /// has no <c>prototype</c> property by default; slice 6
+    /// built-in constructors (Array, String, ...) install their
+    /// own via <see cref="JsObject.SetNonEnumerable"/> after
+    /// construction.
     /// </summary>
     public JsFunction(string name, Func<object?, IReadOnlyList<object?>, object?> impl)
     {
         NativeName = name;
         NativeImpl = impl;
+        Template = null;
+        CapturedEnv = null;
+        FunctionPrototype = null;
+    }
+
+    /// <summary>
+    /// Construct a native-backed function that has access to the
+    /// VM — used by callback-taking built-ins like
+    /// <c>Array.prototype.forEach</c>.
+    /// </summary>
+    public JsFunction(string name, Func<JsVM, object?, IReadOnlyList<object?>, object?> impl)
+    {
+        NativeName = name;
+        NativeCallable = impl;
         Template = null;
         CapturedEnv = null;
         FunctionPrototype = null;

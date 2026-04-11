@@ -26,31 +26,46 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, **functions / closures / `this` / `new` / `instanceof`**, full ES5 **control flow**, **exception handling**, and the first slice of the **built-in library** (`parseInt`/`parseFloat`/`isNaN`/`isFinite`, `Array` + prototype, `String` + prototype) are shipped. The pipeline runs real scripted programs end-to-end:
+**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, **functions / closures / `this` / `new` / `instanceof`**, full ES5 **control flow**, **exception handling**, and most of the **built-in library** (`Array`/`String`/`Object`/`Math`/`Error` + the globals) are shipped. The pipeline runs real scripted programs end-to-end:
 
 ```csharp
 var eng = new JsEngine();
 eng.Evaluate(@"
-    function makeCounter() {
-        var n = 0;
-        return function () { return ++n; };
+    // Classic map/filter/reduce pipeline
+    var sum = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        .filter(function (x) { return x % 2 === 0; })
+        .map(function (x) { return x * x; })
+        .reduce(function (a, b) { return a + b; }, 0);
+    // sum is 220
+
+    // Sort with compareFn via re-entrant VM callbacks
+    var sorted = [3, 1, 4, 1, 5, 9, 2, 6]
+        .sort(function (a, b) { return a - b; });
+
+    // Catchable internal errors — e is instanceof TypeError
+    var caught = false;
+    try {
+        var obj = null;
+        obj.foo;
+    } catch (e) {
+        caught = e instanceof TypeError;  // true
     }
+
+    // User class using Math.sqrt
     function Point(x, y) { this.x = x; this.y = y; }
-    Point.prototype.distanceSq = function () {
-        return this.x * this.x + this.y * this.y;
+    Point.prototype.distance = function () {
+        return Math.sqrt(this.x * this.x + this.y * this.y);
     };
-    var c = makeCounter();
-    c(); c(); c();           // n is now 3
     var p = new Point(3, 4);
-    var d = p.distanceSq();  // 25
+    var d = p.distance();  // 5
 ");
 ```
 
-The current JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set, object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, host-installed native functions, catchable internal errors (`ReferenceError`, `TypeError`), the globals `parseInt`/`parseFloat`/`isNaN`/`isFinite`, and the non-callback methods of `Array.prototype` and `String.prototype` (push/pop/shift/unshift/slice/concat/join/indexOf/reverse/sort and charAt/charCodeAt/indexOf/lastIndexOf/slice/substring/substr/toLowerCase/toUpperCase/trim/split/concat). The callback-taking array methods (`forEach`/`map`/`filter`/`reduce`), the `Object` / `Math` / `JSON` / `Error` built-ins, and the event loop are the next slices.
+The current JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set, object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, host-installed native functions, catchable internal errors (`ReferenceError`, `TypeError`), and most of the ES5 built-in library: `parseInt`/`parseFloat`/`isNaN`/`isFinite`, **full `Array.prototype`** including `forEach`/`map`/`filter`/`reduce`/`sort(compareFn)`, **full `String.prototype`**, **`Object`** + `Object.keys`/`create`/`getPrototypeOf` + `hasOwnProperty`/`isPrototypeOf`/`propertyIsEnumerable`, **`Math`** with all the standard constants and methods, and the **`Error`** class hierarchy (`Error`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError`) wired so that `e instanceof TypeError` works for VM-generated errors. `JSON`, `Number.prototype`/`Boolean.prototype`, `Function.prototype.call/apply/bind`, `Date`, and the event loop are the next slices.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 508/508 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 549/549 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
