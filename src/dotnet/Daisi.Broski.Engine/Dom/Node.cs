@@ -1,3 +1,5 @@
+using Daisi.Broski.Engine.Dom.Selectors;
+
 namespace Daisi.Broski.Engine.Dom;
 
 /// <summary>
@@ -192,6 +194,43 @@ public abstract class Node
         {
             if (node is Element e) yield return e;
         }
+    }
+
+    /// <summary>
+    /// Return the first element descendant (in document order) that
+    /// matches <paramref name="selector"/>, or <c>null</c> if none.
+    /// </summary>
+    public Element? QuerySelector(string selector)
+    {
+        var list = SelectorParser.Parse(selector);
+        foreach (var descendant in DescendantsAndSelf())
+        {
+            if (descendant is Element e && !ReferenceEquals(e, this) &&
+                SelectorMatcher.Matches(e, list))
+            {
+                return e;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Return every element descendant (in document order) that
+    /// matches <paramref name="selector"/>.
+    /// </summary>
+    public IReadOnlyList<Element> QuerySelectorAll(string selector)
+    {
+        var list = SelectorParser.Parse(selector);
+        var result = new List<Element>();
+        foreach (var descendant in DescendantsAndSelf())
+        {
+            if (descendant is Element e && !ReferenceEquals(e, this) &&
+                SelectorMatcher.Matches(e, list))
+            {
+                result.Add(e);
+            }
+        }
+        return result;
     }
 
     private void ValidateNotAncestor(Node candidateChild)
