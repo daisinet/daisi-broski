@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Daisi.Broski.Engine.Js;
 
 /// <summary>
@@ -97,6 +99,30 @@ public sealed class JsEngine
     /// <summary><c>ReferenceError.prototype</c>.</summary>
     public JsObject ReferenceErrorPrototype { get; internal set; } = null!;
 
+    /// <summary>
+    /// Persistent VM owned by this engine. Reused across every
+    /// <see cref="Evaluate"/> call and every event-loop task
+    /// so scheduled callbacks see bindings established by the
+    /// main script.
+    /// </summary>
+    public JsVM Vm { get; }
+
+    /// <summary>
+    /// Host-side event loop that drives <c>setTimeout</c>,
+    /// <c>setInterval</c>, <c>queueMicrotask</c>, and any
+    /// other asynchronous work scheduled from script. Exposed
+    /// so hosts can drain it (via <see cref="DrainEventLoop"/>)
+    /// at the point that makes sense for their application.
+    /// </summary>
+    public JsEventLoop EventLoop { get; }
+
+    /// <summary>
+    /// Collected <c>console.log</c> / <c>warn</c> / <c>error</c>
+    /// output. Tests inspect <see cref="StringBuilder.ToString"/>
+    /// on this to verify script-level logging.
+    /// </summary>
+    public StringBuilder ConsoleOutput { get; } = new();
+
     public JsEngine()
     {
         // Seed the read-only globals before installing built-ins
@@ -112,6 +138,12 @@ public sealed class JsEngine
         NumberPrototype = new JsObject { Prototype = ObjectPrototype };
         BooleanPrototype = new JsObject { Prototype = ObjectPrototype };
         FunctionPrototype = new JsObject { Prototype = ObjectPrototype };
+
+        // Create the persistent VM and event loop. These are
+        // constructed before built-ins install because some
+        // built-ins (setTimeout, console) reference them.
+        Vm = new JsVM(this);
+        EventLoop = new JsEventLoop(this);
 
         Builtins.Install(this);
 
@@ -172,19 +204,58 @@ public sealed class JsEngine
     }
 
     /// <summary>
-    /// Parse, compile, and run <paramref name="source"/>. Returns
-    /// the value of the last top-level expression statement, or
-    /// <c>undefined</c> if the program had none. Throws
-    /// <see cref="JsParseException"/> on a syntax error,
-    /// <see cref="JsCompileException"/> on an unsupported language
-    /// form, or <see cref="JsRuntimeException"/> on an uncaught
-    /// runtime exception.
+    /// Parse, compile, and run <paramref name="source"/> on this
+    /// engine's persistent <see cref="Vm"/>. Returns the value
+    /// of the last top-level expression statement. Does <i>not</i>
+    /// drain the event loop — call <see cref="DrainEventLoop"/>
+    /// (or use <see cref="RunScript"/>) when you want scheduled
+    /// callbacks to fire.
     /// </summary>
     public object? Evaluate(string source)
     {
         var program = new JsParser(source).ParseProgram();
         var chunk = new JsCompiler().Compile(program);
-        var vm = new JsVM(chunk, this);
-        return vm.Run();
+        return Vm.RunChunk(chunk);
+    }
+
+    /// <summary>
+    /// Parse, compile, run <paramref name="source"/>, and then
+    /// drain the event loop until it is idle. Use this when the
+    /// caller expects <c>setTimeout</c> / <c>setInterval</c> /
+    /// <c>queueMicrotask</c> callbacks to complete before
+    /// control returns.
+    /// </summary>
+    public object? RunScript(string source)
+    {
+        var completion = Evaluate(source);
+        DrainEventLoop();
+        return completion;
+    }
+
+    /// <summary>
+    /// Run queued tasks, microtasks, and timers until the event
+    /// loop is idle. Used by <see cref="RunScript"/> and by
+    /// tests that want to step the event loop manually after an
+    /// <see cref="Evaluate"/>. An uncaught throw from any task
+    /// escapes as a <see cref="JsRuntimeException"/> whose
+    /// <see cref="JsRuntimeException.JsValue"/> carries the
+    /// thrown value.
+    /// </summary>
+    public void DrainEventLoop()
+    {
+        try
+        {
+            EventLoop.Drain();
+        }
+        catch (JsThrowSignal sig)
+        {
+            // The VM's internal throw-propagation signal
+            // escaped all the way out of every native boundary
+            // without finding a handler. Surface it to the
+            // host as a normal uncaught JS exception.
+            throw new JsRuntimeException(
+                $"Uncaught {JsValue.ToJsString(sig.JsValue)}",
+                sig.JsValue);
+        }
     }
 }

@@ -26,46 +26,37 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, **functions / closures / `this` / `new` / `instanceof`**, full ES5 **control flow**, **exception handling**, and most of the **built-in library** (`Array`/`String`/`Object`/`Math`/`Error` + the globals) are shipped. The pipeline runs real scripted programs end-to-end:
+**Phase 3a complete.** The JS **lexer**, **parser**, **bytecode compiler + stack VM**, full ES5 semantics (objects / arrays / member access, functions / closures / `this` / `new` / `instanceof`, control flow, exception handling), the complete **built-in library** (`Array`/`String`/`Object`/`Math`/`Error`/`Number`/`Boolean`/`Function.prototype`/`JSON`/`Date` + globals), and the host-side **event loop** with `console`, `setTimeout`, `setInterval`, and `queueMicrotask` are all shipped. The pipeline runs real scripted programs end-to-end:
 
 ```csharp
 var eng = new JsEngine();
-eng.Evaluate(@"
-    // Classic map/filter/reduce pipeline
+eng.RunScript(@"
+    // Classic functional pipeline
     var sum = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         .filter(function (x) { return x % 2 === 0; })
         .map(function (x) { return x * x; })
         .reduce(function (a, b) { return a + b; }, 0);
-    // sum is 220
+    console.log('sum:', sum);   // 220
 
-    // Sort with compareFn via re-entrant VM callbacks
-    var sorted = [3, 1, 4, 1, 5, 9, 2, 6]
-        .sort(function (a, b) { return a - b; });
+    // JSON + Date
+    var event = {at: new Date(), msg: 'hello'};
+    console.log(JSON.stringify(event));
 
-    // Catchable internal errors — e is instanceof TypeError
-    var caught = false;
-    try {
-        var obj = null;
-        obj.foo;
-    } catch (e) {
-        caught = e instanceof TypeError;  // true
-    }
-
-    // User class using Math.sqrt
-    function Point(x, y) { this.x = x; this.y = y; }
-    Point.prototype.distance = function () {
-        return Math.sqrt(this.x * this.x + this.y * this.y);
-    };
-    var p = new Point(3, 4);
-    var d = p.distance();  // 5
+    // setTimeout: callback sees persistent globals
+    var greeting = 'hi';
+    setTimeout(function () { console.log(greeting + ' from the event loop'); }, 10);
 ");
+// eng.ConsoleOutput.ToString() →
+//   sum: 220
+//   {""at"":""2026-04-11T18:10:00.000Z"",""msg"":""hello""}
+//   hi from the event loop
 ```
 
-The current JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set, object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, host-installed native functions, catchable internal errors, and the **complete ES5 built-in library**: `parseInt`/`parseFloat`/`isNaN`/`isFinite`, **`Array.prototype`** (push/pop/shift/unshift/slice/concat/join/indexOf/reverse/sort with compareFn/forEach/map/filter/reduce/reduceRight/every/some), **`String.prototype`**, **`Object`** + prototype, **`Math`**, the **`Error`** class hierarchy, **`JSON.parse` / `JSON.stringify`**, **`Function.prototype.call`/`apply`/`bind`**, **`Number`** / **`Boolean`** + prototypes, and **`Date`** (read-only subset — constructors, getters, `toISOString`, `toJSON`, `valueOf`). The event loop and `console` / `setTimeout` / `setInterval` wiring are the final phase-3a ship gate.
+The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set, object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, host-installed native functions, catchable internal errors, the **complete ES5 built-in library** (`Array.prototype` including callback methods, `String.prototype`, `Object`, `Math`, `Error` hierarchy with VM-originated `instanceof`, `JSON.parse`/`stringify`, `Function.prototype.call`/`apply`/`bind`, `Number`/`Boolean` + prototypes, `Date`), and a host-side event loop exposing `console.log`/`warn`/`error`/`info`/`debug`, `setTimeout`/`clearTimeout`, `setInterval`/`clearInterval`, and `queueMicrotask`. Call `engine.RunScript(source)` to run a script and drain the event loop in one step, or `engine.Evaluate(source)` + `engine.DrainEventLoop()` if you want to inspect state between.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 608/608 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 629/629 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions + 46 JS built-ins 6a + 41 JS built-ins 6b + 39 JS built-ins 6c + 20 JS Date 6d + 21 JS event loop 7.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
