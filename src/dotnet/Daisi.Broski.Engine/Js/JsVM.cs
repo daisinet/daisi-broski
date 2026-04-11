@@ -40,6 +40,9 @@ public sealed class JsVM
     private readonly object?[] _stack = new object?[1024];
     private int _sp;
     private int _ip;
+    // Single compiler-owned scratch slot for the postfix-update
+    // sequences. Not observable to user code.
+    private object? _scratch;
 
     /// <summary>
     /// The most recent value stored by a
@@ -86,6 +89,18 @@ public sealed class JsVM
                 case OpCode.Dup:
                     _stack[_sp] = _stack[_sp - 1];
                     _sp++;
+                    break;
+                case OpCode.Dup2:
+                    // [..., a, b] -> [..., a, b, a, b]
+                    _stack[_sp] = _stack[_sp - 2];
+                    _stack[_sp + 1] = _stack[_sp - 1];
+                    _sp += 2;
+                    break;
+                case OpCode.StoreScratch:
+                    _scratch = Pop();
+                    break;
+                case OpCode.LoadScratch:
+                    Push(_scratch);
                     break;
 
                 // ---- Globals ----
@@ -220,6 +235,137 @@ public sealed class JsVM
                 // ---- Type ----
                 case OpCode.TypeOf:
                     _stack[_sp - 1] = JsValue.TypeOf(_stack[_sp - 1]);
+                    break;
+                case OpCode.In:
+                    {
+                        var obj = Pop();
+                        var key = Pop();
+                        if (obj is not JsObject jo)
+                        {
+                            throw new JsRuntimeException(
+                                "Cannot use 'in' operator on non-object");
+                        }
+                        Push(jo.Has(JsValue.ToJsString(key)));
+                    }
+                    break;
+
+                // ---- Object / array construction ----
+                case OpCode.CreateObject:
+                    Push(new JsObject());
+                    break;
+                case OpCode.CreateArray:
+                    {
+                        int count = ReadU16();
+                        var arr = new JsArray();
+                        // Elements were pushed bottom-to-top, so we
+                        // pop them in reverse to rebuild the order.
+                        for (int i = count - 1; i >= 0; i--)
+                        {
+                            arr.Elements.Add(JsValue.Undefined);
+                        }
+                        for (int i = count - 1; i >= 0; i--)
+                        {
+                            arr.Elements[i] = Pop();
+                        }
+                        Push(arr);
+                    }
+                    break;
+                case OpCode.InitProperty:
+                    {
+                        // [obj, value] -> [obj], side effect: obj[name] = value.
+                        var name = _names[ReadU16()];
+                        var value = _stack[_sp - 1];
+                        var obj = (JsObject)_stack[_sp - 2]!;
+                        obj.Set(name, value);
+                        _sp--;
+                    }
+                    break;
+
+                // ---- Member access ----
+                case OpCode.GetProperty:
+                    {
+                        var name = _names[ReadU16()];
+                        var target = _stack[_sp - 1];
+                        if (target is not JsObject jo)
+                        {
+                            throw new JsRuntimeException(
+                                $"Cannot read property '{name}' of non-object");
+                        }
+                        _stack[_sp - 1] = jo.Get(name);
+                    }
+                    break;
+                case OpCode.GetPropertyComputed:
+                    {
+                        var key = Pop();
+                        var target = _stack[_sp - 1];
+                        if (target is not JsObject jo)
+                        {
+                            throw new JsRuntimeException(
+                                "Cannot read property of non-object");
+                        }
+                        _stack[_sp - 1] = jo.Get(JsValue.ToJsString(key));
+                    }
+                    break;
+                case OpCode.SetProperty:
+                    {
+                        // [obj, value] -> [value], side effect: obj[name] = value.
+                        var name = _names[ReadU16()];
+                        var value = _stack[_sp - 1];
+                        var target = _stack[_sp - 2];
+                        if (target is not JsObject jo)
+                        {
+                            throw new JsRuntimeException(
+                                $"Cannot assign property '{name}' on non-object");
+                        }
+                        jo.Set(name, value);
+                        _stack[_sp - 2] = value;
+                        _sp--;
+                    }
+                    break;
+                case OpCode.SetPropertyComputed:
+                    {
+                        // [obj, key, value] -> [value].
+                        var value = _stack[_sp - 1];
+                        var key = _stack[_sp - 2];
+                        var target = _stack[_sp - 3];
+                        if (target is not JsObject jo)
+                        {
+                            throw new JsRuntimeException(
+                                "Cannot assign property on non-object");
+                        }
+                        jo.Set(JsValue.ToJsString(key), value);
+                        _stack[_sp - 3] = value;
+                        _sp -= 2;
+                    }
+                    break;
+                case OpCode.DeleteProperty:
+                    {
+                        var name = _names[ReadU16()];
+                        var target = Pop();
+                        if (target is JsObject jo)
+                        {
+                            Push(jo.Delete(name));
+                        }
+                        else
+                        {
+                            // Non-object target — ECMA §11.4.1 returns true.
+                            Push(JsValue.True);
+                        }
+                    }
+                    break;
+                case OpCode.DeletePropertyComputed:
+                    {
+                        var key = Pop();
+                        var target = Pop();
+                        if (target is JsObject jo)
+                        {
+                            Push(jo.Delete(JsValue.ToJsString(key)));
+                        }
+                        else
+                        {
+                            Push(JsValue.True);
+                        }
+                    }
                     break;
 
                 // ---- Control flow ----

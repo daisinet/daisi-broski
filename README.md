@@ -26,26 +26,25 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, and a first slice of the **bytecode compiler + stack VM** are shipped. The pipeline runs primitive-valued programs end-to-end:
+**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, and **object / array / member access** are shipped. The pipeline runs real scripted programs end-to-end:
 
 ```csharp
 var eng = new JsEngine();
 eng.Evaluate(@"
-    var a = 0, b = 1;
-    for (var i = 0; i < 10; i++) {
-        var t = a + b;
-        a = b;
-        b = t;
+    var counts = {a: 0, b: 0, c: 0};
+    var letters = ['a', 'b', 'a', 'c', 'a', 'b'];
+    for (var i = 0; i < letters.length; i++) {
+        counts[letters[i]]++;
     }
 ");
-// eng.Globals["a"] is now 55
+// (JsObject)eng.Globals["counts"] → { a: 3, b: 2, c: 1 }
 ```
 
-The slice covers `var` hoisting, every unary / binary / logical / conditional / sequence / update operator, correct `typeof` (including on undeclared identifiers), `if`/`else`/`while`/`do..while`/C-style `for`/`break`/`continue`, loose and strict equality per ECMA §11.9, and the bitwise / shift operators per §9.5 / §9.6. Functions, objects, arrays, exceptions, and the built-in library are the next slices.
+The current JS surface covers every ES5 primitive operator (unary / binary / logical / conditional / sequence / update), `var` hoisting, `if`/`else`/`while`/`do..while`/`for`/`break`/`continue`, object and array literals, dot and computed member access (including as assignment / compound / update / delete targets), the `in` operator, and the full ES §9 coercion model. Functions, closures, `try`/`catch`, and the built-in library (`Object`, `Array`, `String`, `Math`, `JSON`) are the next slices.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 344/344 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 382/382 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM + 38 JS objects.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 

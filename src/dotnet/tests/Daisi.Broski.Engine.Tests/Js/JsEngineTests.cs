@@ -463,12 +463,6 @@ public class JsEngineTests
     }
 
     [Fact]
-    public void Object_literal_throws_compile_error()
-    {
-        Assert.Throws<JsCompileException>(() => Eval("var o = {};"));
-    }
-
-    [Fact]
     public void Try_statement_throws_compile_error()
     {
         Assert.Throws<JsCompileException>(() => Eval("try { } catch (e) { }"));
