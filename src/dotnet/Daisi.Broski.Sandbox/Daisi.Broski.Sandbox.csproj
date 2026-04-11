@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Daisi.Broski.Sandbox</RootNamespace>
+    <AssemblyName>Daisi.Broski.Sandbox</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Ipc\Daisi.Broski.Ipc.csproj" />
+  </ItemGroup>
+</Project>
