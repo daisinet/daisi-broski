@@ -1,4 +1,5 @@
 using Daisi.Broski.Engine.Dom;
+using Daisi.Broski.Engine.Html;
 
 namespace Daisi.Broski.Engine.Js.Dom;
 
@@ -128,6 +129,8 @@ public class JsDomElement : JsDomNode
             case "childElementCount": return (double)_element.Children.Count();
             case "firstElementChild": return (object?)Bridge.WrapOrNull(_element.FirstElementChild) ?? JsValue.Null;
             case "innerText": return _element.TextContent;
+            case "innerHTML": return HtmlSerializer.SerializeChildren(_element);
+            case "outerHTML": return HtmlSerializer.SerializeNode(_element);
         }
         return base.Get(key);
     }
@@ -143,6 +146,9 @@ public class JsDomElement : JsDomNode
             case "className":
                 _element.ClassName = JsValue.ToJsString(value);
                 return;
+            case "innerHTML":
+                SetInnerHtml(JsValue.ToJsString(value));
+                return;
             case "tagName":
             case "localName":
             case "attributes":
@@ -150,10 +156,63 @@ public class JsDomElement : JsDomNode
             case "classList":
             case "childElementCount":
             case "firstElementChild":
-                // Read-only accessors.
+            case "outerHTML":
+                // Read-only accessors. outerHTML write is
+                // deferred — it requires parenting logic to
+                // insert the parsed fragment where this
+                // element sits in its parent.
                 return;
         }
         base.Set(key, value);
+    }
+
+    /// <summary>
+    /// Parse <paramref name="html"/> as an HTML fragment
+    /// and replace every child of this element with the
+    /// result. Matches browser <c>innerHTML = '...'</c>
+    /// semantics.
+    ///
+    /// <para>
+    /// Fragment parsing is implemented by handing the
+    /// source to the existing phase-1
+    /// <see cref="HtmlTreeBuilder"/>, wrapped in a minimal
+    /// <c>&lt;html&gt;&lt;body&gt;...&lt;/body&gt;&lt;/html&gt;</c>
+    /// envelope so insertion-mode state lands on "in body".
+    /// The parsed body's children are then adopted into
+    /// this element's owner document and appended. This
+    /// loses the spec's context-element rules (a <c>td</c>
+    /// fragment parsed inside a <c>table</c> context would
+    /// behave differently in a real browser), but covers
+    /// the >95% of real <c>innerHTML</c> usage — simple
+    /// HTML snippets assigned onto non-table elements.
+    /// </para>
+    /// </summary>
+    private void SetInnerHtml(string html)
+    {
+        // Clear every existing child first.
+        while (_element.FirstChild is not null)
+        {
+            _element.RemoveChild(_element.FirstChild);
+        }
+        if (html.Length == 0) return;
+
+        // Parse the fragment via the standard tree builder.
+        // Wrapping in <body> forces the builder's insertion
+        // mode to "in body" from the start, so stray
+        // fragment content lands there directly.
+        var parsed = HtmlTreeBuilder.Parse("<!DOCTYPE html><html><body>" + html + "</body></html>");
+        var parsedBody = parsed.Body;
+        if (parsedBody is null) return;
+
+        // Move the parsed body's children onto this element.
+        // Iterate off a snapshot so mutation during the
+        // foreach doesn't trip the sibling-pointer walk.
+        var children = new List<Node>(parsedBody.ChildNodes);
+        foreach (var child in children)
+        {
+            parsedBody.RemoveChild(child);
+            _element.AppendChild(child);
+        }
     }
 
     /// <summary>
