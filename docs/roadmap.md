@@ -7,9 +7,9 @@
 
 ## Current state
 
-**Phase 0, 1, 3a, and 4 are complete. Phase 3b has started** with block-scoped `let`/`const` as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
+**Phases 0, 1, 3a, 3b, and 4 are complete. Phase 3c has started** with optional chaining, nullish coalescing, and logical-assignment operators as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3c rather than shipping as its own unit.
 
-**Combined test suite: 1086/1086 passing.**
+**Combined test suite: 1133/1133 passing.**
 
 What works today from a clean clone:
 
@@ -127,10 +127,10 @@ returns 30 story links, identical to what Chrome sees.
 
 **Ship gate:** test262 ES2015 subset >70% pass, plus a real React app renders its initial content.
 
-### Phase 3c — ES2017+ and the DOM bridge
+### Phase 3c — ES2020 sugar and the DOM bridge
 
-- `async`/`await`, optional chaining, nullish coalescing, logical assignment.
-- `Proxy`, `Reflect` minimum viable (enough for Vue 3 reactivity to not throw).
+- **Optional chaining + nullish coalescing + logical assignment (slice 3c-1)** ✅ — Lexer recognizes the ES2020 `?.` and `??` punctuators plus the ES2021 short-circuit assigns `&&=` / `||=` / `??=`. Parser turns `x ?? y` into a `LogicalExpression` with a new `Nullish` operator, and wraps any subexpression containing `?.` / `?.[` / `?.(` in a `ChainExpression` node so the compiler has a single end-of-chain label to merge the short-circuit jumps against. `MemberExpression` and `CallExpression` carry a new `IsOptional` flag. Two new opcodes: `JumpIfNullish` (pops TOS, jumps on null/undefined) and `JumpIfNotNullishKeep` (peeks; jumps-and-keeps on non-null/non-undefined). The compiler emits a `Dup` + `JumpIfNullish` pad at each optional hop — every hop's jump patches to a common nullish-merge block that pops the leftover test value and pushes `undefined`, matching the cover-grammar end-of-chain semantics. Optional calls on a member (`obj.method?.(args)`) use the scratch slot to briefly stash the `this` binding while the short-circuit checks the method value, then reassembles the `[fn, this]` call header. Logical assignment lowers to a peek-short-circuit sequence on the loaded LHS so the RHS side effects only happen when the operator's condition fires (e.g. `x ??= f()` does not call `f` when `x` is already non-nullish), handling identifiers, dotted members, and computed members. 47 end-to-end tests.
+- Still planned: `Proxy`, `Reflect` minimum viable (enough for Vue 3 reactivity to not throw).
 - `BigInt` basic ops.
 - **DOM bridge:** every DOM node is reachable from JS via host objects. `document.querySelector` returns a JS value that routes property access back to the C# DOM. Events dispatched from JS mutate C# state and vice versa.
 - `fetch`, `Request`, `Response`, `Headers`, `AbortController`.
@@ -139,7 +139,7 @@ returns 30 story links, identical to what Chrome sees.
 
 **Ship gate:** load `news.ycombinator.com` with scripts enabled, run them, and confirm the DOM after script execution matches what Chrome produces within a small tolerance.
 
-**Current status:** phases 3a and 3b are both complete. Phase 3a delivered the ES5 core (lexer, parser, bytecode VM, objects, arrays, member access, full function / closure / `this` / `new` / `instanceof` system, ES5 control flow, exception handling, the complete ES5 built-in library, and the host-side event loop). Phase 3b added the ES2015+ surface: `let`/`const` + block scoping + TDZ (3b-1), arrow functions (3b-2), template literals (3b-3), destructuring bindings (3b-4), default/rest/spread (3b-5), classes with `extends`/`super` (3b-6), iterators + `for..of` + `Symbol.iterator` (3b-7a), generators with `function*` + `yield` (3b-7b), the `Map` / `Set` / `WeakMap` / `WeakSet` collections (3b-8), `Promise` + chaining + `Promise.all` / `Promise.race` (3b-9), `async`/`await` (3b-10), typed arrays / `ArrayBuffer` / `DataView` (3b-11), and the ESM module loader (3b-12). Phase 3c (ES2017+ sugar, the DOM bridge, and `fetch`) is the next major milestone.
+**Current status:** phases 3a and 3b are both complete. Phase 3a delivered the ES5 core (lexer, parser, bytecode VM, objects, arrays, member access, full function / closure / `this` / `new` / `instanceof` system, ES5 control flow, exception handling, the complete ES5 built-in library, and the host-side event loop). Phase 3b added the ES2015+ surface: `let`/`const` + block scoping + TDZ (3b-1), arrow functions (3b-2), template literals (3b-3), destructuring bindings (3b-4), default/rest/spread (3b-5), classes with `extends`/`super` (3b-6), iterators + `for..of` + `Symbol.iterator` (3b-7a), generators with `function*` + `yield` (3b-7b), the `Map` / `Set` / `WeakMap` / `WeakSet` collections (3b-8), `Promise` + chaining + `Promise.all` / `Promise.race` (3b-9), `async`/`await` (3b-10), typed arrays / `ArrayBuffer` / `DataView` (3b-11), and the ESM module loader (3b-12). Phase 3c is underway — slice 3c-1 landed optional chaining, nullish coalescing, and the logical-assignment operators.
 
 ## Phase 4 — Sandbox host ✅ (infrastructure) / ⏸ (full ship gate blocked on phase 3)
 

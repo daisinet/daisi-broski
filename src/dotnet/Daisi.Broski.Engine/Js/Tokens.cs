@@ -64,6 +64,8 @@ public enum JsTokenKind
     Semicolon,          // ;
     Comma,              // ,
     QuestionMark,       // ?
+    QuestionDot,        // ?. (ES2020 optional chaining)
+    QuestionQuestion,   // ?? (ES2020 nullish coalescing)
     Colon,              // :
     Arrow,              // =>  (ES2015; recognized, parser can reject if needed)
 
@@ -117,6 +119,10 @@ public enum JsTokenKind
     AmpersandAssign,    // &=
     PipeAssign,         // |=
     CaretAssign,        // ^=
+    // ES2021 short-circuit assignment operators.
+    AmpersandAmpersandAssign, // &&=
+    PipePipeAssign,           // ||=
+    QuestionQuestionAssign,   // ??=
 
     // --- Keywords (ES5) ---
     // Kept as their own enum values so the parser doesn't have to do

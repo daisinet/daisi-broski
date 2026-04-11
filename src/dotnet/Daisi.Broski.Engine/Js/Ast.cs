@@ -895,8 +895,9 @@ public sealed class BinaryExpression : Expression
 
 public enum LogicalOperator
 {
-    And, // &&
-    Or,  // ||
+    And,     // &&
+    Or,      // ||
+    Nullish, // ?? (ES2020)
 }
 
 /// <summary>
@@ -933,6 +934,10 @@ public enum AssignmentOperator
     BitwiseAndAssign,   // &=
     BitwiseOrAssign,    // |=
     BitwiseXorAssign,   // ^=
+    // ES2021 short-circuit assignment.
+    LogicalAndAssign,   // &&=
+    LogicalOrAssign,    // ||=
+    NullishAssign,      // ??=
 }
 
 public sealed class AssignmentExpression : Expression
@@ -974,12 +979,20 @@ public sealed class MemberExpression : Expression
     public Expression Object { get; }
     public Expression Property { get; }
     public bool Computed { get; }
+    /// <summary>
+    /// True when this step was written with <c>?.</c> — the
+    /// containing <see cref="ChainExpression"/> short-circuits
+    /// the whole chain to <c>undefined</c> if <see cref="Object"/>
+    /// evaluates to <c>null</c> or <c>undefined</c>.
+    /// </summary>
+    public bool IsOptional { get; }
 
-    public MemberExpression(int start, int end, Expression @object, Expression property, bool computed) : base(start, end)
+    public MemberExpression(int start, int end, Expression @object, Expression property, bool computed, bool isOptional = false) : base(start, end)
     {
         Object = @object;
         Property = property;
         Computed = computed;
+        IsOptional = isOptional;
     }
 }
 
@@ -987,11 +1000,38 @@ public sealed class CallExpression : Expression
 {
     public Expression Callee { get; }
     public IReadOnlyList<Expression> Arguments { get; }
+    /// <summary>
+    /// True when this call was written with <c>?.(</c> — the
+    /// containing <see cref="ChainExpression"/> short-circuits
+    /// the whole chain to <c>undefined</c> if <see cref="Callee"/>
+    /// evaluates to <c>null</c> or <c>undefined</c>.
+    /// </summary>
+    public bool IsOptional { get; }
 
-    public CallExpression(int start, int end, Expression callee, IReadOnlyList<Expression> arguments) : base(start, end)
+    public CallExpression(int start, int end, Expression callee, IReadOnlyList<Expression> arguments, bool isOptional = false) : base(start, end)
     {
         Callee = callee;
         Arguments = arguments;
+        IsOptional = isOptional;
+    }
+}
+
+/// <summary>
+/// Wraps the top of an optional chain (<c>?.</c> / <c>?.(</c> /
+/// <c>?.[</c>). Marks the scope within which a nullish short-
+/// circuit unwinds to <c>undefined</c>. Inside the expression,
+/// <see cref="MemberExpression.IsOptional"/> and
+/// <see cref="CallExpression.IsOptional"/> flag each hop that
+/// may trigger the short-circuit — the nearest enclosing
+/// <c>ChainExpression</c> is where they all jump to.
+/// </summary>
+public sealed class ChainExpression : Expression
+{
+    public Expression Expression { get; }
+
+    public ChainExpression(int start, int end, Expression expression) : base(start, end)
+    {
+        Expression = expression;
     }
 }
 

@@ -667,7 +667,30 @@ public sealed class JsLexer
             case ';': _pos++; return new JsToken(JsTokenKind.Semicolon, start, 1);
             case ',': _pos++; return new JsToken(JsTokenKind.Comma, start, 1);
             case ':': _pos++; return new JsToken(JsTokenKind.Colon, start, 1);
-            case '?': _pos++; return new JsToken(JsTokenKind.QuestionMark, start, 1);
+            case '?':
+                // ES2020: `??` (nullish coalesce), `??=`
+                // (nullish assign), `?.` (optional chain).
+                // Note: `?.` is NOT emitted when followed by
+                // a digit — `a ? .5 : b` must parse as
+                // ternary + number literal, not optional
+                // chain.
+                if (Peek(1) == '?')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.QuestionQuestionAssign, start, 3);
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.QuestionQuestion, start, 2);
+                }
+                if (Peek(1) == '.' && !(Peek(2) >= '0' && Peek(2) <= '9'))
+                {
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.QuestionDot, start, 2);
+                }
+                _pos++;
+                return new JsToken(JsTokenKind.QuestionMark, start, 1);
             case '~': _pos++; return new JsToken(JsTokenKind.Tilde, start, 1);
 
             case '=':
@@ -811,6 +834,11 @@ public sealed class JsLexer
             case '&':
                 if (Peek(1) == '&')
                 {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.AmpersandAmpersandAssign, start, 3);
+                    }
                     _pos += 2;
                     return new JsToken(JsTokenKind.AmpersandAmpersand, start, 2);
                 }
@@ -825,6 +853,11 @@ public sealed class JsLexer
             case '|':
                 if (Peek(1) == '|')
                 {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        return new JsToken(JsTokenKind.PipePipeAssign, start, 3);
+                    }
                     _pos += 2;
                     return new JsToken(JsTokenKind.PipePipe, start, 2);
                 }

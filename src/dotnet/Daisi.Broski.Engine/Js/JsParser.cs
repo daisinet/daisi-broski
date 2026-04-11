@@ -1907,6 +1907,10 @@ public sealed class JsParser
             {
                 left = new LogicalExpression(left.Start, right.End, LogicalOperator.Or, left, right);
             }
+            else if (opKind == JsTokenKind.QuestionQuestion)
+            {
+                left = new LogicalExpression(left.Start, right.End, LogicalOperator.Nullish, left, right);
+            }
             else
             {
                 left = new BinaryExpression(
@@ -1993,8 +1997,42 @@ public sealed class JsParser
             ? ParseNewExpression()
             : ParsePrimaryExpression();
 
+        // Track whether any `?.` appeared in this chain. The first
+        // optional hop marks each subsequent hop as "still inside"
+        // the chain even though they use regular `.` / `[` / `(`
+        // — the whole chain must short-circuit uniformly.
+        bool sawOptional = false;
+
         while (true)
         {
+            if (Current.Kind == JsTokenKind.QuestionDot)
+            {
+                Consume();
+                sawOptional = true;
+                // `x?.[k]` and `x?.(` — the `?.` consumes before
+                // the bracket/paren, then the normal member/call
+                // path handles the rest with IsOptional=true.
+                if (Current.Kind == JsTokenKind.LeftBracket)
+                {
+                    Consume();
+                    var index = ParseExpression(allowIn: true);
+                    int end = Current.End;
+                    Expect(JsTokenKind.RightBracket, "optional member access");
+                    expr = new MemberExpression(expr.Start, end, expr, index, computed: true, isOptional: true);
+                    continue;
+                }
+                if (Current.Kind == JsTokenKind.LeftParen)
+                {
+                    var args = ParseArguments();
+                    int end = _tokens[_pos - 1].End;
+                    expr = new CallExpression(expr.Start, end, expr, args, isOptional: true);
+                    continue;
+                }
+                // `x?.y` — fall through to the dotted-name path.
+                var name = ParsePropertyName(keywordsAllowed: true);
+                expr = new MemberExpression(expr.Start, name.End, expr, name, computed: false, isOptional: true);
+                continue;
+            }
             if (Current.Kind == JsTokenKind.Dot)
             {
                 Consume();
@@ -2018,6 +2056,16 @@ public sealed class JsParser
             else if (Current.Kind == JsTokenKind.NoSubstitutionTemplate ||
                      Current.Kind == JsTokenKind.TemplateHead)
             {
+                if (sawOptional)
+                {
+                    // Tagged templates inside an optional chain are
+                    // a syntax error per ES2020 — the `?.` short-
+                    // circuit and the tag's TemplateObject caching
+                    // don't compose cleanly.
+                    throw new JsParseException(
+                        "Tagged template is not allowed in an optional chain",
+                        Current.Start);
+                }
                 // Tagged template: `expr`template``. The
                 // template literal becomes the sole
                 // argument-like payload; the compiler
@@ -2042,6 +2090,14 @@ public sealed class JsParser
             {
                 break;
             }
+        }
+
+        // Wrap the whole chain in a ChainExpression so the
+        // compiler has a single end-of-chain label to emit the
+        // short-circuit jumps against.
+        if (sawOptional)
+        {
+            expr = new ChainExpression(expr.Start, expr.End, expr);
         }
         return expr;
     }
@@ -2447,6 +2503,11 @@ public sealed class JsParser
     /// </summary>
     private static int GetBinaryPrecedence(JsTokenKind kind, bool allowIn) => kind switch
     {
+        // ?? sits at the same level as || and is mutually
+        // exclusive with it at that level (the spec forbids
+        // mixing `a || b ?? c` without explicit parens, but
+        // we don't enforce that — it parses left-to-right).
+        JsTokenKind.QuestionQuestion => 4,
         JsTokenKind.PipePipe => 4,
         JsTokenKind.AmpersandAmpersand => 5,
         JsTokenKind.Pipe => 6,
@@ -2505,6 +2566,9 @@ public sealed class JsParser
         JsTokenKind.AmpersandAssign => AssignmentOperator.BitwiseAndAssign,
         JsTokenKind.PipeAssign => AssignmentOperator.BitwiseOrAssign,
         JsTokenKind.CaretAssign => AssignmentOperator.BitwiseXorAssign,
+        JsTokenKind.AmpersandAmpersandAssign => AssignmentOperator.LogicalAndAssign,
+        JsTokenKind.PipePipeAssign => AssignmentOperator.LogicalOrAssign,
+        JsTokenKind.QuestionQuestionAssign => AssignmentOperator.NullishAssign,
         _ => null,
     };
 

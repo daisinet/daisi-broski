@@ -1743,6 +1743,29 @@ public sealed class JsVM
                         if (JsValue.ToBoolean(_stack[_sp - 1])) _ip += offset;
                     }
                     break;
+                case OpCode.JumpIfNullish:
+                    {
+                        short offset = ReadS16();
+                        var v = Pop();
+                        if (v is JsNull || v is JsUndefined) _ip += offset;
+                    }
+                    break;
+                case OpCode.JumpIfNotNullishKeep:
+                    {
+                        // Peeks TOS; jumps if value is not
+                        // null/undefined. The caller is
+                        // responsible for the fallthrough
+                        // pop, matching the existing
+                        // JumpIfFalseKeep / JumpIfTrueKeep
+                        // contract.
+                        short offset = ReadS16();
+                        var v = _stack[_sp - 1];
+                        if (v is not JsNull && v is not JsUndefined)
+                        {
+                            _ip += offset;
+                        }
+                    }
+                    break;
 
                 // ---- Completion ----
                 case OpCode.StoreCompletion:
