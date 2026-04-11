@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Daisi.Broski.Ipc</RootNamespace>
+    <AssemblyName>Daisi.Broski.Ipc</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />
+  </ItemGroup>
+</Project>
