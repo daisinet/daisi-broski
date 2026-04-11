@@ -29,20 +29,49 @@ namespace Daisi.Broski.Engine.Js;
 /// </summary>
 public sealed class JsVM
 {
-    private readonly byte[] _code;
-    private readonly IReadOnlyList<object?> _constants;
-    private readonly IReadOnlyList<string> _names;
-    private readonly Dictionary<string, object?> _globals;
-
-    // Value stack. 1024 is a generous start for slice 3 — no
-    // function calls, so stack depth is bounded by nesting of
-    // expressions, and in practice never exceeds a handful.
-    private readonly object?[] _stack = new object?[1024];
-    private int _sp;
+    // Per-execution-context view of the currently running chunk.
+    // These change on every Call/Return via the _frames stack.
+    private byte[] _code;
+    private IReadOnlyList<object?> _constants;
+    private IReadOnlyList<string> _names;
     private int _ip;
-    // Single compiler-owned scratch slot for the postfix-update
+
+    // Current lexical environment and `this` binding. Also saved/
+    // restored via the call frame stack.
+    private JsEnvironment _env;
+    private object? _this;
+
+    // Value stack. 4096 is generous for slice 4b — function calls
+    // push args on this stack, so depth grows with recursion.
+    // Stack overflow will blow up the test suite rather than the
+    // user's app, which is fine for phase 3a.
+    private readonly object?[] _stack = new object?[4096];
+    private int _sp;
+
+    // Single compiler-owned scratch slot for postfix-update
     // sequences. Not observable to user code.
     private object? _scratch;
+
+    // Call frame stack. Each entry captures the state we need to
+    // restore on Return: code pointer, constant / name pools, ip,
+    // env, this, plus constructor metadata for `new`.
+    private readonly Stack<CallFrame> _frames = new();
+
+    private sealed class CallFrame
+    {
+        public byte[] Code = null!;
+        public IReadOnlyList<object?> Constants = null!;
+        public IReadOnlyList<string> Names = null!;
+        public int Ip;
+        public JsEnvironment Env = null!;
+        public object? This;
+        // For `new`: whether this frame was entered via New, and
+        // the instance allocated at call time. Used at Return to
+        // choose between the constructor's return value and the
+        // allocated instance per ECMA §13.2.2.
+        public bool IsConstructor;
+        public JsObject? NewInstance;
+    }
 
     /// <summary>
     /// The most recent value stored by a
@@ -56,7 +85,11 @@ public sealed class JsVM
         _code = chunk.Code;
         _constants = chunk.Constants;
         _names = chunk.Names;
-        _globals = globals;
+        // The globals env wraps the caller-owned dictionary so
+        // mutations made by the VM are observable through
+        // <see cref="JsEngine.Globals"/>.
+        _env = new JsEnvironment(globals, parent: null);
+        _this = JsValue.Undefined;
     }
 
     /// <summary>
@@ -103,11 +136,11 @@ public sealed class JsVM
                     Push(_scratch);
                     break;
 
-                // ---- Globals ----
+                // ---- Name resolution (walks the env chain) ----
                 case OpCode.LoadGlobal:
                     {
                         var name = _names[ReadU16()];
-                        if (!_globals.TryGetValue(name, out var v))
+                        if (!_env.TryResolve(name, out var v))
                         {
                             throw new JsRuntimeException($"{name} is not defined");
                         }
@@ -117,31 +150,101 @@ public sealed class JsVM
                 case OpCode.LoadGlobalOrUndefined:
                     {
                         var name = _names[ReadU16()];
-                        Push(_globals.TryGetValue(name, out var v) ? v : JsValue.Undefined);
+                        Push(_env.TryResolve(name, out var v) ? v : JsValue.Undefined);
                     }
                     break;
                 case OpCode.StoreGlobal:
                     {
                         var name = _names[ReadU16()];
-                        _globals[name] = _stack[_sp - 1];
+                        _env.Assign(name, _stack[_sp - 1]);
                     }
                     break;
                 case OpCode.DeclareGlobal:
                     {
+                        // Declares in the CURRENT env — at top level
+                        // that's globals, inside a function it's the
+                        // function's own scope.
                         var name = _names[ReadU16()];
-                        if (!_globals.ContainsKey(name))
-                        {
-                            _globals[name] = JsValue.Undefined;
-                        }
+                        _env.DeclareLocal(name);
                     }
                     break;
                 case OpCode.DeleteGlobal:
                     {
                         var name = _names[ReadU16()];
-                        // `delete` on a declared binding returns
-                        // false in non-strict mode; the binding
-                        // stays. We do not remove.
-                        Push(_globals.ContainsKey(name) ? JsValue.False : JsValue.True);
+                        // Non-strict delete: returns false for any
+                        // name bound anywhere up the env chain,
+                        // true otherwise. The binding stays in
+                        // place — delete on a declared var is a
+                        // no-op per ECMA §11.4.1.
+                        Push(_env.TryResolve(name, out _) ? JsValue.False : JsValue.True);
+                    }
+                    break;
+
+                // ---- Functions / calls / constructors ----
+                case OpCode.MakeFunction:
+                    {
+                        var template = (JsFunctionTemplate)_constants[ReadU16()]!;
+                        Push(new JsFunction(template, _env));
+                    }
+                    break;
+                case OpCode.Call:
+                    {
+                        int argc = _code[_ip++];
+                        DoCall(argc);
+                    }
+                    break;
+                case OpCode.New:
+                    {
+                        int argc = _code[_ip++];
+                        DoNew(argc);
+                    }
+                    break;
+                case OpCode.Return:
+                    {
+                        var returnValue = Pop();
+                        if (_frames.Count == 0)
+                        {
+                            // Top-level return — shouldn't happen
+                            // because the compiler rejects it.
+                            return CompletionValue;
+                        }
+                        var frame = _frames.Pop();
+                        // Restore caller state.
+                        _code = frame.Code;
+                        _constants = frame.Constants;
+                        _names = frame.Names;
+                        _ip = frame.Ip;
+                        _env = frame.Env;
+                        _this = frame.This;
+                        // Push the result onto the caller's stack.
+                        // For a constructor: if the function
+                        // returned a non-object, substitute the
+                        // freshly allocated instance instead.
+                        if (frame.IsConstructor && returnValue is not JsObject)
+                        {
+                            Push(frame.NewInstance);
+                        }
+                        else
+                        {
+                            Push(returnValue);
+                        }
+                    }
+                    break;
+                case OpCode.Instanceof:
+                    {
+                        var ctor = Pop();
+                        var obj = Pop();
+                        Push(IsInstanceOf(obj, ctor));
+                    }
+                    break;
+                case OpCode.LoadThis:
+                    Push(_this);
+                    break;
+                case OpCode.Swap:
+                    {
+                        var top = _stack[_sp - 1];
+                        _stack[_sp - 1] = _stack[_sp - 2];
+                        _stack[_sp - 2] = top;
                     }
                     break;
 
@@ -480,6 +583,185 @@ public sealed class JsVM
         var a = Pop();
         int result = fn(JsValue.ToInt32(a), JsValue.ToInt32(b));
         Push((double)result);
+    }
+
+    // -------------------------------------------------------------------
+    // Call / New / Return helpers
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Execute a <see cref="OpCode.Call"/>. Pops the <paramref name="argc"/>
+    /// argument values plus a <c>this</c> value plus the function
+    /// itself off the stack, then either dispatches to the native
+    /// implementation or sets up a new call frame and jumps into
+    /// the function's bytecode.
+    /// </summary>
+    private void DoCall(int argc)
+    {
+        // Stack layout: [..., fn, this, arg0, ..., arg(argc-1)]
+        int argsBase = _sp - argc;
+        var args = CollectArgs(argc, argsBase);
+        _sp -= argc;                  // remove args
+        var thisVal = Pop();          // remove this
+        var calleeValue = Pop();      // remove fn
+
+        if (calleeValue is not JsFunction fn)
+        {
+            throw new JsRuntimeException("Call target is not a function");
+        }
+
+        InvokeFunction(fn, thisVal, args, isConstructor: false, newInstance: null);
+    }
+
+    /// <summary>
+    /// Execute a <see cref="OpCode.New"/>. Like <see cref="DoCall"/>
+    /// but allocates a fresh instance and uses it as <c>this</c>,
+    /// linking the prototype per ECMA §13.2.2.
+    /// </summary>
+    private void DoNew(int argc)
+    {
+        // Stack layout: [..., fn, arg0, ..., arg(argc-1)]
+        int argsBase = _sp - argc;
+        var args = CollectArgs(argc, argsBase);
+        _sp -= argc;
+        var calleeValue = Pop();
+
+        if (calleeValue is not JsFunction fn)
+        {
+            throw new JsRuntimeException("'new' target is not a function");
+        }
+        if (fn.NativeImpl is not null)
+        {
+            throw new JsRuntimeException(
+                "'new' on native functions is not supported in this slice");
+        }
+
+        // Read `F.prototype` live so user reassignment
+        // (`Dog.prototype = new Animal()`) takes effect.
+        var protoValue = fn.Get("prototype");
+        var instance = new JsObject
+        {
+            Prototype = protoValue as JsObject,
+        };
+        InvokeFunction(fn, instance, args, isConstructor: true, newInstance: instance);
+    }
+
+    /// <summary>
+    /// Core call machinery shared by <see cref="DoCall"/> and
+    /// <see cref="DoNew"/>. For native functions, dispatches to
+    /// <see cref="JsFunction.NativeImpl"/> synchronously and
+    /// pushes the result. For user functions, builds a new
+    /// environment with the parameters bound (and an
+    /// <c>arguments</c> object), pushes a call frame, and switches
+    /// execution to the function's chunk. When the function
+    /// returns, the frame is popped and control resumes at the
+    /// instruction after this call.
+    /// </summary>
+    private void InvokeFunction(
+        JsFunction fn,
+        object? thisVal,
+        object?[] args,
+        bool isConstructor,
+        JsObject? newInstance)
+    {
+        if (fn.NativeImpl is not null)
+        {
+            // Synchronous native call — no frame push needed.
+            var result = fn.NativeImpl(thisVal, args);
+            if (isConstructor)
+            {
+                Push(result is JsObject ? result : newInstance);
+            }
+            else
+            {
+                Push(result);
+            }
+            return;
+        }
+
+        var template = fn.Template!;
+        var newEnv = new JsEnvironment(fn.CapturedEnv);
+
+        // Bind parameters — missing args are undefined.
+        for (int i = 0; i < template.ParamCount; i++)
+        {
+            newEnv.Bindings[template.ParamNames[i]] =
+                i < args.Length ? args[i] : JsValue.Undefined;
+        }
+
+        // Bind `arguments` object (phase-3a simplification: a
+        // plain JsArray; the spec mandates a special Arguments
+        // exotic object with a linked-list to the parameters,
+        // which is a slice-4c refinement if test262 complains).
+        var argsArr = new JsArray();
+        foreach (var a in args) argsArr.Elements.Add(a);
+        newEnv.Bindings["arguments"] = argsArr;
+
+        // Save caller state.
+        _frames.Push(new CallFrame
+        {
+            Code = _code,
+            Constants = _constants,
+            Names = _names,
+            Ip = _ip,
+            Env = _env,
+            This = _this,
+            IsConstructor = isConstructor,
+            NewInstance = newInstance,
+        });
+
+        // Switch to callee.
+        _code = template.Body.Code;
+        _constants = template.Body.Constants;
+        _names = template.Body.Names;
+        _ip = 0;
+        _env = newEnv;
+        _this = thisVal;
+    }
+
+    /// <summary>
+    /// Copy the top <paramref name="count"/> stack values into a
+    /// fresh array, preserving order. Used when we need to
+    /// retain arg values past the frame switch — the underlying
+    /// stack slots are then popped by the caller.
+    /// </summary>
+    private object?[] CollectArgs(int count, int argsBase)
+    {
+        var args = new object?[count];
+        for (int i = 0; i < count; i++)
+        {
+            args[i] = _stack[argsBase + i];
+        }
+        return args;
+    }
+
+    /// <summary>
+    /// Walk <paramref name="obj"/>'s prototype chain looking for
+    /// an object identical to <c>ctor.prototype</c>. Matches
+    /// ECMA §15.3.5.3. Returns false for non-object subjects
+    /// (per spec, <c>1 instanceof Number</c> is false, not an
+    /// error).
+    /// </summary>
+    private static bool IsInstanceOf(object? obj, object? ctor)
+    {
+        if (ctor is not JsFunction fn)
+        {
+            throw new JsRuntimeException(
+                "Right-hand side of instanceof is not a function");
+        }
+        if (obj is not JsObject target) return false;
+
+        // Read F.prototype live so user-reassigned prototypes
+        // participate in the chain walk.
+        if (fn.Get("prototype") is not JsObject proto) return false;
+
+        var walker = target.Prototype;
+        while (walker is not null)
+        {
+            if (ReferenceEquals(walker, proto)) return true;
+            walker = walker.Prototype;
+        }
+        return false;
     }
 
     /// <summary>

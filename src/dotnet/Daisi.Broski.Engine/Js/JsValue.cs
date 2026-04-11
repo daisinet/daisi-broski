@@ -192,7 +192,7 @@ public static class JsValue
         if (v is bool) return "boolean";
         if (v is double) return "number";
         if (v is string) return "string";
-        // Functions would return "function" — no functions yet.
+        if (v is JsFunction) return "function";
         return "object";
     }
 

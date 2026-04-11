@@ -49,12 +49,21 @@ namespace Daisi.Broski.Engine.Js;
 /// </summary>
 public sealed class JsCompiler
 {
-    private readonly Chunk _chunk = new();
+    // Nested function bodies push their own frame, which owns its
+    // own Chunk and loop context stack. The active frame's Chunk
+    // is cached in <see cref="_chunk"/> and loops in
+    // <see cref="_loops"/> so the existing emit helpers continue
+    // to work unchanged.
+    private readonly Stack<CompilerFrame> _frames = new();
+    private Chunk _chunk = null!;
+    private Stack<LoopContext> _loops = null!;
 
-    // Compile-time loop context stack. Each entry records pending
-    // break / continue jump operand addresses so we can patch them
-    // when the loop's exit / continue targets are known.
-    private readonly Stack<LoopContext> _loops = new();
+    private sealed class CompilerFrame
+    {
+        public Chunk Chunk { get; } = new();
+        public Stack<LoopContext> Loops { get; } = new();
+        public bool IsFunction { get; init; }
+    }
 
     private sealed class LoopContext
     {
@@ -62,30 +71,73 @@ public sealed class JsCompiler
         public readonly List<int> ContinueJumps = new();
     }
 
+    private void PushFrame(bool isFunction)
+    {
+        var f = new CompilerFrame { IsFunction = isFunction };
+        _frames.Push(f);
+        _chunk = f.Chunk;
+        _loops = f.Loops;
+    }
+
+    private Chunk PopFrame()
+    {
+        var popped = _frames.Pop();
+        if (_frames.Count > 0)
+        {
+            _chunk = _frames.Peek().Chunk;
+            _loops = _frames.Peek().Loops;
+        }
+        else
+        {
+            _chunk = null!;
+            _loops = null!;
+        }
+        return popped.Chunk;
+    }
+
+    private bool InFunction()
+    {
+        foreach (var f in _frames)
+        {
+            if (f.IsFunction) return true;
+        }
+        return false;
+    }
+
     public Chunk Compile(Program program)
     {
-        HoistVars(program);
+        PushFrame(isFunction: false);
+        HoistDeclarations(program.Body);
         foreach (var stmt in program.Body)
         {
             CompileStatement(stmt);
         }
         _chunk.Emit(OpCode.Halt);
-        return _chunk;
+        return PopFrame();
     }
 
     // -------------------------------------------------------------------
-    // var hoisting
+    // var + function hoisting
     // -------------------------------------------------------------------
+    //
+    // ES5 hoists var declarations AND function declarations to the
+    // top of the enclosing function (or program). Var names bind
+    // to undefined; function names bind to the fully-constructed
+    // function value, so `f(); function f() {}` runs `f` before
+    // its source-order position.
+    //
+    // We implement both in a single pre-pass that walks the
+    // statement tree and emits DeclareGlobal for vars and
+    // MakeFunction + StoreGlobal + Pop for function declarations.
+    // The recursive main-compile pass then treats FunctionDeclaration
+    // as a no-op (it was already emitted here).
 
-    private void HoistVars(Program program)
+    private void HoistDeclarations(IEnumerable<Statement> body)
     {
-        foreach (var stmt in program.Body)
-        {
-            HoistVarsInStatement(stmt);
-        }
+        foreach (var stmt in body) HoistInStatement(stmt);
     }
 
-    private void HoistVarsInStatement(Statement stmt)
+    private void HoistInStatement(Statement stmt)
     {
         switch (stmt)
         {
@@ -96,18 +148,36 @@ public sealed class JsCompiler
                     _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
                 }
                 break;
+            case FunctionDeclaration fd:
+                {
+                    // Compile the function body eagerly and emit
+                    // the MakeFunction + binding write. The main
+                    // compile pass will skip this node.
+                    var template = CompileFunctionTemplate(
+                        fd.Id.Name,
+                        fd.Params,
+                        fd.Body,
+                        fd.End - fd.Start);
+                    int templateIdx = _chunk.AddConstant(template);
+                    int nameIdx = _chunk.AddName(fd.Id.Name);
+                    _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
+                    _chunk.EmitWithU16(OpCode.MakeFunction, templateIdx);
+                    _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+                    _chunk.Emit(OpCode.Pop);
+                }
+                break;
             case BlockStatement b:
-                foreach (var s in b.Body) HoistVarsInStatement(s);
+                foreach (var s in b.Body) HoistInStatement(s);
                 break;
             case IfStatement i:
-                HoistVarsInStatement(i.Consequent);
-                if (i.Alternate is not null) HoistVarsInStatement(i.Alternate);
+                HoistInStatement(i.Consequent);
+                if (i.Alternate is not null) HoistInStatement(i.Alternate);
                 break;
             case WhileStatement w:
-                HoistVarsInStatement(w.Body);
+                HoistInStatement(w.Body);
                 break;
             case DoWhileStatement dw:
-                HoistVarsInStatement(dw.Body);
+                HoistInStatement(dw.Body);
                 break;
             case ForStatement f:
                 if (f.Init is VariableDeclaration fvd)
@@ -118,16 +188,50 @@ public sealed class JsCompiler
                         _chunk.EmitWithU16(OpCode.DeclareGlobal, idx);
                     }
                 }
-                HoistVarsInStatement(f.Body);
+                HoistInStatement(f.Body);
                 break;
             case LabeledStatement l:
-                HoistVarsInStatement(l.Body);
+                HoistInStatement(l.Body);
                 break;
-            // Statements that contain no nested statements (empty,
-            // expression, break, continue, debugger, return, throw,
-            // variable with no nested body) are covered by the
-            // VariableDeclaration case or have nothing to hoist.
+            // Statements with no nested statements or no
+            // declarations inside them need no hoisting.
         }
+    }
+
+    /// <summary>
+    /// Compile a function body into a standalone
+    /// <see cref="JsFunctionTemplate"/>. Uses a fresh compiler
+    /// frame so inner loops / vars / nested functions don't
+    /// contaminate the outer frame's chunk.
+    /// </summary>
+    private JsFunctionTemplate CompileFunctionTemplate(
+        string? name,
+        IReadOnlyList<Identifier> paramNodes,
+        BlockStatement body,
+        int sourceLength)
+    {
+        PushFrame(isFunction: true);
+
+        // Hoist the body — both vars AND any nested function
+        // declarations inside the body.
+        HoistDeclarations(body.Body);
+
+        // Compile the body statements.
+        foreach (var stmt in body.Body)
+        {
+            CompileStatement(stmt);
+        }
+
+        // Implicit `return undefined;` at the end of every
+        // function body. If the body already returned, this is
+        // unreachable bytecode — harmless.
+        _chunk.Emit(OpCode.PushUndefined);
+        _chunk.Emit(OpCode.Return);
+
+        var chunk = PopFrame();
+        var paramNames = new List<string>(paramNodes.Count);
+        foreach (var p in paramNodes) paramNames.Add(p.Name);
+        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength);
     }
 
     // -------------------------------------------------------------------
@@ -209,14 +313,26 @@ public sealed class JsCompiler
                 // No-op — no debugger is attached.
                 return;
 
-            case FunctionDeclaration fd:
-                throw new JsCompileException(
-                    "Function declarations are not supported in this slice (phase 3a slice 4)",
-                    fd.Start);
+            case FunctionDeclaration:
+                // Already emitted during the hoisting pass.
+                return;
 
             case ReturnStatement rs:
-                throw new JsCompileException(
-                    "'return' is only valid inside a function (phase 3a slice 4)", rs.Start);
+                if (!InFunction())
+                {
+                    throw new JsCompileException(
+                        "'return' outside of function", rs.Start);
+                }
+                if (rs.Argument is null)
+                {
+                    _chunk.Emit(OpCode.PushUndefined);
+                }
+                else
+                {
+                    CompileExpression(rs.Argument);
+                }
+                _chunk.Emit(OpCode.Return);
+                return;
 
             case ThrowStatement ts:
                 throw new JsCompileException(
@@ -388,11 +504,7 @@ public sealed class JsCompiler
                 return;
 
             case ThisExpression:
-                // At program-level, `this` is the global object. We
-                // don't yet represent a global object as a JsValue,
-                // so push undefined. Will be revisited when slice 4
-                // introduces proper environment records.
-                _chunk.Emit(OpCode.PushUndefined);
+                _chunk.Emit(OpCode.LoadThis);
                 return;
 
             case UnaryExpression u:
@@ -442,14 +554,14 @@ public sealed class JsCompiler
                 return;
 
             case CallExpression ce:
-                throw new JsCompileException(
-                    "Function calls are not supported in this slice (phase 3a slice 4)", ce.Start);
+                CompileCall(ce);
+                return;
             case NewExpression ne:
-                throw new JsCompileException(
-                    "'new' is not supported in this slice (phase 3a slice 4)", ne.Start);
+                CompileNew(ne);
+                return;
             case FunctionExpression fe:
-                throw new JsCompileException(
-                    "Function expressions are not supported in this slice (phase 3a slice 4)", fe.Start);
+                CompileFunctionExpression(fe);
+                return;
 
             default:
                 throw new JsCompileException(
@@ -822,6 +934,77 @@ public sealed class JsCompiler
     }
 
     /// <summary>
+    /// Compile a call expression. For a plain identifier callee
+    /// (<c>f(...)</c>) <c>this</c> is <c>undefined</c>. For a
+    /// method call (<c>obj.method(...)</c> or <c>obj[k](...)</c>)
+    /// <c>this</c> is the object before the dot — compiled by
+    /// fetching the method off a duplicated object reference and
+    /// then swapping the result with the object, so the
+    /// <see cref="OpCode.Call"/> opcode sees the canonical
+    /// <c>[fn, this, args...]</c> stack layout.
+    /// </summary>
+    private void CompileCall(CallExpression ce)
+    {
+        if (ce.Callee is MemberExpression m)
+        {
+            CompileExpression(m.Object);
+            _chunk.Emit(OpCode.Dup);
+            if (m.Computed)
+            {
+                CompileExpression(m.Property);
+                _chunk.Emit(OpCode.GetPropertyComputed);
+            }
+            else
+            {
+                int nameIdx = _chunk.AddName(((Identifier)m.Property).Name);
+                _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
+            }
+            _chunk.Emit(OpCode.Swap);
+        }
+        else
+        {
+            CompileExpression(ce.Callee);
+            _chunk.Emit(OpCode.PushUndefined);
+        }
+        foreach (var arg in ce.Arguments)
+        {
+            CompileExpression(arg);
+        }
+        if (ce.Arguments.Count > byte.MaxValue)
+        {
+            throw new JsCompileException(
+                "More than 255 call arguments are not supported", ce.Start);
+        }
+        _chunk.EmitWithU8(OpCode.Call, ce.Arguments.Count);
+    }
+
+    private void CompileNew(NewExpression ne)
+    {
+        CompileExpression(ne.Callee);
+        foreach (var arg in ne.Arguments)
+        {
+            CompileExpression(arg);
+        }
+        if (ne.Arguments.Count > byte.MaxValue)
+        {
+            throw new JsCompileException(
+                "More than 255 constructor arguments are not supported", ne.Start);
+        }
+        _chunk.EmitWithU8(OpCode.New, ne.Arguments.Count);
+    }
+
+    private void CompileFunctionExpression(FunctionExpression fe)
+    {
+        var template = CompileFunctionTemplate(
+            fe.Id?.Name,
+            fe.Params,
+            fe.Body,
+            fe.End - fe.Start);
+        int idx = _chunk.AddConstant(template);
+        _chunk.EmitWithU16(OpCode.MakeFunction, idx);
+    }
+
+    /// <summary>
     /// Normalize an object-literal property key to its string form.
     /// The parser accepts identifiers (including reserved words as
     /// ES5 bare keys), string literals, and number literals; the
@@ -862,9 +1045,7 @@ public sealed class JsCompiler
         BinaryOperator.RightShift => OpCode.Shr,
         BinaryOperator.UnsignedRightShift => OpCode.Ushr,
         BinaryOperator.In => OpCode.In,
-        BinaryOperator.InstanceOf =>
-            throw new JsCompileException(
-                "'instanceof' requires function objects (phase 3a slice 4b)", 0),
+        BinaryOperator.InstanceOf => OpCode.Instanceof,
         _ => throw new ArgumentOutOfRangeException(nameof(op), op, null),
     };
 

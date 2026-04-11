@@ -56,14 +56,27 @@ public enum OpCode : byte
     /// <summary>Push the scratch slot to the top of stack.</summary>
     LoadScratch,
 
-    // ---- Globals ----
-    /// <summary>Load a global by name. Operand: u16 name index. Throws if undeclared.</summary>
+    // ---- Name resolution (walks the env chain) ----
+    //
+    // These opcodes were originally called "LoadGlobal" back in
+    // slice 3 when the only scope was the globals dictionary.
+    // They are now scope-aware: at the top level the env chain has
+    // one env (globals), so the behavior is identical; inside a
+    // function the chain is function env → ... → globals, so the
+    // same opcodes transparently reach lexically enclosing
+    // bindings. The old names are kept for diff stability.
+    /// <summary>
+    /// Walk the env chain looking for the given name. Push the
+    /// value if found; throw <see cref="JsRuntimeException"/> if
+    /// not (to become a <c>ReferenceError</c> in slice 5).
+    /// Operand: u16 name index.
+    /// </summary>
     LoadGlobal,
     /// <summary>
-    /// Load a global, pushing <c>undefined</c> if the name is not
-    /// declared rather than throwing. Used only by <c>typeof</c> on
-    /// an identifier argument, which must not ReferenceError per
-    /// ECMA §11.4.3. Operand: u16 name index.
+    /// Walk the env chain; push the value if found, or
+    /// <c>undefined</c> if not. Used only by
+    /// <c>typeof identifier</c>, which must not throw per ECMA
+    /// §11.4.3. Operand: u16 name index.
     /// </summary>
     LoadGlobalOrUndefined,
     /// <summary>
@@ -82,10 +95,59 @@ public enum OpCode : byte
     /// <c>delete x</c> on an unqualified identifier. In ES5
     /// non-strict mode this returns <c>false</c> (the variable was
     /// declared) unless the binding was created implicitly — we
-    /// conservatively return <c>false</c> for all declared globals
-    /// and <c>true</c> for undeclared ones. Operand: u16 name index.
+    /// conservatively return <c>false</c> for any name bound
+    /// anywhere up the env chain and <c>true</c> for undeclared
+    /// ones. Operand: u16 name index.
     /// </summary>
     DeleteGlobal,
+
+    // ---- Functions / calls / constructors ----
+    /// <summary>
+    /// Materialize a function value from a
+    /// <see cref="JsFunctionTemplate"/> stored in the constant
+    /// pool, capturing the current env as the closure. Operand:
+    /// u16 constant index.
+    /// </summary>
+    MakeFunction,
+    /// <summary>
+    /// Call a function. Stack before: <c>[..., fn, this, arg1, ..., argN]</c>.
+    /// Stack after: <c>[..., result]</c>. Operand: u8 argument
+    /// count (max 255 — well beyond any realistic ES5 call site).
+    /// </summary>
+    Call,
+    /// <summary>
+    /// Construct via a constructor function. Stack before:
+    /// <c>[..., fn, arg1, ..., argN]</c>. Stack after:
+    /// <c>[..., instance]</c>. The VM allocates a fresh
+    /// <see cref="JsObject"/>, links its prototype to
+    /// <c>fn.prototype</c>, invokes <c>fn</c> with that as
+    /// <c>this</c>, and per ECMA §13.2.2 uses the return value
+    /// if it is an object, otherwise the freshly-allocated
+    /// instance. Operand: u8 argument count.
+    /// </summary>
+    New,
+    /// <summary>
+    /// Return from the current function call. Pops the top of
+    /// stack as the return value, restores the calling frame, and
+    /// pushes the value onto the caller's stack. At the top-level
+    /// program frame the VM halts.
+    /// </summary>
+    Return,
+    /// <summary>
+    /// <c>x instanceof F</c>. Stack <c>[x, F]</c> → <c>[bool]</c>.
+    /// Walks <c>x</c>'s prototype chain looking for
+    /// <c>F.prototype</c>. Throws if <c>F</c> is not a
+    /// <see cref="JsFunction"/>.
+    /// </summary>
+    Instanceof,
+    /// <summary>Push the current call frame's <c>this</c> value.</summary>
+    LoadThis,
+    /// <summary>
+    /// Swap the top two values on the stack. Used by the compiler
+    /// when compiling a method call, where <c>obj</c> and the
+    /// resolved method arrive in the wrong order for <see cref="Call"/>.
+    /// </summary>
+    Swap,
 
     // ---- Arithmetic (all pop two operands, push one) ----
     Add, Sub, Mul, Div, Mod,
@@ -222,6 +284,17 @@ public sealed class Chunk
         _code.Add((byte)op);
         _code.Add((byte)(operand & 0xFF));
         _code.Add((byte)((operand >> 8) & 0xFF));
+    }
+
+    public void EmitWithU8(OpCode op, int operand)
+    {
+        if (operand < 0 || operand > byte.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(operand),
+                $"u8 operand out of range: {operand}");
+        }
+        _code.Add((byte)op);
+        _code.Add((byte)operand);
     }
 
     /// <summary>

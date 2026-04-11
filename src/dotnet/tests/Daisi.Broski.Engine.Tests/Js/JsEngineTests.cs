@@ -457,12 +457,6 @@ public class JsEngineTests
     // -------- unsupported forms should throw at compile time --------
 
     [Fact]
-    public void Function_declaration_throws_compile_error()
-    {
-        Assert.Throws<JsCompileException>(() => Eval("function f() { return 1; }"));
-    }
-
-    [Fact]
     public void Try_statement_throws_compile_error()
     {
         Assert.Throws<JsCompileException>(() => Eval("try { } catch (e) { }"));
