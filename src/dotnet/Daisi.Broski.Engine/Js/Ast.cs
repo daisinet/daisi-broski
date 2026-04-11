@@ -242,6 +242,39 @@ public sealed class ArrowFunctionExpression : Expression
     }
 }
 
+/// <summary>
+/// ES2015 template literal — a backtick-delimited string with
+/// optional <c>${expression}</c> interpolations. The AST
+/// splits the source into alternating quasis (decoded string
+/// parts) and expressions; the invariant is
+/// <c>Quasis.Count == Expressions.Count + 1</c> (one more
+/// quasi than expression, because quasis appear both before
+/// the first expression and after the last one).
+///
+/// A no-interpolation template like <c>`hello`</c> has one
+/// quasi and zero expressions. A <c>`a${x}b${y}c`</c> has
+/// three quasis (<c>"a"</c>, <c>"b"</c>, <c>"c"</c>) and two
+/// expressions.
+///
+/// Tagged templates (<c>tag`...`</c>) are a separate feature
+/// deferred to a later slice.
+/// </summary>
+public sealed class TemplateLiteral : Expression
+{
+    public IReadOnlyList<string> Quasis { get; }
+    public IReadOnlyList<Expression> Expressions { get; }
+
+    public TemplateLiteral(
+        int start,
+        int end,
+        IReadOnlyList<string> quasis,
+        IReadOnlyList<Expression> expressions) : base(start, end)
+    {
+        Quasis = quasis;
+        Expressions = expressions;
+    }
+}
+
 public sealed class FunctionDeclaration : Statement
 {
     public Identifier Id { get; }

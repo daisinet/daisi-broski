@@ -1116,11 +1116,64 @@ public sealed class JsParser
 
             case JsTokenKind.KeywordFunction:
                 return ParseFunctionExpression();
+
+            case JsTokenKind.NoSubstitutionTemplate:
+                Consume();
+                return new TemplateLiteral(
+                    tok.Start,
+                    tok.End,
+                    new List<string> { tok.StringValue ?? string.Empty },
+                    new List<Expression>());
+
+            case JsTokenKind.TemplateHead:
+                return ParseTemplateLiteral();
         }
 
         throw new JsParseException(
             $"Unexpected token {tok.Kind}",
             tok.Start);
+    }
+
+    /// <summary>
+    /// Parse a template literal that starts with a
+    /// <see cref="JsTokenKind.TemplateHead"/>. The token stream
+    /// alternates head → expression → middle → expression →
+    /// ... → tail. Expressions parse as regular full
+    /// expressions (not just assignment expressions — the spec
+    /// allows any expression inside a template interpolation).
+    /// </summary>
+    private TemplateLiteral ParseTemplateLiteral()
+    {
+        int start = Current.Start;
+        var quasis = new List<string>();
+        var expressions = new List<Expression>();
+
+        var head = Consume(); // TemplateHead
+        quasis.Add(head.StringValue ?? string.Empty);
+
+        while (true)
+        {
+            var expr = ParseExpression(allowIn: true);
+            expressions.Add(expr);
+
+            if (Current.Kind == JsTokenKind.TemplateMiddle)
+            {
+                var mid = Consume();
+                quasis.Add(mid.StringValue ?? string.Empty);
+                continue;
+            }
+
+            if (Current.Kind == JsTokenKind.TemplateTail)
+            {
+                var tail = Consume();
+                quasis.Add(tail.StringValue ?? string.Empty);
+                return new TemplateLiteral(start, tail.End, quasis, expressions);
+            }
+
+            throw new JsParseException(
+                $"Expected TemplateMiddle or TemplateTail, got {Current.Kind}",
+                Current.Start);
+        }
     }
 
     private ArrayExpression ParseArrayLiteral()

@@ -24,7 +24,33 @@ public enum JsTokenKind
     NullLiteral,
     TrueLiteral,
     FalseLiteral,
-    // RegexLiteral, TemplateLiteral, BigIntLiteral — deferred
+    /// <summary>
+    /// Backtick-delimited template literal with no
+    /// interpolations (e.g. <c>`hello`</c>). The
+    /// <see cref="JsToken.StringValue"/> is the fully-decoded
+    /// string content (escapes resolved, CRLF normalized to LF).
+    /// </summary>
+    NoSubstitutionTemplate,
+    /// <summary>
+    /// Opening portion of a template literal with one or more
+    /// interpolations — from the opening backtick up to (but
+    /// not including) the first <c>${</c>. Followed by
+    /// expression tokens and a <see cref="TemplateMiddle"/> or
+    /// <see cref="TemplateTail"/>.
+    /// </summary>
+    TemplateHead,
+    /// <summary>
+    /// Middle portion of a template literal — from a <c>}</c>
+    /// closing an interpolation up to the next <c>${</c>.
+    /// </summary>
+    TemplateMiddle,
+    /// <summary>
+    /// Tail portion of a template literal — from a <c>}</c>
+    /// closing the last interpolation up to the closing
+    /// backtick.
+    /// </summary>
+    TemplateTail,
+    // RegexLiteral, BigIntLiteral — deferred
 
     // Punctuators (in roughly the order they appear in the spec)
     LeftParen,          // (
