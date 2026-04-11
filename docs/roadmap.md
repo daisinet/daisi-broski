@@ -9,7 +9,7 @@
 
 **Phase 0, 1, 3a, and 4 are complete. Phase 3b has started** with block-scoped `let`/`const` as its first slice. Phase 4 landed out of order — ahead of phases 2 and 3 — because a sandboxed phase-1 engine is immediately useful for scraping, link extraction, and preview generation, while phase 2 (CSSOM) is mostly plumbing that doesn't pay off until phase 3 is in. Phase 2 will likely be absorbed into phase 3b rather than shipping as its own unit.
 
-**Combined test suite: 1073/1073 passing.**
+**Combined test suite: 1086/1086 passing.**
 
 What works today from a clean clone:
 

@@ -43,6 +43,35 @@ internal static class BuiltinSymbol
         // read it as `Symbol.iterator`.
         symbolCtor.SetNonEnumerable("iterator", engine.IteratorSymbol);
 
+        // ES2015 shared registry. Symbol.for(key) returns
+        // a symbol registered under `key`, creating a fresh
+        // one if none exists. Symbol.keyFor(sym) returns the
+        // registry key for a registered symbol, or undefined
+        // for unregistered symbols. The registry is one-per-
+        // engine and uses the description string itself as
+        // the lookup key.
+        var registry = new Dictionary<string, JsSymbol>();
+        var reverse = new Dictionary<JsSymbol, string>(ReferenceEqualityComparer.Instance);
+
+        symbolCtor.SetNonEnumerable("for", new JsFunction("for", (thisVal, args) =>
+        {
+            string key = args.Count > 0 ? JsValue.ToJsString(args[0]) : "undefined";
+            if (registry.TryGetValue(key, out var existing))
+            {
+                return existing;
+            }
+            var fresh = new JsSymbol(key);
+            registry[key] = fresh;
+            reverse[fresh] = key;
+            return fresh;
+        }));
+
+        symbolCtor.SetNonEnumerable("keyFor", new JsFunction("keyFor", (thisVal, args) =>
+        {
+            if (args.Count == 0 || args[0] is not JsSymbol sym) return JsValue.Undefined;
+            return reverse.TryGetValue(sym, out var key) ? key : JsValue.Undefined;
+        }));
+
         engine.Globals["Symbol"] = symbolCtor;
     }
 }

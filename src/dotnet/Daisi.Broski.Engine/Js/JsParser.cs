@@ -2015,6 +2015,29 @@ public sealed class JsParser
                 int end = _tokens[_pos - 1].End;
                 expr = new CallExpression(expr.Start, end, expr, args);
             }
+            else if (Current.Kind == JsTokenKind.NoSubstitutionTemplate ||
+                     Current.Kind == JsTokenKind.TemplateHead)
+            {
+                // Tagged template: `expr`template``. The
+                // template literal becomes the sole
+                // argument-like payload; the compiler
+                // lowers to a call of `expr(strings, ...exprs)`.
+                TemplateLiteral quasi;
+                if (Current.Kind == JsTokenKind.NoSubstitutionTemplate)
+                {
+                    var tok = Consume();
+                    quasi = new TemplateLiteral(
+                        tok.Start,
+                        tok.End,
+                        new List<string> { tok.StringValue ?? string.Empty },
+                        new List<Expression>());
+                }
+                else
+                {
+                    quasi = ParseTemplateLiteral();
+                }
+                expr = new TaggedTemplateExpression(expr.Start, quasi.End, expr, quasi);
+            }
             else
             {
                 break;
