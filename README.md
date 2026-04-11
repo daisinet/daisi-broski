@@ -26,25 +26,31 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, and **object / array / member access** are shipped. The pipeline runs real scripted programs end-to-end:
+**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, and **functions / closures / `this` / `new` / `instanceof`** are shipped. The pipeline runs real scripted programs end-to-end:
 
 ```csharp
 var eng = new JsEngine();
 eng.Evaluate(@"
-    var counts = {a: 0, b: 0, c: 0};
-    var letters = ['a', 'b', 'a', 'c', 'a', 'b'];
-    for (var i = 0; i < letters.length; i++) {
-        counts[letters[i]]++;
+    function makeCounter() {
+        var n = 0;
+        return function () { return ++n; };
     }
+    function Point(x, y) { this.x = x; this.y = y; }
+    Point.prototype.distanceSq = function () {
+        return this.x * this.x + this.y * this.y;
+    };
+    var c = makeCounter();
+    c(); c(); c();           // n is now 3
+    var p = new Point(3, 4);
+    var d = p.distanceSq();  // 25
 ");
-// (JsObject)eng.Globals["counts"] → { a: 3, b: 2, c: 1 }
 ```
 
-The current JS surface covers every ES5 primitive operator (unary / binary / logical / conditional / sequence / update), `var` hoisting, `if`/`else`/`while`/`do..while`/`for`/`break`/`continue`, object and array literals, dot and computed member access (including as assignment / compound / update / delete targets), the `in` operator, and the full ES §9 coercion model. Functions, closures, `try`/`catch`, and the built-in library (`Object`, `Array`, `String`, `Math`, `JSON`) are the next slices.
+The current JS surface covers every ES5 primitive operator, `var` hoisting, `if`/`else`/`while`/`do..while`/`for`/`break`/`continue`, object and array literals with full member access (as assignment / compound / update / delete targets), the `in` operator, function declarations and expressions (with full hoisting), nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `instanceof`, `arguments`, and host-installed native functions. `try`/`catch`, `for..in`, `switch`, labeled break/continue, and the built-in library (`Object`, `Array`, `String`, `Math`, `JSON`) are the next slices.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 382/382 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM + 38 JS objects.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 416/416 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM + 38 JS objects + 34 JS functions.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
