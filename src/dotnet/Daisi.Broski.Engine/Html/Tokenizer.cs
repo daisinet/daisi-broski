@@ -187,6 +187,11 @@ public sealed class Tokenizer
             _state = State.TagOpen;
             return;
         }
+        if (c == '&')
+        {
+            _dataBuffer.Append(ConsumeCharacterReference(inAttributeValue: false));
+            return;
+        }
 
         _dataBuffer.Append(c);
         _pos++;
@@ -398,6 +403,11 @@ public sealed class Tokenizer
             _state = State.AfterAttributeValueQuoted;
             return;
         }
+        if (c == '&')
+        {
+            _attrValueBuffer.Append(ConsumeCharacterReference(inAttributeValue: true));
+            return;
+        }
 
         _attrValueBuffer.Append(c);
         _pos++;
@@ -410,6 +420,11 @@ public sealed class Tokenizer
             PushAttribute(withEmptyValue: false);
             _pos++;
             _state = State.AfterAttributeValueQuoted;
+            return;
+        }
+        if (c == '&')
+        {
+            _attrValueBuffer.Append(ConsumeCharacterReference(inAttributeValue: true));
             return;
         }
 
@@ -432,6 +447,11 @@ public sealed class Tokenizer
             _pos++;
             EmitCurrentTag();
             _state = State.Data;
+            return;
+        }
+        if (c == '&')
+        {
+            _attrValueBuffer.Append(ConsumeCharacterReference(inAttributeValue: true));
             return;
         }
 
@@ -705,6 +725,143 @@ public sealed class Tokenizer
         _dataBuffer.Clear();
         return token;
     }
+
+    /// <summary>
+    /// Consume a character reference starting at <c>_pos</c> (which must
+    /// point at <c>&amp;</c>). Returns the replacement string and advances
+    /// <c>_pos</c> past every character consumed. If the reference is
+    /// malformed or unknown, consumes only the <c>&amp;</c> and returns
+    /// <c>"&amp;"</c>.
+    ///
+    /// Supports:
+    ///   - Named references (<c>&amp;amp;</c>) — must terminate with <c>;</c>.
+    ///     Legacy no-semicolon forms are not supported.
+    ///   - Decimal numeric references (<c>&amp;#65;</c>).
+    ///   - Hexadecimal numeric references (<c>&amp;#x41;</c> / <c>&amp;#X41;</c>).
+    ///
+    /// Numeric references apply the WHATWG legacy Windows-1252 fixup for
+    /// code points 0x80–0x9F and substitute U+FFFD for surrogates and
+    /// out-of-range code points. See <see cref="HtmlEntities.NumericReferenceToString"/>.
+    ///
+    /// The <paramref name="inAttributeValue"/> flag is accepted for future
+    /// legacy-compat handling (the spec has special rules about named
+    /// references followed by <c>=</c> or alphanumerics inside attribute
+    /// values). Currently unused because we require the terminating
+    /// semicolon unconditionally.
+    /// </summary>
+    private string ConsumeCharacterReference(bool inAttributeValue)
+    {
+        _ = inAttributeValue; // reserved for future use; see doc comment
+
+        // _pos currently points at '&'. Save for rollback.
+        int start = _pos;
+        _pos++; // consume '&'
+
+        if (_pos >= _input.Length)
+        {
+            return "&";
+        }
+
+        char next = _input[_pos];
+
+        // Numeric reference: '&#' followed by decimal digits or 'x'/'X' + hex.
+        if (next == '#')
+        {
+            _pos++;
+            if (_pos >= _input.Length)
+            {
+                _pos = start + 1;
+                return "&";
+            }
+
+            bool hex = false;
+            if (_input[_pos] == 'x' || _input[_pos] == 'X')
+            {
+                hex = true;
+                _pos++;
+            }
+
+            int numStart = _pos;
+            int code = 0;
+            bool overflow = false;
+
+            while (_pos < _input.Length)
+            {
+                char d = _input[_pos];
+                int digit = hex ? HexValue(d) : (d >= '0' && d <= '9' ? d - '0' : -1);
+                if (digit < 0) break;
+
+                // Clamp at something well above U+10FFFF so we don't overflow
+                // int but still report "too big" via the U+FFFD fallback.
+                if (!overflow)
+                {
+                    long probe = (long)code * (hex ? 16 : 10) + digit;
+                    if (probe > 0x10FFFF) overflow = true;
+                    else code = (int)probe;
+                }
+
+                _pos++;
+            }
+
+            // Empty digit run is a parse error → roll back.
+            if (_pos == numStart)
+            {
+                _pos = start + 1;
+                return "&";
+            }
+
+            // Optional terminating semicolon — consume if present.
+            if (_pos < _input.Length && _input[_pos] == ';')
+            {
+                _pos++;
+            }
+
+            return HtmlEntities.NumericReferenceToString(overflow ? 0xFFFD : code);
+        }
+
+        // Named reference: '&' followed by ASCII alpha, then alphanumerics, then ';'.
+        if (IsAsciiAlpha(next))
+        {
+            int nameStart = _pos;
+            while (_pos < _input.Length && IsAsciiAlphaOrDigit(_input[_pos]))
+            {
+                _pos++;
+            }
+
+            // Must terminate with ';' to be recognized.
+            if (_pos >= _input.Length || _input[_pos] != ';')
+            {
+                _pos = start + 1;
+                return "&";
+            }
+
+            string name = _input[nameStart.._pos];
+            _pos++; // consume ';'
+
+            if (HtmlEntities.TryGetNamed(name, out var replacement))
+            {
+                return replacement;
+            }
+
+            // Unknown named reference: pass through '&' literally and replay
+            // the name characters in the data stream.
+            _pos = start + 1;
+            return "&";
+        }
+
+        return "&";
+    }
+
+    private static int HexValue(char c) => c switch
+    {
+        >= '0' and <= '9' => c - '0',
+        >= 'a' and <= 'f' => c - 'a' + 10,
+        >= 'A' and <= 'F' => c - 'A' + 10,
+        _ => -1,
+    };
+
+    private static bool IsAsciiAlphaOrDigit(char c) =>
+        IsAsciiAlpha(c) || (c >= '0' && c <= '9');
 
     private bool Peek(string literal)
     {
