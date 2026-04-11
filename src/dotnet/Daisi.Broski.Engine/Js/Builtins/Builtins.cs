@@ -39,6 +39,8 @@ internal static class Builtins
         BuiltinCrypto.Install(engine);
         BuiltinDomEvents.Install(engine);
         BuiltinFetch.Install(engine);
+        BuiltinProxy.Install(engine);
+        BuiltinReflect.Install(engine);
     }
 
     /// <summary>
