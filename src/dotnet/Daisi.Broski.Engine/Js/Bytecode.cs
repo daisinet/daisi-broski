@@ -149,6 +149,58 @@ public enum OpCode : byte
     /// </summary>
     Swap,
 
+    // ---- Exception handling ----
+    /// <summary>
+    /// Register a catch handler at the given 2-byte signed
+    /// offset (relative to the instruction after PushCatchHandler).
+    /// Saves the current stack depth and env so they can be
+    /// restored when a throw unwinds to this handler. When the
+    /// handler fires, the VM pushes the thrown value onto the
+    /// stack and jumps to the handler target.
+    /// </summary>
+    PushCatchHandler,
+    /// <summary>
+    /// Register a finally-only handler. Same shape as
+    /// <see cref="PushCatchHandler"/> but on unwind the VM does
+    /// not push the thrown value — instead it stores it in the
+    /// VM's pending-exception slot, which <see cref="EndFinally"/>
+    /// checks and re-throws.
+    /// </summary>
+    PushFinallyHandler,
+    /// <summary>
+    /// Remove the top handler. Emitted after a try block
+    /// completes normally so the handler doesn't catch a
+    /// subsequent exception that logically belongs to an
+    /// outer try.
+    /// </summary>
+    PopHandler,
+    /// <summary>
+    /// Pop the top of stack and throw it. Unwinds handlers and
+    /// call frames until the nearest catch or finally handler
+    /// is found. If none exists in this script, the VM escapes
+    /// with a <see cref="JsRuntimeException"/> whose
+    /// <c>JsValue</c> carries the thrown value.
+    /// </summary>
+    Throw,
+    /// <summary>
+    /// End of a finally block. If there is a pending exception
+    /// (the finally was entered because a throw occurred with no
+    /// catch in the same try), re-throw it — which unwinds to
+    /// the next enclosing handler. Otherwise continue execution.
+    /// </summary>
+    EndFinally,
+    /// <summary>
+    /// Push a fresh environment whose parent is the current env.
+    /// Used to give the <c>catch</c> parameter its own block
+    /// scope so it doesn't leak into the enclosing function
+    /// after the catch body ends.
+    /// </summary>
+    PushEnv,
+    /// <summary>
+    /// Pop back to the parent of the current environment.
+    /// </summary>
+    PopEnv,
+
     // ---- for-in iteration ----
     /// <summary>
     /// Pop an object off the stack and push a fresh

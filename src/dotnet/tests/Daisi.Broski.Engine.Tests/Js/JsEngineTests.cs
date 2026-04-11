@@ -454,11 +454,4 @@ public class JsEngineTests
             ")));
     }
 
-    // -------- unsupported forms should throw at compile time --------
-
-    [Fact]
-    public void Try_statement_throws_compile_error()
-    {
-        Assert.Throws<JsCompileException>(() => Eval("try { } catch (e) { }"));
-    }
 }

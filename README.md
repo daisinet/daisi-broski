@@ -26,7 +26,7 @@ Cirrus Labs to join OpenAI shut down Circus CI on Monday, June 1, 2026
 
 The entire pipeline — network, encoding detection, HTML tokenizer, tree builder, DOM, CSS selectors — runs inside a `Daisi.Broski.Sandbox.exe` child process under a Win32 Job Object with a 256 MiB memory cap, kill-on-close, die-on-unhandled-exception, and UI restrictions. The host process never parses HTML, runs selectors, or touches any untrusted input. Pass `--no-sandbox` for in-process execution against trusted URLs only.
 
-**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, **functions / closures / `this` / `new` / `instanceof`**, and the full ES5 **control flow** (`if`/`while`/`do..while`/`for`/`for..in`/`switch`/labeled break/continue) are shipped. The pipeline runs real scripted programs end-to-end:
+**In progress:** phase 3a (JavaScript engine). The JS **lexer**, **parser**, **bytecode compiler + stack VM**, **objects / arrays / member access**, **functions / closures / `this` / `new` / `instanceof`**, full ES5 **control flow** (`if`/`while`/`do..while`/`for`/`for..in`/`switch`/labeled break/continue), and **exception handling** (`throw` / `try` / `catch` / `finally`) are shipped. The pipeline runs real scripted programs end-to-end:
 
 ```csharp
 var eng = new JsEngine();
@@ -46,11 +46,11 @@ eng.Evaluate(@"
 ");
 ```
 
-The current JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set (`if`/`while`/`do..while`/`for`/`for..in`/`switch` with fall-through/labeled break & continue), object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, and host-installed native functions. `try`/`catch`, the built-in library (`Object`, `Array`, `String`, `Math`, `JSON`), and the event loop are the next slices.
+The current JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set (`if`/`while`/`do..while`/`for`/`for..in`/`switch` with fall-through/labeled break & continue/`throw`/`try`/`catch`/`finally`), object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, and host-installed native functions. Internal VM errors (`ReferenceError`, `TypeError`) are catchable from script. The built-in library (`Object`, `Array`, `String`, `Math`, `JSON`, `Error`) and the event loop are the next slices.
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 441/441 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 52 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 462/462 passing.** (152 engine phase-1 + 12 IPC codec + 7 Job Object + 4 sandbox integration + 5 CLI smoke + 43 JS lexer + 69 JS parser + 51 JS VM + 38 JS objects + 34 JS functions + 25 JS control flow + 22 JS exceptions.) All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
