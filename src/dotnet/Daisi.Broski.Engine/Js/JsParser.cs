@@ -656,20 +656,59 @@ public sealed class JsParser
         return new FunctionExpression(start, body.End, id, paramList, body);
     }
 
-    private List<Identifier> ParseFormalParameters()
+    private List<FunctionParameter> ParseFormalParameters()
     {
         Expect(JsTokenKind.LeftParen, "parameter list");
-        var list = new List<Identifier>();
+        var list = new List<FunctionParameter>();
         if (Current.Kind != JsTokenKind.RightParen)
         {
-            list.Add(ParseBindingIdentifier());
+            list.Add(ParseFunctionParameter());
             while (Match(JsTokenKind.Comma))
             {
-                list.Add(ParseBindingIdentifier());
+                // A rest parameter must be the last entry — disallow
+                // a trailing comma after one or another param after it.
+                if (list[list.Count - 1].IsRest)
+                {
+                    throw new JsParseException(
+                        "Rest parameter must be the last formal parameter",
+                        Current.Start);
+                }
+                list.Add(ParseFunctionParameter());
             }
         }
         Expect(JsTokenKind.RightParen, "parameter list");
         return list;
+    }
+
+    /// <summary>
+    /// One formal parameter, which may carry a default
+    /// (<c>x = 1</c>) or be a rest parameter (<c>...args</c>).
+    /// Rest params are identifier-only in this slice (pattern
+    /// rest params and parameter destructuring are deferred).
+    /// </summary>
+    private FunctionParameter ParseFunctionParameter()
+    {
+        int start = Current.Start;
+        if (Current.Kind == JsTokenKind.DotDotDot)
+        {
+            Consume();
+            var restId = ParseBindingIdentifier();
+            if (Current.Kind == JsTokenKind.Assign)
+            {
+                throw new JsParseException(
+                    "Rest parameter may not have a default value",
+                    Current.Start);
+            }
+            return new FunctionParameter(start, restId.End, restId, null, isRest: true);
+        }
+        var id = ParseBindingIdentifier();
+        Expression? @default = null;
+        if (Match(JsTokenKind.Assign))
+        {
+            @default = ParseAssignmentExpression(allowIn: true);
+        }
+        int end = @default?.End ?? id.End;
+        return new FunctionParameter(start, end, id, @default, isRest: false);
     }
 
     private BlockStatement ParseFunctionBody()
@@ -776,6 +815,7 @@ public sealed class JsParser
         int start = Current.Start;
         Expect(JsTokenKind.LeftBracket, "array pattern");
         var elements = new List<ArrayPatternElement?>();
+        bool sawRest = false;
         while (Current.Kind != JsTokenKind.RightBracket)
         {
             if (Current.Kind == JsTokenKind.Comma)
@@ -785,7 +825,15 @@ public sealed class JsParser
                 Consume();
                 continue;
             }
-            elements.Add(ParseArrayPatternElement());
+            if (sawRest)
+            {
+                throw new JsParseException(
+                    "Rest element must be the last element of an array pattern",
+                    Current.Start);
+            }
+            var elem = ParseArrayPatternElement();
+            elements.Add(elem);
+            if (elem.IsRest) sawRest = true;
             if (Current.Kind != JsTokenKind.RightBracket)
             {
                 Expect(JsTokenKind.Comma, "array pattern");
@@ -799,6 +847,18 @@ public sealed class JsParser
     private ArrayPatternElement ParseArrayPatternElement()
     {
         int start = Current.Start;
+        if (Current.Kind == JsTokenKind.DotDotDot)
+        {
+            Consume();
+            var restTarget = ParseBindingTarget();
+            if (Current.Kind == JsTokenKind.Assign)
+            {
+                throw new JsParseException(
+                    "Rest element may not have a default value",
+                    Current.Start);
+            }
+            return new ArrayPatternElement(start, restTarget.End, restTarget, null, isRest: true);
+        }
         var target = ParseBindingTarget();
         Expression? @default = null;
         if (Match(JsTokenKind.Assign))
@@ -921,10 +981,11 @@ public sealed class JsParser
         var param = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
         Expect(JsTokenKind.Arrow, "arrow function");
         var body = ParseArrowBody(allowIn);
+        var fp = new FunctionParameter(param.Start, param.End, param, null, isRest: false);
         return new ArrowFunctionExpression(
             start,
             body.End,
-            new List<Identifier> { param },
+            new List<FunctionParameter> { fp },
             body);
     }
 
@@ -932,13 +993,19 @@ public sealed class JsParser
     {
         int start = Current.Start;
         Consume(); // (
-        var @params = new List<Identifier>();
+        var @params = new List<FunctionParameter>();
         if (Current.Kind != JsTokenKind.RightParen)
         {
-            @params.Add(ParseBindingIdentifier());
+            @params.Add(ParseFunctionParameter());
             while (Match(JsTokenKind.Comma))
             {
-                @params.Add(ParseBindingIdentifier());
+                if (@params[@params.Count - 1].IsRest)
+                {
+                    throw new JsParseException(
+                        "Rest parameter must be the last formal parameter",
+                        Current.Start);
+                }
+                @params.Add(ParseFunctionParameter());
             }
         }
         Expect(JsTokenKind.RightParen, "arrow params");
@@ -1180,14 +1247,32 @@ public sealed class JsParser
         var args = new List<Expression>();
         if (Current.Kind != JsTokenKind.RightParen)
         {
-            args.Add(ParseAssignmentExpression(allowIn: true));
+            args.Add(ParseArgumentOrSpread());
             while (Match(JsTokenKind.Comma))
             {
-                args.Add(ParseAssignmentExpression(allowIn: true));
+                args.Add(ParseArgumentOrSpread());
             }
         }
         Expect(JsTokenKind.RightParen, "argument list");
         return args;
+    }
+
+    /// <summary>
+    /// A call or <c>new</c> argument, optionally preceded by
+    /// <c>...</c> for the ES2015 spread form. Spread arguments
+    /// produce a <see cref="SpreadElement"/>; the compiler
+    /// recognizes that node and emits a spread-call lowering.
+    /// </summary>
+    private Expression ParseArgumentOrSpread()
+    {
+        if (Current.Kind == JsTokenKind.DotDotDot)
+        {
+            int start = Current.Start;
+            Consume();
+            var inner = ParseAssignmentExpression(allowIn: true);
+            return new SpreadElement(start, inner.End, inner);
+        }
+        return ParseAssignmentExpression(allowIn: true);
     }
 
     // -------------------------------------------------------------------
@@ -1316,7 +1401,17 @@ public sealed class JsParser
                 Consume();
                 continue;
             }
-            elements.Add(ParseAssignmentExpression(allowIn: true));
+            if (Current.Kind == JsTokenKind.DotDotDot)
+            {
+                int spreadStart = Current.Start;
+                Consume();
+                var inner = ParseAssignmentExpression(allowIn: true);
+                elements.Add(new SpreadElement(spreadStart, inner.End, inner));
+            }
+            else
+            {
+                elements.Add(ParseAssignmentExpression(allowIn: true));
+            }
             if (Current.Kind != JsTokenKind.RightBracket)
             {
                 Expect(JsTokenKind.Comma, "array literal");

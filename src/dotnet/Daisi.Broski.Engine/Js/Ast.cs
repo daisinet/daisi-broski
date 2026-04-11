@@ -128,11 +128,42 @@ public sealed class ThisExpression : Expression
 /// </summary>
 public sealed class ArrayExpression : Expression
 {
+    /// <summary>
+    /// Elements of the array literal. <c>null</c> entries
+    /// represent elisions (<c>[1, , 3]</c>). A spread element
+    /// (<c>[...arr]</c>) is modeled as a
+    /// <see cref="SpreadElement"/>; the compiler recognizes
+    /// it and emits an append-spread opcode instead of a
+    /// straight push.
+    /// </summary>
     public IReadOnlyList<Expression?> Elements { get; }
 
     public ArrayExpression(int start, int end, IReadOnlyList<Expression?> elements) : base(start, end)
     {
         Elements = elements;
+    }
+}
+
+/// <summary>
+/// ES2015 spread element <c>...expr</c>. Appears as an
+/// <see cref="ArrayExpression"/> element and as a
+/// <see cref="CallExpression"/> / <see cref="NewExpression"/>
+/// argument. The compiler's array-literal and call lowerings
+/// recognize this node and emit the runtime-flatten opcodes
+/// (<see cref="Js.OpCode.ArrayAppendSpread"/> /
+/// <see cref="Js.OpCode.CallSpread"/>) instead of pushing
+/// the expression value directly as a single slot.
+///
+/// Spread on object literals (<c>{...obj}</c>) is ES2018 and
+/// deferred.
+/// </summary>
+public sealed class SpreadElement : Expression
+{
+    public Expression Argument { get; }
+
+    public SpreadElement(int start, int end, Expression argument) : base(start, end)
+    {
+        Argument = argument;
     }
 }
 
@@ -190,19 +221,55 @@ public sealed class ObjectExpression : Expression
 public sealed class FunctionExpression : Expression
 {
     public Identifier? Id { get; }
-    public IReadOnlyList<Identifier> Params { get; }
+    public IReadOnlyList<FunctionParameter> Params { get; }
     public BlockStatement Body { get; }
 
     public FunctionExpression(
         int start,
         int end,
         Identifier? id,
-        IReadOnlyList<Identifier> @params,
+        IReadOnlyList<FunctionParameter> @params,
         BlockStatement body) : base(start, end)
     {
         Id = id;
         Params = @params;
         Body = body;
+    }
+}
+
+/// <summary>
+/// One formal parameter in a function declaration, function
+/// expression, or arrow function. Represents the whole
+/// <c>target [= default]</c> form, plus the ES2015 rest
+/// parameter marker.
+///
+/// - <b>Target</b> is currently always an <see cref="Js.Identifier"/>;
+///   function-parameter destructuring is a deferred slice.
+/// - <b>Default</b> is the optional initializer expression for
+///   an ES2015 default parameter (<c>function f(x = 1)</c>).
+///   Applied when the caller passed <c>undefined</c> (or
+///   nothing) for the slot.
+/// - <b>IsRest</b> flags the ES2015 rest parameter
+///   (<c>function f(...args)</c>). The parser enforces that
+///   a rest parameter must be the last entry and may not
+///   carry a default.
+/// </summary>
+public sealed class FunctionParameter : JsNode
+{
+    public JsNode Target { get; }
+    public Expression? Default { get; }
+    public bool IsRest { get; }
+
+    public FunctionParameter(
+        int start,
+        int end,
+        JsNode target,
+        Expression? @default,
+        bool isRest) : base(start, end)
+    {
+        Target = target;
+        Default = @default;
+        IsRest = isRest;
     }
 }
 
@@ -227,14 +294,14 @@ public sealed class FunctionExpression : Expression
 /// </summary>
 public sealed class ArrowFunctionExpression : Expression
 {
-    public IReadOnlyList<Identifier> Params { get; }
+    public IReadOnlyList<FunctionParameter> Params { get; }
     public JsNode Body { get; }
     public bool IsExpressionBody => Body is Expression;
 
     public ArrowFunctionExpression(
         int start,
         int end,
-        IReadOnlyList<Identifier> @params,
+        IReadOnlyList<FunctionParameter> @params,
         JsNode body) : base(start, end)
     {
         Params = @params;
@@ -278,14 +345,14 @@ public sealed class TemplateLiteral : Expression
 public sealed class FunctionDeclaration : Statement
 {
     public Identifier Id { get; }
-    public IReadOnlyList<Identifier> Params { get; }
+    public IReadOnlyList<FunctionParameter> Params { get; }
     public BlockStatement Body { get; }
 
     public FunctionDeclaration(
         int start,
         int end,
         Identifier id,
-        IReadOnlyList<Identifier> @params,
+        IReadOnlyList<FunctionParameter> @params,
         BlockStatement body) : base(start, end)
     {
         Id = id;
@@ -672,14 +739,25 @@ public sealed class ArrayPatternElement : JsNode
     public JsNode Target { get; }
     public Expression? Default { get; }
 
+    /// <summary>
+    /// <c>true</c> if this element captures the tail of the
+    /// source as a fresh array, i.e. the ES2015
+    /// <c>var [a, ...rest] = arr</c> form. The parser
+    /// enforces that a rest element must be the last entry
+    /// and may not carry a default.
+    /// </summary>
+    public bool IsRest { get; }
+
     public ArrayPatternElement(
         int start,
         int end,
         JsNode target,
-        Expression? @default) : base(start, end)
+        Expression? @default,
+        bool isRest = false) : base(start, end)
     {
         Target = target;
         Default = @default;
+        IsRest = isRest;
     }
 }
 

@@ -418,6 +418,67 @@ public sealed class JsVM
                         DoNew(argc);
                     }
                     break;
+                case OpCode.CallSpread:
+                    {
+                        // Stack: [fn, this, argsArray]
+                        var argsObj = Pop();
+                        if (argsObj is not JsArray argsArr)
+                        {
+                            RaiseError("TypeError",
+                                "Spread call argument construction did not yield an array");
+                            break;
+                        }
+                        var thisVal = Pop();
+                        var fnVal = Pop();
+                        if (fnVal is not JsFunction fn)
+                        {
+                            RaiseError("TypeError",
+                                "Call target is not a function");
+                            break;
+                        }
+                        var flat = new object?[argsArr.Elements.Count];
+                        for (int i = 0; i < flat.Length; i++)
+                        {
+                            flat[i] = argsArr.Elements[i];
+                        }
+                        InvokeFunction(fn, thisVal, flat, isConstructor: false, newInstance: null);
+                    }
+                    break;
+                case OpCode.NewSpread:
+                    {
+                        // Stack: [fn, argsArray]
+                        var argsObj = Pop();
+                        if (argsObj is not JsArray argsArr)
+                        {
+                            RaiseError("TypeError",
+                                "Spread new argument construction did not yield an array");
+                            break;
+                        }
+                        var fnVal = Pop();
+                        if (fnVal is not JsFunction fn)
+                        {
+                            RaiseError("TypeError",
+                                "'new' target is not a constructor");
+                            break;
+                        }
+                        if (fn.Template?.IsArrow == true)
+                        {
+                            RaiseError("TypeError",
+                                "Arrow functions cannot be used with 'new'");
+                            break;
+                        }
+                        var instance = new JsObject
+                        {
+                            Prototype = fn.Get("prototype") as JsObject ?? _engine.ObjectPrototype,
+                        };
+                        var flat = new object?[argsArr.Elements.Count];
+                        for (int i = 0; i < flat.Length; i++)
+                        {
+                            flat[i] = argsArr.Elements[i];
+                        }
+                        InvokeFunction(fn, instance, flat, isConstructor: true, newInstance: instance);
+                    }
+                    break;
                 case OpCode.Return:
                     {
                         var returnValue = Pop();
@@ -682,6 +743,36 @@ public sealed class JsVM
                             arr.Elements[i] = Pop();
                         }
                         Push(arr);
+                    }
+                    break;
+                case OpCode.ArrayAppend:
+                    {
+                        // Stack [array, value] → [array]. Keeps the
+                        // array on the stack so a chain of Append
+                        // calls can build it up element by element.
+                        var value = Pop();
+                        var arr = (JsArray)_stack[_sp - 1]!;
+                        arr.Elements.Add(value);
+                    }
+                    break;
+                case OpCode.ArrayAppendSpread:
+                    {
+                        // Stack [array, iter] → [array]. Flattens
+                        // an iterable into the array. In this slice
+                        // only JsArray is supported as a spread
+                        // source; proper iterator protocol ships
+                        // with the for-of slice.
+                        var iter = Pop();
+                        if (iter is not JsArray srcArr)
+                        {
+                            RaiseError("TypeError", "Spread source is not iterable");
+                            break;
+                        }
+                        var dest = (JsArray)_stack[_sp - 1]!;
+                        foreach (var e in srcArr.Elements)
+                        {
+                            dest.Elements.Add(e);
+                        }
                     }
                     break;
                 case OpCode.InitProperty:
@@ -1217,11 +1308,26 @@ public sealed class JsVM
         var template = fn.Template!;
         var newEnv = new JsEnvironment(fn.CapturedEnv);
 
-        // Bind parameters — missing args are undefined.
-        for (int i = 0; i < template.ParamCount; i++)
+        // Bind parameters. Missing positional args are
+        // undefined. If the function has a rest parameter, all
+        // args at or beyond that index are collected into a
+        // fresh JsArray and bound to the rest name instead of
+        // the individual positional slot.
+        int restIdx = template.RestParamIndex;
+        int positional = restIdx < 0 ? template.ParamCount : restIdx;
+        for (int i = 0; i < positional; i++)
         {
             newEnv.Bindings[template.ParamNames[i]] =
                 i < args.Length ? args[i] : JsValue.Undefined;
+        }
+        if (restIdx >= 0)
+        {
+            var restArr = new JsArray { Prototype = _engine.ArrayPrototype };
+            for (int i = restIdx; i < args.Length; i++)
+            {
+                restArr.Elements.Add(args[i]);
+            }
+            newEnv.Bindings[template.ParamNames[restIdx]] = restArr;
         }
 
         // Arrow functions inherit the enclosing function's

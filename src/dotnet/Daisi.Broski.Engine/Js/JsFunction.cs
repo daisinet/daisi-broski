@@ -32,6 +32,18 @@ public sealed class JsFunctionTemplate
     /// </summary>
     public bool IsArrow { get; }
 
+    /// <summary>
+    /// Index of the ES2015 rest parameter in
+    /// <see cref="ParamNames"/>, or <c>-1</c> if the function
+    /// has no rest parameter. At call time the VM binds
+    /// <c>ParamNames[RestParamIndex]</c> to a fresh
+    /// <see cref="JsArray"/> holding the extra args beyond
+    /// that index. The parser guarantees that a rest param is
+    /// always the last formal parameter, so this is either
+    /// <c>-1</c> or <c>ParamNames.Count - 1</c>.
+    /// </summary>
+    public int RestParamIndex { get; }
+
     public int ParamCount => ParamNames.Count;
 
     public JsFunctionTemplate(
@@ -39,13 +51,15 @@ public sealed class JsFunctionTemplate
         IReadOnlyList<string> paramNames,
         string? name,
         int sourceLength,
-        bool isArrow = false)
+        bool isArrow = false,
+        int restParamIndex = -1)
     {
         Body = body;
         ParamNames = paramNames;
         Name = name;
         SourceLength = sourceLength;
         IsArrow = isArrow;
+        RestParamIndex = restParamIndex;
     }
 }
 
