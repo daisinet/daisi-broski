@@ -63,6 +63,18 @@ public sealed class JsCompiler
     // label find the context on the stack.
     private string? _pendingLabel;
 
+    /// <summary>
+    /// Holds the list of pending jump offsets emitted by each
+    /// optional hop inside a <see cref="ChainExpression"/>.
+    /// <see cref="CompileChainExpression"/> creates a fresh list
+    /// at entry, <see cref="CompileMemberRead"/> and
+    /// <see cref="CompileCall"/> append to it for every
+    /// <c>IsOptional</c> hop they encounter, and the chain
+    /// method patches every entry once the end label is known.
+    /// Null outside of an optional chain.
+    /// </summary>
+    private List<int>? _optionalChainJumps;
+
     private sealed class CompilerFrame
     {
         public Chunk Chunk { get; } = new();
@@ -1536,6 +1548,9 @@ public sealed class JsCompiler
             case CallExpression ce:
                 CompileCall(ce);
                 return;
+            case ChainExpression chain:
+                CompileChainExpression(chain);
+                return;
             case NewExpression ne:
                 CompileNew(ne);
                 return;
@@ -1832,10 +1847,18 @@ public sealed class JsCompiler
         // &&: evaluate left; if falsy, leave it on the stack and skip
         //     the right; otherwise pop it and evaluate the right.
         // ||: same pattern but inverted.
+        // ??: evaluate left; if not null/undefined, leave it on the
+        //     stack and skip the right; otherwise pop and evaluate
+        //     the right.
         CompileExpression(l.Left);
-        var jumpOp = l.Operator == LogicalOperator.And
-            ? OpCode.JumpIfFalseKeep
-            : OpCode.JumpIfTrueKeep;
+        var jumpOp = l.Operator switch
+        {
+            LogicalOperator.And => OpCode.JumpIfFalseKeep,
+            LogicalOperator.Or => OpCode.JumpIfTrueKeep,
+            LogicalOperator.Nullish => OpCode.JumpIfNotNullishKeep,
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(l.Operator), l.Operator, null),
+        };
         int skip = _chunk.EmitJump(jumpOp);
         _chunk.Emit(OpCode.Pop);
         CompileExpression(l.Right);
@@ -1958,12 +1981,47 @@ public sealed class JsCompiler
             return;
         }
 
+        // Logical assignment operators are short-circuit: the
+        // RHS is only evaluated (and stored) when the left
+        // operand's truthiness / nullishness dictates. We
+        // compile them as an explicit peek-short-circuit
+        // sequence so an observer-visible side effect on the
+        // RHS does not happen when the left operand already
+        // "wins".
+        //   x &&= y  ≡  x && (x = y)
+        //   x ||= y  ≡  x || (x = y)
+        //   x ??= y  ≡  x ?? (x = y)
+        if (IsLogicalAssign(a.Operator))
+        {
+            _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
+            var jumpOp = a.Operator switch
+            {
+                AssignmentOperator.LogicalAndAssign => OpCode.JumpIfFalseKeep,
+                AssignmentOperator.LogicalOrAssign => OpCode.JumpIfTrueKeep,
+                AssignmentOperator.NullishAssign => OpCode.JumpIfNotNullishKeep,
+                _ => throw new InvalidOperationException(),
+            };
+            int skip = _chunk.EmitJump(jumpOp);
+            _chunk.Emit(OpCode.Pop);
+            CompileExpression(a.Right);
+            // StoreGlobal is peek-and-assign: the new value
+            // stays on the stack as the expression's result.
+            _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
+            _chunk.PatchJump(skip);
+            return;
+        }
+
         // Compound: load current, compile right, combine, store.
         _chunk.EmitWithU16(OpCode.LoadGlobal, nameIdx);
         CompileExpression(a.Right);
         _chunk.Emit(CompoundAssignmentOpCode(a.Operator));
         _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
     }
+
+    private static bool IsLogicalAssign(AssignmentOperator op) =>
+        op == AssignmentOperator.LogicalAndAssign ||
+        op == AssignmentOperator.LogicalOrAssign ||
+        op == AssignmentOperator.NullishAssign;
 
     private void CompileAssignmentToMember(AssignmentExpression a, MemberExpression m)
     {
@@ -1978,6 +2036,26 @@ public sealed class JsCompiler
                 CompileExpression(m.Object);
                 CompileExpression(a.Right);
                 _chunk.EmitWithU16(OpCode.SetProperty, nameIdx);
+                return;
+            }
+
+            if (IsLogicalAssign(a.Operator))
+            {
+                // Short-circuit on the current value of obj.name.
+                // Stack shapes along the way are labelled below.
+                CompileExpression(m.Object);                 // [obj]
+                _chunk.Emit(OpCode.Dup);                     // [obj, obj]
+                _chunk.EmitWithU16(OpCode.GetProperty, nameIdx); // [obj, old]
+                var jumpOp = LogicalAssignJumpOpCode(a.Operator);
+                int skip = _chunk.EmitJump(jumpOp);          // peek; maybe jump
+                _chunk.Emit(OpCode.Pop);                     // [obj]
+                CompileExpression(a.Right);                  // [obj, new]
+                _chunk.EmitWithU16(OpCode.SetProperty, nameIdx); // [new]
+                int end = _chunk.EmitJump(OpCode.Jump);
+                _chunk.PatchJump(skip);                      // [obj, old]
+                _chunk.Emit(OpCode.Swap);                    // [old, obj]
+                _chunk.Emit(OpCode.Pop);                     // [old]
+                _chunk.PatchJump(end);
                 return;
             }
 
@@ -2002,6 +2080,31 @@ public sealed class JsCompiler
             return;
         }
 
+        if (IsLogicalAssign(a.Operator))
+        {
+            // Short-circuit on the current value of obj[key],
+            // while keeping obj and key live for the store
+            // on the non-short-circuit branch.
+            CompileExpression(m.Object);                     // [obj]
+            CompileExpression(m.Property);                   // [obj, key]
+            _chunk.Emit(OpCode.Dup2);                        // [obj, key, obj, key]
+            _chunk.Emit(OpCode.GetPropertyComputed);         // [obj, key, old]
+            var jumpOp = LogicalAssignJumpOpCode(a.Operator);
+            int skip = _chunk.EmitJump(jumpOp);              // peek; maybe jump
+            _chunk.Emit(OpCode.Pop);                         // [obj, key]
+            CompileExpression(a.Right);                      // [obj, key, new]
+            _chunk.Emit(OpCode.SetPropertyComputed);         // [new]
+            int end = _chunk.EmitJump(OpCode.Jump);
+            _chunk.PatchJump(skip);                          // [obj, key, old]
+            // Stash old, drop obj and key, restore old.
+            _chunk.Emit(OpCode.StoreScratch);                // [obj, key]
+            _chunk.Emit(OpCode.Pop);                         // [obj]
+            _chunk.Emit(OpCode.Pop);                         // []
+            _chunk.Emit(OpCode.LoadScratch);                 // [old]
+            _chunk.PatchJump(end);
+            return;
+        }
+
         // Compound — need obj and key twice.
         CompileExpression(m.Object);
         CompileExpression(m.Property);
@@ -2011,6 +2114,14 @@ public sealed class JsCompiler
         _chunk.Emit(CompoundAssignmentOpCode(a.Operator));
         _chunk.Emit(OpCode.SetPropertyComputed);
     }
+
+    private static OpCode LogicalAssignJumpOpCode(AssignmentOperator op) => op switch
+    {
+        AssignmentOperator.LogicalAndAssign => OpCode.JumpIfFalseKeep,
+        AssignmentOperator.LogicalOrAssign => OpCode.JumpIfTrueKeep,
+        AssignmentOperator.NullishAssign => OpCode.JumpIfNotNullishKeep,
+        _ => throw new InvalidOperationException("Not a logical assign operator"),
+    };
 
     private void CompileConditional(ConditionalExpression c)
     {
@@ -2036,6 +2147,10 @@ public sealed class JsCompiler
         {
             CompileExpression(m.Object);
         }
+        if (m.IsOptional)
+        {
+            EmitOptionalShortCircuit();
+        }
         if (m.Computed)
         {
             CompileExpression(m.Property);
@@ -2047,6 +2162,71 @@ public sealed class JsCompiler
             int nameIdx = _chunk.AddName(name);
             _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
         }
+    }
+
+    /// <summary>
+    /// Emit a <c>JumpIfNullish</c> at an optional chain hop
+    /// (<c>?.</c>, <c>?.[</c>, or <c>?.(</c>). Pops TOS; if it
+    /// is nullish, jumps to the end of the enclosing
+    /// <see cref="ChainExpression"/>, leaving the stack empty —
+    /// the chain method then pushes <c>undefined</c> as the
+    /// chain's result. If it is not nullish, the chain pushed
+    /// a fresh copy of the value below the jump via <c>Dup</c>
+    /// so the subsequent property / call hop can consume it.
+    /// </summary>
+    private void EmitOptionalShortCircuit()
+    {
+        if (_optionalChainJumps is null)
+        {
+            throw new JsCompileException(
+                "Optional chain hop outside of a chain expression",
+                0);
+        }
+        // Duplicate the object so the JumpIfNullish pop leaves
+        // a copy available for the continuation hop. (We can't
+        // use a keep-variant here because the continuation needs
+        // the value even in the non-nullish case, and the jump
+        // target needs none.)
+        _chunk.Emit(OpCode.Dup);
+        int jmp = _chunk.EmitJump(OpCode.JumpIfNullish);
+        _optionalChainJumps.Add(jmp);
+    }
+
+    private void CompileChainExpression(ChainExpression chain)
+    {
+        var outer = _optionalChainJumps;
+        var jumps = new List<int>();
+        _optionalChainJumps = jumps;
+        try
+        {
+            CompileExpression(chain.Expression);
+        }
+        finally
+        {
+            _optionalChainJumps = outer;
+        }
+
+        // Non-nullish path arrives with [result] on the stack.
+        // Nullish path(s) arrive with one leftover copy of the
+        // object that tested nullish — <see cref="EmitOptionalShortCircuit"/>
+        // Dups before the jump, and the JumpIfNullish pops one
+        // copy while the other is still live at the jump target.
+        //
+        // Shape:
+        //   <chain body>
+        //   Jump skipEnd          ; non-nullish → [result]
+        // nullishLand:            ; nullish     → [leftover]
+        //   Pop                   ;              → []
+        //   PushUndefined         ;              → [undefined]
+        // skipEnd:                ; merge       → [result_or_undefined]
+        int skipEnd = _chunk.EmitJump(OpCode.Jump);
+        foreach (var j in jumps)
+        {
+            _chunk.PatchJump(j);
+        }
+        _chunk.Emit(OpCode.Pop);
+        _chunk.Emit(OpCode.PushUndefined);
+        _chunk.PatchJump(skipEnd);
     }
 
     private void CompileArrayExpression(ArrayExpression ae)
@@ -2187,6 +2367,11 @@ public sealed class JsCompiler
         if (ce.Callee is MemberExpression m)
         {
             CompileExpression(m.Object);
+            if (m.IsOptional)
+            {
+                // `obj?.method(args)` — short-circuit on obj.
+                EmitOptionalShortCircuit();
+            }
             _chunk.Emit(OpCode.Dup);
             if (m.Computed)
             {
@@ -2199,10 +2384,31 @@ public sealed class JsCompiler
                 _chunk.EmitWithU16(OpCode.GetProperty, nameIdx);
             }
             _chunk.Emit(OpCode.Swap);
+
+            if (ce.IsOptional)
+            {
+                // `obj.method?.(args)` — short-circuit on
+                // method. Stack is [method, obj]. Stash obj in
+                // the scratch slot so `method` is TOS for the
+                // short-circuit, then restore [method, obj]
+                // for the call dispatch.
+                _chunk.Emit(OpCode.Swap);           // [obj, method]
+                _chunk.Emit(OpCode.StoreScratch);   // [obj]  (scratch=method)
+                _chunk.Emit(OpCode.LoadScratch);    // [obj, method]
+                _chunk.Emit(OpCode.Swap);           // [method, obj]
+                _chunk.Emit(OpCode.StoreScratch);   // [method]  (scratch=obj)
+                EmitOptionalShortCircuit();          // [method] (dup + jumpIfNullish)
+                _chunk.Emit(OpCode.LoadScratch);    // [method, obj]
+            }
         }
         else
         {
             CompileExpression(ce.Callee);
+            if (ce.IsOptional)
+            {
+                // `f?.(args)` — short-circuit on f.
+                EmitOptionalShortCircuit();
+            }
             _chunk.Emit(OpCode.PushUndefined);
         }
 

@@ -485,6 +485,15 @@ public enum OpCode : byte
     JumpIfFalseKeep,
     /// <summary>Peeks TOS, jumps if truthy; otherwise pops. Used for <c>||</c>.</summary>
     JumpIfTrueKeep,
+    /// <summary>Pops TOS, jumps if the value is <c>null</c> or <c>undefined</c>. Used for <c>?.</c>.</summary>
+    JumpIfNullish,
+    /// <summary>
+    /// Peeks TOS, jumps if the value is NOT <c>null</c> or
+    /// <c>undefined</c>; otherwise pops. Used for <c>??</c> so
+    /// a non-nullish left operand short-circuits past the right
+    /// while remaining on the stack as the result value.
+    /// </summary>
+    JumpIfNotNullishKeep,
 
     // ---- Program completion ----
     /// <summary>
