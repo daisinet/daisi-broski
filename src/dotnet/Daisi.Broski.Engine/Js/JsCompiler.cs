@@ -821,6 +821,44 @@ public sealed class JsCompiler
     /// the existing <c>DoAdd</c> path because one operand is
     /// always a string.
     /// </summary>
+    /// <summary>
+    /// Compile <c>tag`a${x}b`</c> as
+    /// <c>tag([a, b], x)</c>. The first argument is an
+    /// array of the cooked string parts; the remaining
+    /// arguments are the interpolation expressions.
+    /// The <c>.raw</c> property is a documented deferral.
+    /// </summary>
+    private void CompileTaggedTemplate(TaggedTemplateExpression tte)
+    {
+        // Build the strings array first.
+        // Emitted as a normal array literal.
+        CompileExpression(tte.Tag);               // [tag]
+        _chunk.Emit(OpCode.PushUndefined);        // [tag, undefined]
+        // Cooked strings: push each quasi as a string
+        // const, then CreateArray.
+        foreach (var quasi in tte.Quasi.Quasis)
+        {
+            int idx = _chunk.AddConstant(quasi);
+            _chunk.EmitWithU16(OpCode.PushConst, idx);
+        }
+        _chunk.EmitWithU16(OpCode.CreateArray, tte.Quasi.Quasis.Count);
+        // [tag, undefined, stringsArray]
+        // Then each interpolation expression as a further
+        // argument.
+        foreach (var expr in tte.Quasi.Expressions)
+        {
+            CompileExpression(expr);
+        }
+        int argCount = 1 + tte.Quasi.Expressions.Count;
+        if (argCount > byte.MaxValue)
+        {
+            throw new JsCompileException(
+                "Tagged template literal has too many interpolations",
+                tte.Start);
+        }
+        _chunk.EmitWithU8(OpCode.Call, argCount);
+    }
+
     private void CompileTemplateLiteral(TemplateLiteral tl)
     {
         // There's always at least one quasi (the Quasis/Expressions
@@ -1509,6 +1547,9 @@ public sealed class JsCompiler
                 return;
             case TemplateLiteral tl:
                 CompileTemplateLiteral(tl);
+                return;
+            case TaggedTemplateExpression tte:
+                CompileTaggedTemplate(tte);
                 return;
             case ClassExpression ce2:
                 CompileClassAssembly(ce2.Id?.Name, ce2.SuperClass, ce2.Body);

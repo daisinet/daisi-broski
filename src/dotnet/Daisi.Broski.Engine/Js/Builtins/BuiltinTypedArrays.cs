@@ -337,6 +337,37 @@ internal static class BuiltinTypedArrays
         ctor.SetNonEnumerable("BYTES_PER_ELEMENT", (double)elementSize);
         proto.SetNonEnumerable("constructor", ctor);
         proto.SetNonEnumerable("BYTES_PER_ELEMENT", (double)elementSize);
+
+        // ES2015 statics. TypedArray.from(source, mapFn?)
+        // materializes an iterable or array-like into a
+        // fresh typed array of the constructor's kind.
+        // TypedArray.of(...items) is the var-args form.
+        ctor.SetNonEnumerable("from", new JsFunction("from", (vm, thisVal, args) =>
+        {
+            object? source = args.Count > 0 ? args[0] : JsValue.Undefined;
+            JsFunction? mapFn = args.Count > 1 && args[1] is JsFunction m ? m : null;
+            var items = CollectIterableOrArrayLike(vm, source);
+            var buf = new JsArrayBuffer(items.Count * elementSize);
+            var arr = new JsTypedArray(kind, buf, 0, items.Count) { Prototype = proto };
+            for (int i = 0; i < items.Count; i++)
+            {
+                object? v = items[i];
+                if (mapFn is not null)
+                {
+                    v = vm.InvokeJsFunction(mapFn, JsValue.Undefined, new object?[] { v, (double)i });
+                }
+                arr.WriteElement(i, v);
+            }
+            return arr;
+        }));
+        ctor.SetNonEnumerable("of", new JsFunction("of", (thisVal, args) =>
+        {
+            var buf = new JsArrayBuffer(args.Count * elementSize);
+            var arr = new JsTypedArray(kind, buf, 0, args.Count) { Prototype = proto };
+            for (int i = 0; i < args.Count; i++) arr.WriteElement(i, args[i]);
+            return arr;
+        }));
+
         engine.Globals[globalName] = ctor;
     }
 

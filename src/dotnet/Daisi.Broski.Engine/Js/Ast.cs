@@ -383,6 +383,25 @@ public sealed class TemplateLiteral : Expression
     }
 }
 
+/// <summary>
+/// Tagged template — <c>tag`str ${expr} str`</c>. Lowered
+/// by the compiler to a call <c>tag(strings, ...exprs)</c>
+/// where <c>strings</c> is an array of the literal string
+/// parts (cooked form). Proper <c>.raw</c> property
+/// support is a documented deferral.
+/// </summary>
+public sealed class TaggedTemplateExpression : Expression
+{
+    public Expression Tag { get; }
+    public TemplateLiteral Quasi { get; }
+
+    public TaggedTemplateExpression(int start, int end, Expression tag, TemplateLiteral quasi) : base(start, end)
+    {
+        Tag = tag;
+        Quasi = quasi;
+    }
+}
+
 public sealed class FunctionDeclaration : Statement
 {
     public Identifier Id { get; }
