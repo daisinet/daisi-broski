@@ -1159,6 +1159,7 @@ public sealed class JsParser
         int start = Current.Start;
         Expect(JsTokenKind.LeftBrace, "class body");
         var methods = new List<MethodDefinition>();
+        var fields = new List<ClassField>();
         while (Current.Kind != JsTokenKind.RightBrace && Current.Kind != JsTokenKind.EndOfFile)
         {
             if (Current.Kind == JsTokenKind.Semicolon)
@@ -1167,11 +1168,71 @@ public sealed class JsParser
                 Consume();
                 continue;
             }
+            // ES2022 class field: `[static] name [= expr];`.
+            // Differentiated from a method by looking at the
+            // token after the name: a field has `=`, `;`, or
+            // `}`, a method has `(`.
+            if (TryParseClassField(out var field))
+            {
+                fields.Add(field);
+                continue;
+            }
             methods.Add(ParseMethodDefinition());
         }
         int end = Current.End;
         Expect(JsTokenKind.RightBrace, "class body");
-        return new ClassBody(start, end, methods);
+        return new ClassBody(start, end, methods, fields);
+    }
+
+    private bool TryParseClassField(out ClassField field)
+    {
+        field = default!;
+        // Peek ahead to see if this is a field form. A field
+        // is: [static] IDENTIFIER [= expression] ;
+        // A method is: [static] IDENTIFIER ( ...
+        int save = _pos;
+        bool isStatic = false;
+        if (Current.Kind == JsTokenKind.KeywordStatic &&
+            Peek(1).Kind != JsTokenKind.LeftParen)
+        {
+            // Peek past `static` to decide.
+            if (Peek(1).Kind != JsTokenKind.Identifier) return false;
+            var afterName = Peek(2).Kind;
+            if (afterName != JsTokenKind.Assign &&
+                afterName != JsTokenKind.Semicolon &&
+                afterName != JsTokenKind.RightBrace)
+            {
+                return false;
+            }
+            Consume(); // static
+            isStatic = true;
+        }
+        else
+        {
+            // Non-static fields aren't supported yet —
+            // instance fields need constructor-time init.
+            return false;
+        }
+
+        if (Current.Kind != JsTokenKind.Identifier)
+        {
+            _pos = save;
+            return false;
+        }
+        int fieldStart = Current.Start;
+        var nameTok = Consume();
+        string name = nameTok.StringValue!;
+        Expression? init = null;
+        if (Match(JsTokenKind.Assign))
+        {
+            init = ParseAssignmentExpression(allowIn: true);
+        }
+        int fieldEnd = init?.End ?? nameTok.End;
+        // Field declarations are semicolon-terminated
+        // (semicolon is optional if followed by `}` or EOL).
+        if (Current.Kind == JsTokenKind.Semicolon) Consume();
+        field = new ClassField(fieldStart, fieldEnd, name, init, isStatic);
+        return true;
     }
 
     /// <summary>
@@ -1197,13 +1258,34 @@ public sealed class JsParser
             isStatic = true;
         }
 
+        // ES2015 accessor methods: `get name() {}` /
+        // `set name(v) {}`. Contextual keywords — detected by
+        // matching `get` / `set` followed by an identifier-
+        // style name and then `(`. A method literally named
+        // `get` / `set` has the paren directly after, not
+        // another name.
+        MethodDefinitionKind accessorKind = MethodDefinitionKind.Method;
+        if (Current.Kind == JsTokenKind.Identifier &&
+            (Current.StringValue == "get" || Current.StringValue == "set") &&
+            Peek(1).Kind == JsTokenKind.Identifier &&
+            Peek(2).Kind == JsTokenKind.LeftParen)
+        {
+            accessorKind = Current.StringValue == "get"
+                ? MethodDefinitionKind.Get
+                : MethodDefinitionKind.Set;
+            Consume();
+        }
+
         // ES2017 async method: `async name(...) { ... }`.
         // Same contextual-keyword pattern as other `async`
         // recognition sites — consume only if it's followed
         // by an identifier and not a paren (so a method
-        // literally named `async` still works).
+        // literally named `async` still works). Mutually
+        // exclusive with get/set — an accessor can't also be
+        // async in this slice.
         bool isAsync = false;
-        if (Current.Kind == JsTokenKind.Identifier &&
+        if (accessorKind == MethodDefinitionKind.Method &&
+            Current.Kind == JsTokenKind.Identifier &&
             Current.StringValue == "async" &&
             Peek(1).Kind == JsTokenKind.Identifier)
         {
@@ -1242,9 +1324,19 @@ public sealed class JsParser
             isGenerator: false,
             isAsync: isAsync);
 
-        var kind = (!isStatic && key.Name == "constructor")
-            ? MethodDefinitionKind.Constructor
-            : MethodDefinitionKind.Method;
+        MethodDefinitionKind kind;
+        if (accessorKind != MethodDefinitionKind.Method)
+        {
+            kind = accessorKind;
+        }
+        else if (!isStatic && key.Name == "constructor")
+        {
+            kind = MethodDefinitionKind.Constructor;
+        }
+        else
+        {
+            kind = MethodDefinitionKind.Method;
+        }
         return new MethodDefinition(start, body.End, key, fnExpr, kind, isStatic);
     }
 

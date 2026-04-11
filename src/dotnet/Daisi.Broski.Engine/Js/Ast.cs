@@ -618,17 +618,50 @@ public sealed class MethodDefinition : JsNode
 }
 
 /// <summary>
-/// Body of a class declaration or class expression — a list
-/// of method definitions. Semicolons between methods are
-/// allowed and ignored per spec.
+/// Body of a class declaration or class expression — lists
+/// of method definitions and (ES2022) field definitions.
+/// Semicolons between entries are allowed and ignored per
+/// spec. The compiler installs methods first, then static
+/// fields; instance fields are a deferred slice item.
 /// </summary>
 public sealed class ClassBody : JsNode
 {
     public IReadOnlyList<MethodDefinition> Methods { get; }
+    public IReadOnlyList<ClassField> Fields { get; }
 
-    public ClassBody(int start, int end, IReadOnlyList<MethodDefinition> methods) : base(start, end)
+    public ClassBody(
+        int start,
+        int end,
+        IReadOnlyList<MethodDefinition> methods,
+        IReadOnlyList<ClassField>? fields = null) : base(start, end)
     {
         Methods = methods;
+        Fields = fields ?? Array.Empty<ClassField>();
+    }
+}
+
+/// <summary>
+/// ES2022 class field declaration — <c>static name = expr;</c>
+/// or (deferred) <c>name = expr;</c>. For now we only
+/// support the <c>static</c> form; instance fields require
+/// constructor-time initialization and are a later slice.
+/// </summary>
+public sealed class ClassField : JsNode
+{
+    public string Name { get; }
+    public Expression? Initializer { get; }
+    public bool IsStatic { get; }
+
+    public ClassField(
+        int start,
+        int end,
+        string name,
+        Expression? initializer,
+        bool isStatic) : base(start, end)
+    {
+        Name = name;
+        Initializer = initializer;
+        IsStatic = isStatic;
     }
 }
 

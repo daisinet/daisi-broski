@@ -951,16 +951,15 @@ public sealed class JsCompiler
                 return;
 
             case ClassDeclaration cd:
-                // Build the class value on the stack, then store
-                // it under the declared name. The name was
-                // pre-declared by HoistBlockScopedDeclarations so
-                // the StoreGlobal here lifts it out of the TDZ.
-                CompileClassAssembly(cd.Id.Name, cd.SuperClass, cd.Body);
-                {
-                    int nameIdx = _chunk.AddName(cd.Id.Name);
-                    _chunk.EmitWithU16(OpCode.StoreGlobal, nameIdx);
-                    _chunk.Emit(OpCode.Pop);
-                }
+                // Build the class value on the stack; the
+                // binding is stored early inside
+                // CompileClassAssembly (right after the class
+                // function is materialized) so static field
+                // initializers can reference the class name
+                // — e.g. `static zero = new Point(0, 0);`
+                // inside a class `Point`.
+                CompileClassAssembly(cd.Id.Name, cd.SuperClass, cd.Body, earlyBindName: cd.Id.Name);
+                _chunk.Emit(OpCode.Pop);
                 return;
 
             case ReturnStatement rs:
@@ -2267,7 +2266,8 @@ public sealed class JsCompiler
     private void CompileClassAssembly(
         string? className,
         Expression? superClass,
-        ClassBody body)
+        ClassBody body,
+        string? earlyBindName = null)
     {
         // Locate user-provided constructor, if any.
         MethodDefinition? userCtor = null;
@@ -2282,12 +2282,6 @@ public sealed class JsCompiler
                         m.Start);
                 }
                 userCtor = m;
-            }
-            else if (m.Kind != MethodDefinitionKind.Method)
-            {
-                throw new JsCompileException(
-                    "Getter / setter class methods are not supported in this slice",
-                    m.Start);
             }
         }
 
@@ -2336,6 +2330,21 @@ public sealed class JsCompiler
             _chunk.Emit(OpCode.LinkConstructorSuper);    // [ClassFn]  (ClassFn.HomeSuper = Parent.prototype)
         }
 
+        // 3b. Early-bind the class to its declared name so
+        //     static field initializers and methods can
+        //     reference the class by name during the rest
+        //     of the assembly. StoreGlobal doesn't pop the
+        //     TOS value in our opcode layout — wait, it
+        //     does (see JsVM.SetProperty semantics). So we
+        //     dup first.
+        if (earlyBindName is not null)
+        {
+            _chunk.Emit(OpCode.Dup);                     // [ClassFn, ClassFn]
+            int bindIdx = _chunk.AddName(earlyBindName);
+            _chunk.EmitWithU16(OpCode.StoreGlobal, bindIdx);
+            _chunk.Emit(OpCode.Pop);                     // [ClassFn]
+        }
+
         // 4. Duplicate for the method-installation loop.
         // Stack: [ClassFn, ClassFn]
         _chunk.Emit(OpCode.Dup);
@@ -2356,9 +2365,50 @@ public sealed class JsCompiler
             _chunk.EmitWithU16(OpCode.MakeFunction, mIdx);
 
             int nameIdx = _chunk.AddName(m.Key.Name);
-            _chunk.EmitWithU16(
-                m.IsStatic ? OpCode.InstallStaticMethod : OpCode.InstallMethod,
-                nameIdx);
+            if (m.Kind == MethodDefinitionKind.Get ||
+                m.Kind == MethodDefinitionKind.Set)
+            {
+                // InstallAccessor flags: bit 0 = isStatic,
+                // bit 1 = isSetter (0 = getter).
+                int flags = 0;
+                if (m.IsStatic) flags |= 1;
+                if (m.Kind == MethodDefinitionKind.Set) flags |= 2;
+                _chunk.EmitWithU16(OpCode.InstallAccessor, nameIdx);
+                _chunk.EmitU8((byte)flags);
+            }
+            else
+            {
+                _chunk.EmitWithU16(
+                    m.IsStatic ? OpCode.InstallStaticMethod : OpCode.InstallMethod,
+                    nameIdx);
+            }
+        }
+
+        // 5b. Initialize static class fields. For each
+        //     `static name = expr;` we evaluate the init
+        //     expression with the class currently on TOS and
+        //     store it as an own non-enumerable property via
+        //     SetProperty-style emit. Instance fields would
+        //     need to run in the constructor body — deferred.
+        foreach (var f in body.Fields)
+        {
+            if (!f.IsStatic) continue;
+            // Stack so far: [ClassFn, ClassFn] — dup from
+            // step 4 is still live. SetProperty takes
+            // [obj, value] and leaves [value], so we need a
+            // fresh dup per field.
+            _chunk.Emit(OpCode.Dup);                     // [ClassFn, ClassFn, ClassFn]
+            if (f.Initializer is null)
+            {
+                _chunk.Emit(OpCode.PushUndefined);       // [CF, CF, CF, undef]
+            }
+            else
+            {
+                CompileExpression(f.Initializer);        // [CF, CF, CF, value]
+            }
+            int fieldNameIdx = _chunk.AddName(f.Name);
+            _chunk.EmitWithU16(OpCode.SetProperty, fieldNameIdx); // [CF, CF, value]
+            _chunk.Emit(OpCode.Pop);                     // [CF, CF]
         }
 
         // 6. Drop the duplicate; leave one class value on the stack.

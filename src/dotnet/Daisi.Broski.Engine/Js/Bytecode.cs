@@ -211,6 +211,20 @@ public enum OpCode : byte
     /// </summary>
     LinkConstructorSuper,
     /// <summary>
+    /// Install an accessor getter or setter on a class's
+    /// prototype or on the class itself (static). Stack
+    /// <c>[class, fn]</c> → <c>[class]</c>. Operand layout:
+    /// <c>u16 nameIdx + u8 flags</c> where flags bit 0 is
+    /// "is static" and bit 1 is "is setter" (0 = getter).
+    /// Two functions with the same name are merged via
+    /// <see cref="JsObject.SetAccessor"/> so a class can
+    /// declare a matching <c>get</c> / <c>set</c> pair.
+    /// Also assigns <see cref="JsFunction.HomeSuper"/> the
+    /// same way <see cref="InstallMethod"/> does so
+    /// <c>super.foo</c> inside an accessor body works.
+    /// </summary>
+    InstallAccessor,
+    /// <summary>
     /// Push the current call frame's function's
     /// <see cref="JsFunction.HomeSuper"/> onto the stack.
     /// Throws <c>SyntaxError</c>-shaped <c>TypeError</c> if
@@ -512,6 +526,13 @@ public sealed class Chunk
     // -------------------------------------------------------------------
 
     public void Emit(OpCode op) => _code.Add((byte)op);
+
+    /// <summary>
+    /// Append a single raw byte to the code stream. Used when
+    /// an opcode carries an operand layout the other emit
+    /// helpers don't cover (e.g. u16 + u8 tail byte).
+    /// </summary>
+    public void EmitU8(byte b) => _code.Add(b);
 
     public void EmitWithU16(OpCode op, int operand)
     {
