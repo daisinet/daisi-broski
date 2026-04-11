@@ -17,5 +17,8 @@
          .exe on disk but do not consume its types. -->
     <ProjectReference Include="..\..\Daisi.Broski.Sandbox\Daisi.Broski.Sandbox.csproj"
                       ReferenceOutputAssembly="false" />
+    <!-- CLI smoke tests invoke the daisi-broski exe as a subprocess. -->
+    <ProjectReference Include="..\..\Daisi.Broski.Cli\Daisi.Broski.Cli.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

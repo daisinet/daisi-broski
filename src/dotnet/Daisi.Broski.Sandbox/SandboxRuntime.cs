@@ -123,6 +123,7 @@ internal static class SandboxRuntime
             RedirectChain = page.RedirectChain.Select(u => u.AbsoluteUri).ToArray(),
             ByteCount = page.Body.Length,
             Title = page.Document.QuerySelector("title")?.TextContent,
+            Html = nav.IncludeHtml ? page.Html : null,
         });
 
         return (response, page);

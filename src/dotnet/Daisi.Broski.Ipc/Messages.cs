@@ -35,6 +35,15 @@ public sealed class NavigateRequest
     /// <summary>Maximum redirects to follow. Defaults to 20 on the sandbox side.</summary>
     [JsonPropertyName("max_redirects")]
     public int? MaxRedirects { get; init; }
+
+    /// <summary>
+    /// When true, the response populates <see cref="NavigateResponse.Html"/>
+    /// with the decoded HTML body of the final page. Opt-in so callers
+    /// that only need metadata (<c>daisi-broski fetch --select</c>)
+    /// don't pay the ~50 KiB–MiB serialization cost per request.
+    /// </summary>
+    [JsonPropertyName("include_html")]
+    public bool IncludeHtml { get; init; }
 }
 
 /// <summary>Response payload for <see cref="Methods.Navigate"/> on success.</summary>
@@ -60,6 +69,13 @@ public sealed class NavigateResponse
 
     [JsonPropertyName("title")]
     public string? Title { get; init; }
+
+    /// <summary>
+    /// The full decoded HTML of the final page. Only populated when
+    /// <see cref="NavigateRequest.IncludeHtml"/> was set on the request.
+    /// </summary>
+    [JsonPropertyName("html")]
+    public string? Html { get; init; }
 }
 
 /// <summary>Request payload for <see cref="Methods.QueryAll"/>.</summary>
