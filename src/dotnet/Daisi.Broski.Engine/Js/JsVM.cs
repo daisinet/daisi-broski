@@ -395,6 +395,14 @@ public sealed class JsVM
                         {
                             Prototype = _engine.FunctionPrototype,
                         };
+                        if (template.IsArrow)
+                        {
+                            // Arrow functions snapshot the
+                            // surrounding `this` at creation
+                            // time — they never bind their
+                            // own `this` at call time.
+                            fn.CapturedThis = _this;
+                        }
                         Push(fn);
                     }
                     break;
@@ -1136,6 +1144,12 @@ public sealed class JsVM
                 $"{JsValue.ToJsString(calleeValue)} is not a constructor");
             return;
         }
+        if (fn.Template?.IsArrow == true)
+        {
+            RaiseError("TypeError",
+                "Arrow functions cannot be used as constructors");
+            return;
+        }
 
         // Native constructors (like Array / String) are
         // responsible for returning a fully-formed object. We
@@ -1210,13 +1224,16 @@ public sealed class JsVM
                 i < args.Length ? args[i] : JsValue.Undefined;
         }
 
-        // Bind `arguments` object (phase-3a simplification: a
-        // plain JsArray; the spec mandates a special Arguments
-        // exotic object with a linked-list to the parameters,
-        // which is a slice-4c refinement if test262 complains).
-        var argsArr = new JsArray();
-        foreach (var a in args) argsArr.Elements.Add(a);
-        newEnv.Bindings["arguments"] = argsArr;
+        // Arrow functions inherit the enclosing function's
+        // `arguments` via the env chain, so we skip creating
+        // one in their new env. Regular functions get a fresh
+        // `arguments` object containing the call's args.
+        if (!template.IsArrow)
+        {
+            var argsArr = new JsArray();
+            foreach (var a in args) argsArr.Elements.Add(a);
+            newEnv.Bindings["arguments"] = argsArr;
+        }
 
         // Save caller state.
         _frames.Push(new CallFrame
@@ -1231,13 +1248,16 @@ public sealed class JsVM
             NewInstance = newInstance,
         });
 
-        // Switch to callee.
+        // Switch to callee. Arrow functions replace the call-
+        // site `this` with their captured-at-creation value so
+        // `this` inside an arrow matches its enclosing scope
+        // regardless of how the arrow is invoked.
         _code = template.Body.Code;
         _constants = template.Body.Constants;
         _names = template.Body.Names;
         _ip = 0;
         _env = newEnv;
-        _this = thisVal;
+        _this = template.IsArrow ? fn.CapturedThis : thisVal;
     }
 
     /// <summary>

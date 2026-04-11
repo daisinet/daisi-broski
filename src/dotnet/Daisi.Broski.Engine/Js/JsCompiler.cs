@@ -401,7 +401,8 @@ public sealed class JsCompiler
         string? name,
         IReadOnlyList<Identifier> paramNodes,
         BlockStatement body,
-        int sourceLength)
+        int sourceLength,
+        bool isArrow = false)
     {
         PushFrame(isFunction: true);
 
@@ -426,7 +427,42 @@ public sealed class JsCompiler
         var chunk = PopFrame();
         var paramNames = new List<string>(paramNodes.Count);
         foreach (var p in paramNodes) paramNames.Add(p.Name);
-        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength);
+        return new JsFunctionTemplate(chunk, paramNames, name, sourceLength, isArrow);
+    }
+
+    /// <summary>
+    /// Compile an ES2015 arrow function expression. For the
+    /// concise expression body form, we synthesize a tiny
+    /// <c>{ return expr; }</c> wrapper so the compile path
+    /// reuses the regular function-body machinery. The
+    /// resulting template is tagged <c>IsArrow = true</c> so
+    /// the VM's <see cref="OpCode.MakeFunction"/> knows to
+    /// capture the current <c>this</c> and the call machinery
+    /// knows to skip the <c>arguments</c> binding.
+    /// </summary>
+    private void CompileArrowFunctionExpression(ArrowFunctionExpression ae)
+    {
+        BlockStatement block;
+        if (ae.Body is Expression expr)
+        {
+            var ret = new ReturnStatement(expr.Start, expr.End, expr);
+            block = new BlockStatement(
+                expr.Start,
+                expr.End,
+                new List<Statement> { ret });
+        }
+        else
+        {
+            block = (BlockStatement)ae.Body;
+        }
+        var template = CompileFunctionTemplate(
+            name: null,
+            ae.Params,
+            block,
+            ae.End - ae.Start,
+            isArrow: true);
+        int idx = _chunk.AddConstant(template);
+        _chunk.EmitWithU16(OpCode.MakeFunction, idx);
     }
 
     // -------------------------------------------------------------------
@@ -785,6 +821,9 @@ public sealed class JsCompiler
                 return;
             case FunctionExpression fe:
                 CompileFunctionExpression(fe);
+                return;
+            case ArrowFunctionExpression ae:
+                CompileArrowFunctionExpression(ae);
                 return;
 
             default:

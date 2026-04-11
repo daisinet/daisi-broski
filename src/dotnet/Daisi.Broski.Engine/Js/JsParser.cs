@@ -714,9 +714,21 @@ public sealed class JsParser
     /// assignment?" is: parse the LHS as a ConditionalExpression,
     /// then if the next token is an assignment operator, verify the
     /// LHS is a valid reference and recurse at the same level.
+    ///
+    /// ES2015: the grammar also admits arrow functions at this
+    /// level. Before the conditional path we peek for the
+    /// unambiguous arrow-function start patterns — a bare
+    /// <c>Identifier => </c> or a parenthesized parameter list
+    /// whose closing <c>)</c> is followed by <c>=&gt;</c>. The
+    /// paren scan is lookahead-only; if the tokens don't
+    /// actually form an arrow, we fall through and let the
+    /// normal expression parse handle them.
     /// </summary>
     private Expression ParseAssignmentExpression(bool allowIn)
     {
+        var arrow = TryParseArrowFunction(allowIn);
+        if (arrow is not null) return arrow;
+
         var left = ParseConditionalExpression(allowIn);
         var op = ToAssignmentOperator(Current.Kind);
         if (op is null) return left;
@@ -730,6 +742,102 @@ public sealed class JsParser
         Consume();
         var right = ParseAssignmentExpression(allowIn);
         return new AssignmentExpression(left.Start, right.End, op.Value, left, right);
+    }
+
+    /// <summary>
+    /// Peek for ES2015 arrow function syntax. Recognizes
+    /// <c>identifier =&gt; body</c> and <c>( params ) =&gt; body</c>.
+    /// Returns <c>null</c> if the current position doesn't begin
+    /// an arrow; the caller then falls through to the normal
+    /// expression parse. The scan-for-matching-paren path is
+    /// read-only — it never mutates <c>_pos</c>.
+    /// </summary>
+    private Expression? TryParseArrowFunction(bool allowIn)
+    {
+        // Case 1: `x => body` — single identifier param.
+        if (Current.Kind == JsTokenKind.Identifier &&
+            Peek(1).Kind == JsTokenKind.Arrow)
+        {
+            return ParseSingleIdentifierArrow(allowIn);
+        }
+
+        // Case 2: `(...) => body` — parenthesized params. Scan
+        // forward for the matching close paren and check if
+        // it's followed by `=>`. Nested parens must balance.
+        if (Current.Kind == JsTokenKind.LeftParen)
+        {
+            int look = _pos + 1;
+            int depth = 1;
+            while (look < _tokens.Count)
+            {
+                var k = _tokens[look].Kind;
+                if (k == JsTokenKind.EndOfFile) return null;
+                if (k == JsTokenKind.LeftParen) depth++;
+                else if (k == JsTokenKind.RightParen)
+                {
+                    depth--;
+                    if (depth == 0) break;
+                }
+                look++;
+            }
+            if (look >= _tokens.Count) return null;
+            if (look + 1 >= _tokens.Count) return null;
+            if (_tokens[look + 1].Kind != JsTokenKind.Arrow) return null;
+            return ParseParenthesizedArrow(allowIn);
+        }
+
+        return null;
+    }
+
+    private Expression ParseSingleIdentifierArrow(bool allowIn)
+    {
+        int start = Current.Start;
+        var idTok = Consume();
+        var param = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
+        Expect(JsTokenKind.Arrow, "arrow function");
+        var body = ParseArrowBody(allowIn);
+        return new ArrowFunctionExpression(
+            start,
+            body.End,
+            new List<Identifier> { param },
+            body);
+    }
+
+    private Expression ParseParenthesizedArrow(bool allowIn)
+    {
+        int start = Current.Start;
+        Consume(); // (
+        var @params = new List<Identifier>();
+        if (Current.Kind != JsTokenKind.RightParen)
+        {
+            @params.Add(ParseBindingIdentifier());
+            while (Match(JsTokenKind.Comma))
+            {
+                @params.Add(ParseBindingIdentifier());
+            }
+        }
+        Expect(JsTokenKind.RightParen, "arrow params");
+        Expect(JsTokenKind.Arrow, "arrow function");
+        var body = ParseArrowBody(allowIn);
+        return new ArrowFunctionExpression(start, body.End, @params, body);
+    }
+
+    /// <summary>
+    /// Parse the body of an arrow function. A <c>{</c>
+    /// immediately after the <c>=&gt;</c> introduces a block
+    /// body; anything else is a concise expression body. Per
+    /// spec, an object literal in a concise body must be
+    /// parenthesized (<c>x =&gt; ({a: 1})</c>); an unparenthesized
+    /// <c>x =&gt; {a: 1}</c> is a block statement with a labeled
+    /// statement in it, not an object literal.
+    /// </summary>
+    private JsNode ParseArrowBody(bool allowIn)
+    {
+        if (Current.Kind == JsTokenKind.LeftBrace)
+        {
+            return ParseBlockStatement();
+        }
+        return ParseAssignmentExpression(allowIn);
     }
 
     private Expression ParseConditionalExpression(bool allowIn)
