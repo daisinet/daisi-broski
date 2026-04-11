@@ -83,6 +83,14 @@ public sealed class JsParser
     /// </summary>
     private bool _inGeneratorBody;
 
+    /// <summary>
+    /// True while parsing the body of an async function.
+    /// <c>await</c> expressions consult this flag to
+    /// determine if they are syntactically legal. Saved /
+    /// restored across nested function bodies.
+    /// </summary>
+    private bool _inAsyncBody;
+
     public JsParser(string source)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
@@ -217,6 +225,12 @@ public sealed class JsParser
         {
             return ParseFunctionDeclaration();
         }
+        // `async function foo() {}` — declaration form.
+        if (CurrentIsAsyncKeyword() && Peek(1).Kind == JsTokenKind.KeywordFunction)
+        {
+            Consume(); // async
+            return ParseFunctionDeclaration(isAsync: true);
+        }
         return ParseStatement();
     }
 
@@ -248,6 +262,14 @@ public sealed class JsParser
                 return ParseFunctionDeclaration();
             case JsTokenKind.KeywordClass:
                 return ParseClassDeclaration();
+        }
+
+        // `async function foo() {}` at statement position is a
+        // function declaration, same as its non-async form.
+        if (CurrentIsAsyncKeyword() && Peek(1).Kind == JsTokenKind.KeywordFunction)
+        {
+            Consume(); // async
+            return ParseFunctionDeclaration(isAsync: true);
         }
 
         // Labeled statement? Peek past the identifier for a ':'.
@@ -668,18 +690,18 @@ public sealed class JsParser
     // Functions
     // -------------------------------------------------------------------
 
-    private FunctionDeclaration ParseFunctionDeclaration()
+    private FunctionDeclaration ParseFunctionDeclaration(bool isAsync = false)
     {
         int start = Current.Start;
         Consume(); // function
         bool isGenerator = Match(JsTokenKind.Star);
         var id = ParseBindingIdentifier();
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody(insideGenerator: isGenerator);
-        return new FunctionDeclaration(start, body.End, id, paramList, body, isGenerator);
+        var body = ParseFunctionBody(insideGenerator: isGenerator, insideAsync: isAsync);
+        return new FunctionDeclaration(start, body.End, id, paramList, body, isGenerator, isAsync);
     }
 
-    private FunctionExpression ParseFunctionExpression()
+    private FunctionExpression ParseFunctionExpression(bool isAsync = false)
     {
         int start = Current.Start;
         Consume(); // function
@@ -690,8 +712,33 @@ public sealed class JsParser
             id = ParseBindingIdentifier();
         }
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody(insideGenerator: isGenerator);
-        return new FunctionExpression(start, body.End, id, paramList, body, isGenerator);
+        var body = ParseFunctionBody(insideGenerator: isGenerator, insideAsync: isAsync);
+        return new FunctionExpression(start, body.End, id, paramList, body, isGenerator, isAsync);
+    }
+
+    /// <summary>
+    /// Is the current token an <c>async</c> keyword followed
+    /// by something that makes this the start of an async
+    /// function / arrow expression? We accept:
+    /// <list type="bullet">
+    /// <item><c>async function ...</c> — async function decl / expr</item>
+    /// <item><c>async (</c> — async arrow with paren params
+    ///   (we don't yet confirm there's a <c>=&gt;</c> — that
+    ///   is done by the arrow-scan lookahead on the caller
+    ///   side).</item>
+    /// <item><c>async identifier =&gt;</c> — async single-ident
+    ///   arrow.</item>
+    /// </list>
+    /// Since <c>async</c> is a contextual keyword (lexed as
+    /// a plain <see cref="JsTokenKind.Identifier"/>), the
+    /// parser has to detect it by looking at the string
+    /// value and peeking ahead.
+    /// </summary>
+    private bool CurrentIsAsyncKeyword()
+    {
+        return Current.Kind == JsTokenKind.Identifier
+            && Current.StringValue == "async"
+            && !_hasLineBefore[_pos + 1]; // no LineTerminator between `async` and the follower
     }
 
     private List<FunctionParameter> ParseFormalParameters()
@@ -749,23 +796,26 @@ public sealed class JsParser
         return new FunctionParameter(start, end, id, @default, isRest: false);
     }
 
-    private BlockStatement ParseFunctionBody(bool insideGenerator = false)
+    private BlockStatement ParseFunctionBody(bool insideGenerator = false, bool insideAsync = false)
     {
         // Function bodies accept source elements (nested function
         // declarations are hoisted), which ParseBlockStatement already
         // handles via ParseSourceElement. Save/restore the
-        // generator-body flag so yield is only legal in the
-        // innermost enclosing generator function, not leaked into
-        // nested non-generator functions.
-        bool saved = _inGeneratorBody;
+        // generator- and async-body flags so yield / await are
+        // only legal in the innermost enclosing matching function,
+        // not leaked into nested function expressions.
+        bool savedGen = _inGeneratorBody;
+        bool savedAsync = _inAsyncBody;
         _inGeneratorBody = insideGenerator;
+        _inAsyncBody = insideAsync;
         try
         {
             return ParseBlockStatement();
         }
         finally
         {
-            _inGeneratorBody = saved;
+            _inGeneratorBody = savedGen;
+            _inAsyncBody = savedAsync;
         }
     }
 
@@ -870,6 +920,20 @@ public sealed class JsParser
             isStatic = true;
         }
 
+        // ES2017 async method: `async name(...) { ... }`.
+        // Same contextual-keyword pattern as other `async`
+        // recognition sites — consume only if it's followed
+        // by an identifier and not a paren (so a method
+        // literally named `async` still works).
+        bool isAsync = false;
+        if (Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "async" &&
+            Peek(1).Kind == JsTokenKind.Identifier)
+        {
+            Consume();
+            isAsync = true;
+        }
+
         // Method name — accept a plain Identifier, or a
         // contextual keyword that would otherwise be reserved
         // (like "static" standalone as a method name fallback).
@@ -890,14 +954,16 @@ public sealed class JsParser
         var key = new Identifier(keyStart, keyEnd, methodName);
 
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody();
+        var body = ParseFunctionBody(insideAsync: isAsync);
 
         var fnExpr = new FunctionExpression(
             start: key.Start,
             end: body.End,
             id: null,
             @params: paramList,
-            body: body);
+            body: body,
+            isGenerator: false,
+            isAsync: isAsync);
 
         var kind = (!isStatic && key.Name == "constructor")
             ? MethodDefinitionKind.Constructor
@@ -1095,6 +1161,19 @@ public sealed class JsParser
             return ParseYieldExpression(allowIn);
         }
 
+        // ES2017: AwaitExpression — only legal inside async
+        // function bodies. Same expression-level placement as
+        // yield. `await` is a contextual keyword (a plain
+        // Identifier token outside async bodies).
+        if (_inAsyncBody &&
+            Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "await" &&
+            CanStartExpression(Peek(1).Kind) &&
+            !_hasLineBefore[_pos + 1])
+        {
+            return ParseAwaitExpression(allowIn);
+        }
+
         var arrow = TryParseArrowFunction(allowIn);
         if (arrow is not null) return arrow;
 
@@ -1138,6 +1217,19 @@ public sealed class JsParser
         return new YieldExpression(start, Current.Start, null);
     }
 
+    /// <summary>
+    /// <c>await expr</c>. The argument is parsed at unary
+    /// precedence so <c>await x + 1</c> parses as
+    /// <c>(await x) + 1</c>, matching the spec.
+    /// </summary>
+    private AwaitExpression ParseAwaitExpression(bool allowIn)
+    {
+        int start = Current.Start;
+        Consume(); // await
+        var arg = ParseUnaryExpression();
+        return new AwaitExpression(start, arg.End, arg);
+    }
+
     private static bool CanStartExpression(JsTokenKind kind) => kind switch
     {
         JsTokenKind.RightParen or
@@ -1160,11 +1252,28 @@ public sealed class JsParser
     /// </summary>
     private Expression? TryParseArrowFunction(bool allowIn)
     {
+        // ES2017 async arrow: `async x => body` or
+        // `async (...) => body`. Detected by `async` followed
+        // immediately (no LineTerminator) by an identifier
+        // or a paren.
+        bool isAsync = false;
+        int rewindPos = _pos;
+        if (CurrentIsAsyncKeyword())
+        {
+            var next = Peek(1).Kind;
+            if ((next == JsTokenKind.Identifier && Peek(2).Kind == JsTokenKind.Arrow) ||
+                next == JsTokenKind.LeftParen)
+            {
+                isAsync = true;
+                _pos++; // consume `async`
+            }
+        }
+
         // Case 1: `x => body` — single identifier param.
         if (Current.Kind == JsTokenKind.Identifier &&
             Peek(1).Kind == JsTokenKind.Arrow)
         {
-            return ParseSingleIdentifierArrow(allowIn);
+            return ParseSingleIdentifierArrow(allowIn, isAsync);
         }
 
         // Case 2: `(...) => body` — parenthesized params. Scan
@@ -1177,7 +1286,7 @@ public sealed class JsParser
             while (look < _tokens.Count)
             {
                 var k = _tokens[look].Kind;
-                if (k == JsTokenKind.EndOfFile) return null;
+                if (k == JsTokenKind.EndOfFile) break;
                 if (k == JsTokenKind.LeftParen) depth++;
                 else if (k == JsTokenKind.RightParen)
                 {
@@ -1186,31 +1295,42 @@ public sealed class JsParser
                 }
                 look++;
             }
-            if (look >= _tokens.Count) return null;
-            if (look + 1 >= _tokens.Count) return null;
-            if (_tokens[look + 1].Kind != JsTokenKind.Arrow) return null;
-            return ParseParenthesizedArrow(allowIn);
+            if (look < _tokens.Count &&
+                look + 1 < _tokens.Count &&
+                _tokens[look + 1].Kind == JsTokenKind.Arrow)
+            {
+                return ParseParenthesizedArrow(allowIn, isAsync);
+            }
         }
 
+        // Not actually an arrow after all — rewind past the
+        // speculative `async` consumption so the outer
+        // expression parser can handle this token.
+        _pos = rewindPos;
         return null;
     }
 
-    private Expression ParseSingleIdentifierArrow(bool allowIn)
+    private Expression ParseSingleIdentifierArrow(bool allowIn, bool isAsync = false)
     {
         int start = Current.Start;
         var idTok = Consume();
         var param = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
         Expect(JsTokenKind.Arrow, "arrow function");
-        var body = ParseArrowBody(allowIn);
+        bool savedAsync = _inAsyncBody;
+        _inAsyncBody = isAsync;
+        JsNode body;
+        try { body = ParseArrowBody(allowIn); }
+        finally { _inAsyncBody = savedAsync; }
         var fp = new FunctionParameter(param.Start, param.End, param, null, isRest: false);
         return new ArrowFunctionExpression(
             start,
             body.End,
             new List<FunctionParameter> { fp },
-            body);
+            body,
+            isAsync);
     }
 
-    private Expression ParseParenthesizedArrow(bool allowIn)
+    private Expression ParseParenthesizedArrow(bool allowIn, bool isAsync = false)
     {
         int start = Current.Start;
         Consume(); // (
@@ -1231,8 +1351,12 @@ public sealed class JsParser
         }
         Expect(JsTokenKind.RightParen, "arrow params");
         Expect(JsTokenKind.Arrow, "arrow function");
-        var body = ParseArrowBody(allowIn);
-        return new ArrowFunctionExpression(start, body.End, @params, body);
+        bool savedAsync = _inAsyncBody;
+        _inAsyncBody = isAsync;
+        JsNode body;
+        try { body = ParseArrowBody(allowIn); }
+        finally { _inAsyncBody = savedAsync; }
+        return new ArrowFunctionExpression(start, body.End, @params, body, isAsync);
     }
 
     /// <summary>
@@ -1508,6 +1632,15 @@ public sealed class JsParser
             case JsTokenKind.KeywordThis:
                 Consume();
                 return new ThisExpression(tok.Start, tok.End);
+
+            // `async function ...` as an expression. Must be
+            // matched before the generic Identifier case so the
+            // contextual `async` keyword doesn't fall through.
+            case JsTokenKind.Identifier when tok.StringValue == "async"
+                && Peek(1).Kind == JsTokenKind.KeywordFunction
+                && !_hasLineBefore[_pos + 1]:
+                Consume(); // async
+                return ParseFunctionExpression(isAsync: true);
 
             case JsTokenKind.Identifier:
                 Consume();

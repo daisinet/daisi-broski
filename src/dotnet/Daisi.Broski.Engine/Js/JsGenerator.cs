@@ -88,37 +88,76 @@ public sealed class JsGenerator : JsObject
     /// </summary>
     public JsObject Next(object? sentValue)
     {
+        var raw = AdvanceRaw(sentValue, isThrow: false);
         var result = new JsObject { Prototype = _engine.ObjectPrototype };
+        result.Set("value", raw.Value);
+        result.Set("done", raw.Done ? (object)JsValue.True : JsValue.False);
+        return result;
+    }
 
+    /// <summary>
+    /// Drive the generator VM forward one step and return the
+    /// raw outcome — the yielded / returned value and whether
+    /// the generator has completed — without boxing it into a
+    /// JS-visible <c>{value, done}</c> object. Used by the
+    /// async stepper, which needs the raw value to decide how
+    /// to chain onto the awaited promise.
+    ///
+    /// <paramref name="isThrow"/> selects between the normal
+    /// resume path (push the sent value at the yield point)
+    /// and the throw-injection path (call <c>DoThrow</c> at
+    /// the yield point so <c>try</c>/<c>catch</c> around
+    /// <c>await</c> observes the rejection as a thrown value).
+    /// </summary>
+    public JsVM.GeneratorStepOutcome AdvanceRaw(object? sentValue, bool isThrow)
+    {
         if (_status == GeneratorStatus.Completed)
         {
-            result.Set("value", JsValue.Undefined);
-            result.Set("done", JsValue.True);
-            return result;
+            return new JsVM.GeneratorStepOutcome(JsValue.Undefined, done: true);
         }
 
         if (_status == GeneratorStatus.SuspendedStart)
         {
+            // Starting a generator with a throw injects it
+            // before any bytecode has run. There is no yield
+            // point to throw at, so the generator simply
+            // completes with the thrown value as an
+            // exception that escapes via the outer driver.
             _vm.StartGeneratorExecution(_fn, _thisVal, _args);
             _status = GeneratorStatus.SuspendedYield;
+            if (isThrow)
+            {
+                _vm.YieldResumeWithThrow = true;
+                _vm.YieldThrownValue = sentValue;
+            }
         }
         else
         {
-            _vm.YieldSentValue = sentValue;
+            if (isThrow)
+            {
+                _vm.YieldResumeWithThrow = true;
+                _vm.YieldThrownValue = sentValue;
+            }
+            else
+            {
+                _vm.YieldSentValue = sentValue;
+            }
         }
 
-        var outcome = _vm.ContinueGeneratorExecution();
-        if (outcome.Done)
+        JsVM.GeneratorStepOutcome outcome;
+        try
         {
+            outcome = _vm.ContinueGeneratorExecution();
+        }
+        catch (JsRuntimeException)
+        {
+            // Uncaught exception inside the generator body —
+            // mark complete and re-throw so the caller
+            // (async stepper or user gen.next()) can handle.
             _status = GeneratorStatus.Completed;
-            result.Set("value", outcome.Value);
-            result.Set("done", JsValue.True);
+            throw;
         }
-        else
-        {
-            result.Set("value", outcome.Value);
-            result.Set("done", JsValue.False);
-        }
-        return result;
+        if (outcome.Done) _status = GeneratorStatus.Completed;
+        return outcome;
     }
 }

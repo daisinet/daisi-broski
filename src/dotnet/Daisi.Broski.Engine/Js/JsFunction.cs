@@ -44,6 +44,17 @@ public sealed class JsFunctionTemplate
     public bool IsGenerator { get; }
 
     /// <summary>
+    /// True for ES2017 async functions (<c>async function
+    /// foo(){}</c>). Async functions compile like generators
+    /// (<c>await</c> lowers to <c>YieldValue</c> +
+    /// <c>YieldResume</c>) and at call time the VM wraps the
+    /// generator in a <see cref="JsPromise"/> + auto-stepper
+    /// so the caller sees a Promise rather than a
+    /// <see cref="JsGenerator"/>.
+    /// </summary>
+    public bool IsAsync { get; }
+
+    /// <summary>
     /// Index of the ES2015 rest parameter in
     /// <see cref="ParamNames"/>, or <c>-1</c> if the function
     /// has no rest parameter. At call time the VM binds
@@ -64,7 +75,8 @@ public sealed class JsFunctionTemplate
         int sourceLength,
         bool isArrow = false,
         int restParamIndex = -1,
-        bool isGenerator = false)
+        bool isGenerator = false,
+        bool isAsync = false)
     {
         Body = body;
         ParamNames = paramNames;
@@ -73,6 +85,7 @@ public sealed class JsFunctionTemplate
         IsArrow = isArrow;
         RestParamIndex = restParamIndex;
         IsGenerator = isGenerator;
+        IsAsync = isAsync;
     }
 }
 
