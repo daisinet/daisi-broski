@@ -38,6 +38,17 @@ internal static class BuiltinJson
     private static object? Parse(JsEngine engine, IReadOnlyList<object?> args)
     {
         var text = args.Count > 0 ? JsValue.ToJsString(args[0]) : "undefined";
+        return ParseText(engine, text);
+    }
+
+    /// <summary>
+    /// Helper used by other native built-ins (e.g.
+    /// <c>Response.prototype.json</c>) that need to parse
+    /// a JSON string into a JS value without routing
+    /// through the script-visible <c>JSON.parse</c>.
+    /// </summary>
+    internal static object? ParseText(JsEngine engine, string text)
+    {
         var parser = new JsonParser(text, engine);
         return parser.ParseRoot();
     }
