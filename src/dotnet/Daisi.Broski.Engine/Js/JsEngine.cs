@@ -71,6 +71,14 @@ public sealed class JsEngine
     public JsObject FunctionPrototype { get; }
 
     /// <summary>
+    /// <c>Date.prototype</c>. Installed by slice 6d; carries
+    /// <c>getTime</c> / <c>valueOf</c> / <c>getFullYear</c> /
+    /// <c>toISOString</c> / etc. Every <see cref="JsDate"/>
+    /// value has this as its <c>[[Prototype]]</c>.
+    /// </summary>
+    public JsObject DatePrototype { get; internal set; } = null!;
+
+    /// <summary>
     /// Root <c>Error.prototype</c>. Installed by slice 6b; used
     /// by <see cref="JsVM"/> when <c>RaiseError</c> creates an
     /// error object with no more specific subtype.
@@ -133,6 +141,7 @@ public sealed class JsEngine
             NumberPrototype, BooleanPrototype, FunctionPrototype,
             ErrorPrototype, TypeErrorPrototype, RangeErrorPrototype,
             SyntaxErrorPrototype, ReferenceErrorPrototype,
+            DatePrototype,
         };
         foreach (var root in roots)
         {

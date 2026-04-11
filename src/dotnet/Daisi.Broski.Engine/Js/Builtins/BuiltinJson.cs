@@ -383,6 +383,22 @@ internal static class BuiltinJson
             AppendQuotedString(s, sb);
             return true;
         }
+        if (value is JsDate date)
+        {
+            // Match the effect of `Date.prototype.toJSON`
+            // without going through the VM — Date is the only
+            // built-in that customizes `toJSON`, and handling
+            // it inline lets JSON.stringify stay a
+            // VM-independent native method. Invalid dates
+            // render as `null`, matching browsers.
+            if (!date.IsValid)
+            {
+                sb.Append("null");
+                return true;
+            }
+            AppendQuotedString(BuiltinDate.FormatIso(date.Time), sb);
+            return true;
+        }
         if (value is JsArray arr)
         {
             if (!seen.Add(arr))

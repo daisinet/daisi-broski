@@ -26,6 +26,7 @@ internal static class Builtins
         BuiltinArray.Install(engine);
         BuiltinString.Install(engine);
         BuiltinNumberBoolean.Install(engine);
+        BuiltinDate.Install(engine);
     }
 
     /// <summary>
