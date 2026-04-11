@@ -1041,16 +1041,28 @@ public sealed class ObjectPatternProperty : JsNode
     /// </summary>
     public Expression? Default { get; }
 
+    /// <summary>
+    /// <c>true</c> for an ES2018 <c>{a, ...rest}</c> trailing
+    /// rest element. <see cref="Key"/> is unused when set;
+    /// <see cref="Value"/> is the <see cref="Identifier"/>
+    /// that binds the collected leftover properties as a
+    /// fresh object. The parser enforces that a rest
+    /// property is the last entry in the object pattern.
+    /// </summary>
+    public bool IsRest { get; }
+
     public ObjectPatternProperty(
         int start,
         int end,
         string key,
         JsNode value,
-        Expression? @default) : base(start, end)
+        Expression? @default,
+        bool isRest = false) : base(start, end)
     {
         Key = key;
         Value = value;
         Default = @default;
+        IsRest = isRest;
     }
 }
 

@@ -1276,14 +1276,24 @@ public sealed class JsParser
         int start = Current.Start;
         Expect(JsTokenKind.LeftBrace, "object pattern");
         var props = new List<ObjectPatternProperty>();
+        bool sawRest = false;
         if (Current.Kind != JsTokenKind.RightBrace)
         {
             props.Add(ParseObjectPatternProperty());
+            if (props[props.Count - 1].IsRest) sawRest = true;
             while (Match(JsTokenKind.Comma))
             {
                 // Trailing comma allowed.
                 if (Current.Kind == JsTokenKind.RightBrace) break;
-                props.Add(ParseObjectPatternProperty());
+                if (sawRest)
+                {
+                    throw new JsParseException(
+                        "Rest element must be the last element of an object pattern",
+                        Current.Start);
+                }
+                var next = ParseObjectPatternProperty();
+                props.Add(next);
+                if (next.IsRest) sawRest = true;
             }
         }
         int end = Current.End;
@@ -1294,6 +1304,30 @@ public sealed class JsParser
     private ObjectPatternProperty ParseObjectPatternProperty()
     {
         int start = Current.Start;
+        // ES2018 rest: `...identifier` as the last element.
+        if (Current.Kind == JsTokenKind.DotDotDot)
+        {
+            Consume();
+            if (Current.Kind != JsTokenKind.Identifier)
+            {
+                throw new JsParseException(
+                    "Rest element in object pattern must be an identifier",
+                    Current.Start);
+            }
+            var restId = ParseBindingIdentifier();
+            if (Current.Kind == JsTokenKind.Assign)
+            {
+                throw new JsParseException(
+                    "Rest element in object pattern may not have a default",
+                    Current.Start);
+            }
+            return new ObjectPatternProperty(
+                start, restId.End,
+                key: restId.Name,
+                value: restId,
+                @default: null,
+                isRest: true);
+        }
         if (Current.Kind != JsTokenKind.Identifier)
         {
             throw new JsParseException(
@@ -2115,6 +2149,17 @@ public sealed class JsParser
         }
 
         int start = Current.Start;
+        // ES2015 shorthand: `{ a, b }` is equivalent to
+        // `{ a: a, b: b }`. We detect a bare identifier
+        // followed by `,` or `}` and synthesize the value.
+        if (Current.Kind == JsTokenKind.Identifier &&
+            (Peek(1).Kind == JsTokenKind.Comma || Peek(1).Kind == JsTokenKind.RightBrace))
+        {
+            var idTok = Consume();
+            var keyId = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
+            var valueId = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
+            return new Property(start, idTok.End, keyId, valueId, PropertyKind.Init);
+        }
         var key = ParsePropertyName(keywordsAllowed: true);
         Expect(JsTokenKind.Colon, "object property");
         var value = ParseAssignmentExpression(allowIn: true);
@@ -2259,7 +2304,14 @@ public sealed class JsParser
     /// message is better when we still know the immediate context.
     /// </summary>
     private static bool IsValidLhs(Expression expr) =>
-        expr is Identifier || expr is MemberExpression;
+        expr is Identifier
+        || expr is MemberExpression
+        // Destructuring assignment: the cover grammar lets an
+        // ObjectLiteral / ArrayLiteral stand in for an
+        // ObjectAssignmentPattern / ArrayAssignmentPattern.
+        // The compiler reinterprets these at assignment time.
+        || expr is ObjectExpression
+        || expr is ArrayExpression;
 }
 
 /// <summary>
