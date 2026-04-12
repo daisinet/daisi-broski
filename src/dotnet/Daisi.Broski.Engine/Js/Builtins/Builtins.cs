@@ -33,6 +33,19 @@ internal static class Builtins
         BuiltinCollections.Install(engine);
         BuiltinPromise.Install(engine);
         BuiltinTypedArrays.Install(engine);
+        BuiltinUrl.Install(engine);
+        BuiltinTextCoding.Install(engine);
+        BuiltinBase64.Install(engine);
+        BuiltinCrypto.Install(engine);
+        BuiltinDomEvents.Install(engine);
+        BuiltinFetch.Install(engine);
+        BuiltinProxy.Install(engine);
+        BuiltinReflect.Install(engine);
+        BuiltinAbort.Install(engine);
+        BuiltinBigInt.Install(engine);
+        BuiltinRegExp.Install(engine);
+        BuiltinBrowserHost.Install(engine);
+        BuiltinModernPrototypes.Install(engine);
     }
 
     /// <summary>

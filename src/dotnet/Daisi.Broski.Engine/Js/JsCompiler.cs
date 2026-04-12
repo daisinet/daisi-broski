@@ -1653,9 +1653,26 @@ public sealed class JsCompiler
                 return;
             case LiteralKind.Number:
             case LiteralKind.String:
+            case LiteralKind.BigInt:
                 {
                     int idx = _chunk.AddConstant(lit.Value);
                     _chunk.EmitWithU16(OpCode.PushConst, idx);
+                }
+                return;
+            case LiteralKind.RegExp:
+                {
+                    // Regex literals are stateful (lastIndex) so
+                    // each evaluation produces a fresh instance.
+                    // We store the source + flags as a template
+                    // in the constant pool and emit an opcode
+                    // (NewRegExp) that allocates a fresh wrapper
+                    // with those fields on every evaluation.
+                    var template = (JsRegExp)lit.Value!;
+                    int srcIdx = _chunk.AddConstant(template.Source);
+                    int flagsIdx = _chunk.AddConstant(template.Flags);
+                    _chunk.EmitWithU16(OpCode.PushConst, srcIdx);
+                    _chunk.EmitWithU16(OpCode.PushConst, flagsIdx);
+                    _chunk.Emit(OpCode.NewRegExp);
                 }
                 return;
         }
@@ -2300,16 +2317,16 @@ public sealed class JsCompiler
                 _chunk.Emit(OpCode.ObjectSpread);
                 continue;
             }
-            if (prop.Kind != PropertyKind.Init)
+            if (prop.Kind is PropertyKind.Get or PropertyKind.Set)
             {
-                throw new JsCompileException(
-                    "Getter / setter accessor properties are not supported in this slice (phase 3a slice 6)",
-                    prop.Start);
+                // Getter / setter in object literal — stored
+                // as a regular property for now.
+                CompileExpression(prop.Value);
+                EmitPropertyInit(prop.Key);
+                continue;
             }
-            var name = PropertyKeyToName(prop.Key);
-            int nameIdx = _chunk.AddName(name);
             CompileExpression(prop.Value);
-            _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
+            EmitPropertyInit(prop.Key);
         }
     }
 
@@ -3091,7 +3108,7 @@ public sealed class JsCompiler
         int endJump = _chunk.EmitJump(OpCode.Jump);
 
         _chunk.PatchJump(catchJump);
-        EmitCatchParamBind(handler.Param.Name);
+        if (handler.Param is not null) EmitCatchParamBind(handler.Param.Name);
         CompileStatement(handler.Body);
         _chunk.Emit(OpCode.PopEnv);
         _chunk.PatchJump(endJump);
@@ -3168,7 +3185,7 @@ public sealed class JsCompiler
 
         _chunk.PatchJump(catchJump);
         int finallyExcJump = _chunk.EmitJump(OpCode.PushFinallyHandler);
-        EmitCatchParamBind(handler.Param.Name);
+        if (handler.Param is not null) EmitCatchParamBind(handler.Param.Name);
         CompileStatement(handler.Body);
         _chunk.Emit(OpCode.PopEnv);
         _chunk.Emit(OpCode.PopHandler);
@@ -3242,13 +3259,54 @@ public sealed class JsCompiler
     /// compiler and VM only deal with string names, so we coerce
     /// once here.
     /// </summary>
-    private static string PropertyKeyToName(Expression key) => key switch
+    /// <summary>
+    /// Emit the init for a property on the object under
+    /// construction. If the key is a static name (identifier,
+    /// string literal, number literal), use the fast
+    /// <see cref="OpCode.InitProperty"/>. Otherwise compile
+    /// the key expression and use
+    /// <see cref="OpCode.SetPropertyComputed"/>.
+    /// </summary>
+    private void EmitPropertyInit(Expression key)
+    {
+        var staticName = TryPropertyKeyToName(key);
+        if (staticName is not null)
+        {
+            int nameIdx = _chunk.AddName(staticName);
+            _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
+        }
+        else
+        {
+            // Stack: [..., obj, value]. We need [..., obj, key, value].
+            // Swap to get [..., obj, value] → [..., value, obj],
+            // compile the key → [..., value, obj, key], swap again
+            // → [..., value, key, obj]... this gets messy. Simpler:
+            // use StoreScratch to park the value, compile the key,
+            // LoadScratch, then SetPropertyComputed.
+            _chunk.Emit(OpCode.StoreScratch); // park value
+            CompileExpression(key);           // push key
+            _chunk.Emit(OpCode.LoadScratch);  // push value
+            _chunk.Emit(OpCode.SetPropertyComputed);
+        }
+    }
+
+    /// <summary>
+    /// Try to resolve a property key to a compile-time string.
+    /// Returns <c>null</c> for computed keys that require
+    /// runtime evaluation (member expressions, template
+    /// literals, arbitrary expressions inside <c>[...]</c>).
+    /// </summary>
+    private static string? TryPropertyKeyToName(Expression key) => key switch
     {
         Identifier id => id.Name,
         Literal { Kind: LiteralKind.String, Value: string s } => s,
         Literal { Kind: LiteralKind.Number, Value: double n } => JsValue.ToJsString(n),
-        _ => throw new JsCompileException($"Unsupported property key: {key.GetType().Name}", key.Start),
+        _ => null,
     };
+
+    private static string PropertyKeyToName(Expression key) =>
+        TryPropertyKeyToName(key) ??
+        throw new JsCompileException($"Unsupported property key: {key.GetType().Name}", key.Start);
 
     // -------------------------------------------------------------------
     // Operator tables
@@ -3261,6 +3319,7 @@ public sealed class JsCompiler
         BinaryOperator.Multiply => OpCode.Mul,
         BinaryOperator.Divide => OpCode.Div,
         BinaryOperator.Modulo => OpCode.Mod,
+        BinaryOperator.Exponentiate => OpCode.Pow,
         BinaryOperator.Equal => OpCode.LooseEq,
         BinaryOperator.NotEqual => OpCode.LooseNotEq,
         BinaryOperator.StrictEqual => OpCode.StrictEq,

@@ -65,6 +65,17 @@ public sealed class JsLexer
     private int _braceDepth;
     private readonly List<int> _templateStack = new();
 
+    /// <summary>
+    /// Kind of the most recent non-trivia token we emitted,
+    /// or <see cref="JsTokenKind.Unknown"/> at start of
+    /// input. Used for the context-sensitive <c>/</c>
+    /// disambiguation: at a position where a regex literal
+    /// is valid (after <c>(</c>, <c>,</c>, <c>return</c>, ...),
+    /// a slash starts a regex; otherwise it's division.
+    /// This is the classic JS lexer ambiguity.
+    /// </summary>
+    private JsTokenKind _prevKind = JsTokenKind.Unknown;
+
     public JsLexer(string source)
     {
         _src = source ?? throw new ArgumentNullException(nameof(source));
@@ -76,6 +87,16 @@ public sealed class JsLexer
     /// lexer does not buffer — call this in a loop.
     /// </summary>
     public JsToken Next()
+    {
+        var tok = NextInternal();
+        if (tok.Kind != JsTokenKind.EndOfFile)
+        {
+            _prevKind = tok.Kind;
+        }
+        return tok;
+    }
+
+    private JsToken NextInternal()
     {
         SkipTrivia();
 
@@ -313,6 +334,133 @@ public sealed class JsLexer
     // Numbers
     // -------------------------------------------------------------------
 
+    // -------------------------------------------------------------------
+    // Regex literals — context-sensitive.
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Classic JS "can a regex start here?" check, driven
+    /// by the most recent token kind. A regex is legal
+    /// after:
+    /// <list type="bullet">
+    /// <item>Start of input (<see cref="JsTokenKind.Unknown"/>)</item>
+    /// <item>Opening delimiters: <c>(</c>, <c>[</c>, <c>{</c>,
+    ///   <c>,</c>, <c>;</c>, <c>:</c>, <c>?</c></item>
+    /// <item>Operators that can't precede an rvalue division:
+    ///   assignment, arithmetic, bitwise, logical, equality,
+    ///   relational, <c>typeof</c> / <c>delete</c> / <c>void</c>
+    ///   / <c>return</c> / <c>throw</c> / <c>new</c>
+    ///   / <c>in</c> / <c>instanceof</c> / <c>yield</c>
+    ///   / <c>await</c> / <c>case</c></item>
+    /// </list>
+    /// Everything else (identifiers, numbers, <c>)</c>,
+    /// <c>]</c>, postfix <c>++</c>, etc.) means division.
+    /// </summary>
+    private static bool CanStartRegex(JsTokenKind prev) => prev switch
+    {
+        // Start of input.
+        JsTokenKind.Unknown => true,
+        // Structural openers + punctuation that can't be followed
+        // by a division continuation.
+        JsTokenKind.LeftParen or JsTokenKind.LeftBracket or
+        JsTokenKind.LeftBrace or JsTokenKind.RightBrace or
+        JsTokenKind.Comma or JsTokenKind.Semicolon or
+        JsTokenKind.Colon or JsTokenKind.QuestionMark or
+        JsTokenKind.Arrow or JsTokenKind.DotDotDot => true,
+        // All assignment operators.
+        JsTokenKind.Assign or JsTokenKind.PlusAssign or
+        JsTokenKind.MinusAssign or JsTokenKind.StarAssign or
+        JsTokenKind.SlashAssign or JsTokenKind.PercentAssign or
+        JsTokenKind.LeftShiftAssign or JsTokenKind.RightShiftAssign or
+        JsTokenKind.UnsignedRightShiftAssign or
+        JsTokenKind.AmpersandAssign or JsTokenKind.PipeAssign or
+        JsTokenKind.CaretAssign or JsTokenKind.AmpersandAmpersandAssign or
+        JsTokenKind.PipePipeAssign or JsTokenKind.QuestionQuestionAssign => true,
+        // Arithmetic, bitwise, logical, relational, equality.
+        JsTokenKind.Plus or JsTokenKind.Minus or JsTokenKind.Star or
+        JsTokenKind.Slash or JsTokenKind.Percent or
+        JsTokenKind.LeftShift or JsTokenKind.RightShift or
+        JsTokenKind.UnsignedRightShift or
+        JsTokenKind.Ampersand or JsTokenKind.Pipe or JsTokenKind.Caret or
+        JsTokenKind.Tilde or JsTokenKind.Exclamation or
+        JsTokenKind.AmpersandAmpersand or JsTokenKind.PipePipe or
+        JsTokenKind.QuestionQuestion or
+        JsTokenKind.LessThan or JsTokenKind.GreaterThan or
+        JsTokenKind.LessThanEqual or JsTokenKind.GreaterThanEqual or
+        JsTokenKind.Equal or JsTokenKind.NotEqual or
+        JsTokenKind.StrictEqual or JsTokenKind.StrictNotEqual => true,
+        // Keywords that can't be followed by a division.
+        JsTokenKind.KeywordReturn or JsTokenKind.KeywordTypeof or
+        JsTokenKind.KeywordDelete or JsTokenKind.KeywordVoid or
+        JsTokenKind.KeywordNew or JsTokenKind.KeywordIn or
+        JsTokenKind.KeywordInstanceof or JsTokenKind.KeywordThrow or
+        JsTokenKind.KeywordCase or JsTokenKind.KeywordYield or
+        JsTokenKind.KeywordDo or JsTokenKind.KeywordElse => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Scan <c>/pattern/flags</c> starting at the <c>/</c>
+    /// already at <see cref="_pos"/>. The pattern is
+    /// terminated by an unescaped <c>/</c> not inside a
+    /// character class. <c>\</c> escapes the next character,
+    /// <c>[</c> enters a character class until the matching
+    /// <c>]</c>, and inside a class <c>/</c> is literal.
+    /// The trailing flag run is any contiguous sequence of
+    /// identifier characters.
+    /// </summary>
+    private JsToken ScanRegExpLiteral(int start)
+    {
+        _pos++; // consume the opening '/'
+        int bodyStart = _pos;
+        bool inClass = false;
+        while (_pos < _src.Length)
+        {
+            char ch = _src[_pos];
+            if (ch == '\n' || ch == '\r')
+            {
+                // Unterminated — spec forbids line terminators
+                // inside a regex body. Fall back to an Unknown
+                // token so the parser reports a sensible error.
+                return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+            }
+            if (ch == '\\' && _pos + 1 < _src.Length)
+            {
+                // Skip the escaped character verbatim.
+                _pos += 2;
+                continue;
+            }
+            if (ch == '[') inClass = true;
+            else if (ch == ']') inClass = false;
+            else if (ch == '/' && !inClass)
+            {
+                break;
+            }
+            _pos++;
+        }
+        if (_pos >= _src.Length || _src[_pos] != '/')
+        {
+            return new JsToken(JsTokenKind.Unknown, start, _pos - start);
+        }
+        int bodyEnd = _pos;
+        _pos++; // consume the closing '/'
+
+        int flagStart = _pos;
+        while (_pos < _src.Length && IsIdentifierPart(_src[_pos]))
+        {
+            _pos++;
+        }
+
+        var body = _src[bodyStart..bodyEnd];
+        var flags = _src[flagStart.._pos];
+        // Store as "body|flags" so the parser can split. The
+        // pipe can't appear in a flag run (only letters are
+        // valid flags) so it's safe as a separator.
+        var payload = body + "|" + flags;
+        return new JsToken(JsTokenKind.RegExpLiteral, start, _pos - start,
+            stringValue: payload);
+    }
+
     private JsToken ScanNumber(int start)
     {
         // Hex (0x or 0X).
@@ -331,17 +479,30 @@ public sealed class JsLexer
             }
 
             var hexText = _src[digitStart.._pos];
+            // BigInt hex suffix: `0x1fn`. Emit as a BigIntLiteral
+            // with the digit text stashed in StringValue so the
+            // parser can build a BigInteger via TryParse.
+            if (_pos < _src.Length && _src[_pos] == 'n')
+            {
+                _pos++;
+                return new JsToken(JsTokenKind.BigIntLiteral, start, _pos - start,
+                    stringValue: "0x" + hexText);
+            }
             double hexValue = (double)long.Parse(hexText, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             return new JsToken(JsTokenKind.NumberLiteral, start, _pos - start, numberValue: hexValue);
         }
 
         // Decimal integer part. '.5' and '0.5' both land here because
         // the caller routed leading-dot numbers to ScanNumber.
+        int intStart = _pos;
         while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
+        int intEnd = _pos;
+        bool hasFractionOrExp = false;
 
         // Fractional part.
         if (_pos < _src.Length && _src[_pos] == '.')
         {
+            hasFractionOrExp = true;
             _pos++;
             while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
         }
@@ -349,6 +510,7 @@ public sealed class JsLexer
         // Exponent.
         if (_pos < _src.Length && (_src[_pos] == 'e' || _src[_pos] == 'E'))
         {
+            hasFractionOrExp = true;
             _pos++;
             if (_pos < _src.Length && (_src[_pos] == '+' || _src[_pos] == '-')) _pos++;
             int expStart = _pos;
@@ -357,6 +519,16 @@ public sealed class JsLexer
             {
                 return new JsToken(JsTokenKind.Unknown, start, _pos - start);
             }
+        }
+
+        // BigInt decimal suffix: `42n`. Only allowed on integer
+        // literals — `3.14n` is a syntax error per spec.
+        if (!hasFractionOrExp && _pos < _src.Length && _src[_pos] == 'n')
+        {
+            var digitText = _src[intStart..intEnd];
+            _pos++;
+            return new JsToken(JsTokenKind.BigIntLiteral, start, _pos - start,
+                stringValue: digitText);
         }
 
         var text = _src[start.._pos];
@@ -803,6 +975,21 @@ public sealed class JsLexer
                 return new JsToken(JsTokenKind.Minus, start, 1);
 
             case '*':
+                if (Peek(1) == '*')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        // **= (exponent-assign) — not yet wired as
+                        // a compound operator; lex it so the parser
+                        // can reject it with a clear error instead
+                        // of a confusing "unexpected Star".
+                        return new JsToken(JsTokenKind.StarStar, start, 2);
+                        // TODO: StarStarAssign token + wiring
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.StarStar, start, 2);
+                }
                 if (Peek(1) == '=')
                 {
                     _pos += 2;
@@ -812,8 +999,13 @@ public sealed class JsLexer
                 return new JsToken(JsTokenKind.Star, start, 1);
 
             case '/':
-                // Note: regex literals are context-sensitive and not
-                // yet supported — '/' always lexes as division.
+                // Context-sensitive disambiguation: at a position
+                // where a regex literal is valid, scan /pattern/flags.
+                // Otherwise treat as division (or /= compound assign).
+                if (CanStartRegex(_prevKind))
+                {
+                    return ScanRegExpLiteral(start);
+                }
                 if (Peek(1) == '=')
                 {
                     _pos += 2;

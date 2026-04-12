@@ -929,9 +929,16 @@ public sealed class JsParser
         {
             int cStart = Current.Start;
             Consume(); // catch
-            Expect(JsTokenKind.LeftParen, "catch");
-            var param = ParseBindingIdentifier();
-            Expect(JsTokenKind.RightParen, "catch");
+            // ES2019 optional catch binding: `catch { ... }`
+            // without a parameter. The catch body still runs
+            // but the thrown value isn't bound to a name.
+            Identifier? param = null;
+            if (Current.Kind == JsTokenKind.LeftParen)
+            {
+                Consume();
+                param = ParseBindingIdentifier();
+                Expect(JsTokenKind.RightParen, "catch");
+            }
             var body = ParseBlockStatement();
             handler = new CatchClause(cStart, body.End, param, body);
         }
@@ -1096,6 +1103,8 @@ public sealed class JsParser
             list.Add(ParseFunctionParameter());
             while (Match(JsTokenKind.Comma))
             {
+                // ES2017 trailing comma: `(a, b,) => ...`
+                if (Current.Kind == JsTokenKind.RightParen) break;
                 // A rest parameter must be the last entry — disallow
                 // a trailing comma after one or another param after it.
                 if (list[list.Count - 1].IsRest)
@@ -1282,9 +1291,18 @@ public sealed class JsParser
         }
         else
         {
-            // Non-static fields aren't supported yet —
-            // instance fields need constructor-time init.
-            return false;
+            // Instance field: `name = expr;`. Detect by
+            // peeking: if the current token is an identifier
+            // and the NEXT token is `=`, `;`, or `}`, it's a
+            // field not a method.
+            if (Current.Kind != JsTokenKind.Identifier) return false;
+            var afterName = Peek(1).Kind;
+            if (afterName != JsTokenKind.Assign &&
+                afterName != JsTokenKind.Semicolon &&
+                afterName != JsTokenKind.RightBrace)
+            {
+                return false;
+            }
         }
 
         if (Current.Kind != JsTokenKind.Identifier)
@@ -1367,8 +1385,11 @@ public sealed class JsParser
         }
 
         // Method name — accept a plain Identifier, or a
-        // contextual keyword that would otherwise be reserved
-        // (like "static" standalone as a method name fallback).
+        // ES2015+: any keyword is a valid method name in a
+        // class body — `class { export() {}, import() {},
+        // default() {}, delete() {} }` are all legal. We
+        // accept identifiers, keywords, and literal tokens
+        // (true / false / null) as method names.
         string methodName;
         int keyStart = Current.Start;
         int keyEnd = Current.End;
@@ -1376,6 +1397,32 @@ public sealed class JsParser
         {
             var tok = Consume();
             methodName = tok.StringValue!;
+        }
+        else if (IsKeyword(Current.Kind) ||
+                 Current.Kind is JsTokenKind.TrueLiteral or
+                                 JsTokenKind.FalseLiteral or
+                                 JsTokenKind.NullLiteral)
+        {
+            var tok = Consume();
+            methodName = _source.Substring(tok.Start, tok.Length);
+        }
+        else if (Current.Kind == JsTokenKind.StringLiteral)
+        {
+            var tok = Consume();
+            methodName = tok.StringValue!;
+        }
+        else if (Current.Kind == JsTokenKind.NumberLiteral)
+        {
+            var tok = Consume();
+            methodName = JsValue.ToJsString(tok.NumberValue);
+        }
+        else if (Current.Kind == JsTokenKind.LeftBracket)
+        {
+            // Computed method name: `class { [expr]() {} }`
+            Consume();
+            var expr = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightBracket, "computed method name");
+            methodName = "[computed]"; // placeholder
         }
         else
         {
@@ -1637,18 +1684,13 @@ public sealed class JsParser
             return ParseYieldExpression(allowIn);
         }
 
-        // ES2017: AwaitExpression — only legal inside async
-        // function bodies. Same expression-level placement as
-        // yield. `await` is a contextual keyword (a plain
-        // Identifier token outside async bodies).
-        if (_inAsyncBody &&
-            Current.Kind == JsTokenKind.Identifier &&
-            Current.StringValue == "await" &&
-            CanStartExpression(Peek(1).Kind) &&
-            !_hasLineBefore[_pos + 1])
-        {
-            return ParseAwaitExpression(allowIn);
-        }
+        // Note: `await` is handled in ParseUnaryExpression so
+        // it participates correctly in binary expressions:
+        // `await fn() && other` parses as `(await fn()) && other`,
+        // not as `await (fn() && other)`. Previously this check
+        // was here in ParseAssignmentExpression, which caused a
+        // short-circuit return that never reached the binary
+        // expression parser.
 
         var arrow = TryParseArrowFunction(allowIn);
         if (arrow is not null) return arrow;
@@ -1897,7 +1939,11 @@ public sealed class JsParser
 
             var opKind = Current.Kind;
             Consume();
-            var right = ParseBinaryExpression(prec + 1, allowIn);
+            // Right-associative operators (only `**` for now)
+            // use the same prec for the right side so
+            // `a ** b ** c` = `a ** (b ** c)`.
+            int rightPrec = opKind == JsTokenKind.StarStar ? prec : prec + 1;
+            var right = ParseBinaryExpression(rightPrec, allowIn);
 
             if (opKind == JsTokenKind.AmpersandAmpersand)
             {
@@ -1923,6 +1969,21 @@ public sealed class JsParser
     private Expression ParseUnaryExpression()
     {
         int start = Current.Start;
+
+        // await as a unary prefix — recognized in any
+        // expression position so `x && await y` works
+        // even when the `await` appears as the right
+        // operand of a binary expression (which routes
+        // through ParseUnaryExpression, not
+        // ParseAssignmentExpression where the first await
+        // check lives).
+        if (Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "await" &&
+            CanStartExpression(Peek(1).Kind))
+        {
+            return ParseAwaitExpression(allowIn: true);
+        }
+
         UnaryOperator? unaryOp = Current.Kind switch
         {
             JsTokenKind.KeywordDelete => UnaryOperator.Delete,
@@ -2157,6 +2218,9 @@ public sealed class JsParser
             args.Add(ParseArgumentOrSpread());
             while (Match(JsTokenKind.Comma))
             {
+                // ES2017 trailing comma: `f(a, b, )` — the
+                // comma before `)` is legal and ignored.
+                if (Current.Kind == JsTokenKind.RightParen) break;
                 args.Add(ParseArgumentOrSpread());
             }
         }
@@ -2223,6 +2287,16 @@ public sealed class JsParser
             case JsTokenKind.NumberLiteral:
                 Consume();
                 return new Literal(tok.Start, tok.End, LiteralKind.Number, tok.NumberValue);
+
+            case JsTokenKind.BigIntLiteral:
+                Consume();
+                return new Literal(tok.Start, tok.End, LiteralKind.BigInt,
+                    ParseBigIntLiteralValue(tok));
+
+            case JsTokenKind.RegExpLiteral:
+                Consume();
+                return new Literal(tok.Start, tok.End, LiteralKind.RegExp,
+                    BuildRegExpLiteralValue(tok));
 
             case JsTokenKind.StringLiteral:
                 Consume();
@@ -2432,7 +2506,41 @@ public sealed class JsParser
             var valueId = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
             return new Property(start, idTok.End, keyId, valueId, PropertyKind.Init);
         }
+        // Check for async method shorthand: `{ async foo() {} }`
+        bool isAsync = false;
+        bool isGenerator = false;
+        if (Current.Kind == JsTokenKind.Identifier && Current.StringValue == "async" &&
+            Peek(1).Kind == JsTokenKind.Identifier)
+        {
+            isAsync = true;
+            Consume(); // skip 'async'
+        }
+        if (Current.Kind == JsTokenKind.Star)
+        {
+            isGenerator = true;
+            Consume(); // skip '*'
+        }
+
         var key = ParsePropertyName(keywordsAllowed: true);
+
+        // ES2015 shorthand method: `{ foo() {} }` is sugar
+        // for `{ foo: function foo() {} }`. Detected when the
+        // next token after the property name is `(` instead of
+        // `:`. Also handles `{ async foo() {} }` and
+        // `{ *gen() {} }` generator methods.
+        if (Current.Kind == JsTokenKind.LeftParen)
+        {
+            var paramList = ParseFormalParameters();
+            var body = ParseFunctionBody();
+            var fn = new FunctionExpression(
+                start, body.End,
+                id: key is Identifier nameId ? nameId : null,
+                paramList, body,
+                isGenerator: isGenerator,
+                isAsync: isAsync);
+            return new Property(start, body.End, key, fn, PropertyKind.Init);
+        }
+
         Expect(JsTokenKind.Colon, "object property");
         var value = ParseAssignmentExpression(allowIn: true);
         return new Property(start, value.End, key, value, PropertyKind.Init);
@@ -2485,6 +2593,25 @@ public sealed class JsParser
             var text = _source.Substring(tok.Start, tok.Length);
             return new Identifier(tok.Start, tok.End, text);
         }
+        // ES5+ allows literal tokens (true / false / null) as
+        // property names in object literals and member access
+        // (`{true: 1}`, `obj.default`, etc.).
+        if (keywordsAllowed && tok.Kind is JsTokenKind.TrueLiteral
+                                       or JsTokenKind.FalseLiteral
+                                       or JsTokenKind.NullLiteral)
+        {
+            Consume();
+            var text = _source.Substring(tok.Start, tok.Length);
+            return new Identifier(tok.Start, tok.End, text);
+        }
+        // Computed property names: `{ [expr]: value }` — ES2015
+        if (tok.Kind == JsTokenKind.LeftBracket)
+        {
+            Consume();
+            var expr = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightBracket, "computed property name");
+            return expr;
+        }
         throw new JsParseException(
             $"Expected property name, got {tok.Kind}",
             tok.Start);
@@ -2523,6 +2650,7 @@ public sealed class JsParser
             or JsTokenKind.UnsignedRightShift => 11,
         JsTokenKind.Plus or JsTokenKind.Minus => 12,
         JsTokenKind.Star or JsTokenKind.Slash or JsTokenKind.Percent => 13,
+        JsTokenKind.StarStar => 14, // exponentiation — right-associative
         _ => 0,
     };
 
@@ -2546,11 +2674,57 @@ public sealed class JsParser
         JsTokenKind.Star => BinaryOperator.Multiply,
         JsTokenKind.Slash => BinaryOperator.Divide,
         JsTokenKind.Percent => BinaryOperator.Modulo,
+        JsTokenKind.StarStar => BinaryOperator.Exponentiate,
         JsTokenKind.Ampersand => BinaryOperator.BitwiseAnd,
         JsTokenKind.Pipe => BinaryOperator.BitwiseOr,
         JsTokenKind.Caret => BinaryOperator.BitwiseXor,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not a binary operator"),
     };
+
+    /// <summary>
+    /// Build a <see cref="JsRegExp"/> from the
+    /// <c>pattern|flags</c> payload the lexer stashed on
+    /// a <see cref="JsTokenKind.RegExpLiteral"/> token.
+    /// The parser doesn't compile the backend regex — that
+    /// happens lazily on first use inside
+    /// <see cref="JsRegExp.Compile"/>.
+    /// </summary>
+    private static JsRegExp BuildRegExpLiteralValue(JsToken tok)
+    {
+        var payload = tok.StringValue ?? "|";
+        int pipeIdx = payload.LastIndexOf('|');
+        string pattern = pipeIdx < 0 ? payload : payload.Substring(0, pipeIdx);
+        string flags = pipeIdx < 0 ? "" : payload.Substring(pipeIdx + 1);
+        return new JsRegExp(pattern, flags);
+    }
+
+    /// <summary>
+    /// Convert the digit text captured by the lexer's
+    /// <see cref="JsTokenKind.BigIntLiteral"/> token into a
+    /// <see cref="System.Numerics.BigInteger"/>. Accepts the
+    /// canonical decimal form (<c>42</c>) and the hex form
+    /// (<c>0x1f</c>) — the lexer handles the <c>n</c> suffix
+    /// before handing the text off here.
+    /// </summary>
+    private static System.Numerics.BigInteger ParseBigIntLiteralValue(JsToken tok)
+    {
+        var text = tok.StringValue ?? "0";
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            // BigInteger.Parse requires a leading 0 to
+            // interpret the value as unsigned; the spec
+            // guarantees BigInt literals are non-negative.
+            var hexDigits = "0" + text.Substring(2);
+            return System.Numerics.BigInteger.Parse(
+                hexDigits,
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return System.Numerics.BigInteger.Parse(
+            text,
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     private static AssignmentOperator? ToAssignmentOperator(JsTokenKind kind) => kind switch
     {

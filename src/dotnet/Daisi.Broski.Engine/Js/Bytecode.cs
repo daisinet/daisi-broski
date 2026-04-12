@@ -495,6 +495,19 @@ public enum OpCode : byte
     /// </summary>
     JumpIfNotNullishKeep,
 
+    /// <summary>
+    /// Pop a flags string and a pattern string from the
+    /// stack and push a fresh <see cref="JsRegExp"/>.
+    /// Emitted for regex literals so each evaluation of
+    /// <c>/pat/flags</c> produces an independent instance
+    /// with its own <c>lastIndex</c> — matching the spec's
+    /// §22.2.5 semantics where a regex literal is a fresh
+    /// object every time control reaches it.
+    /// </summary>
+    NewRegExp,
+    /// <summary>ES2016 exponentiation <c>a ** b</c>.</summary>
+    Pow,
+
     // ---- Program completion ----
     /// <summary>
     /// Pops the top of stack and stores it as the VM's completion

@@ -251,31 +251,40 @@ public class JsLexerTests
     [Fact]
     public void Single_char_punctuators()
     {
-        var tokens = Lex("( ) { } [ ] ; , : ? ~ + - * / % & | ^ ! = < >");
+        // The `/` punctuator is context-sensitive — a
+        // slash after an operator is a regex literal, not
+        // division. This test keeps the input as a
+        // realistic expression (identifier-operator-
+        // identifier pattern) so every punctuator appears
+        // in a position that resolves unambiguously.
+        var tokens = Lex("a ( ) { } [ ] ; , : ? ~ + - * a / a % & | ^ ! = < >");
         var kinds = tokens.Select(t => t.Kind).ToArray();
-        Assert.Equal(JsTokenKind.LeftParen, kinds[0]);
-        Assert.Equal(JsTokenKind.RightParen, kinds[1]);
-        Assert.Equal(JsTokenKind.LeftBrace, kinds[2]);
-        Assert.Equal(JsTokenKind.RightBrace, kinds[3]);
-        Assert.Equal(JsTokenKind.LeftBracket, kinds[4]);
-        Assert.Equal(JsTokenKind.RightBracket, kinds[5]);
-        Assert.Equal(JsTokenKind.Semicolon, kinds[6]);
-        Assert.Equal(JsTokenKind.Comma, kinds[7]);
-        Assert.Equal(JsTokenKind.Colon, kinds[8]);
-        Assert.Equal(JsTokenKind.QuestionMark, kinds[9]);
-        Assert.Equal(JsTokenKind.Tilde, kinds[10]);
-        Assert.Equal(JsTokenKind.Plus, kinds[11]);
-        Assert.Equal(JsTokenKind.Minus, kinds[12]);
-        Assert.Equal(JsTokenKind.Star, kinds[13]);
-        Assert.Equal(JsTokenKind.Slash, kinds[14]);
-        Assert.Equal(JsTokenKind.Percent, kinds[15]);
-        Assert.Equal(JsTokenKind.Ampersand, kinds[16]);
-        Assert.Equal(JsTokenKind.Pipe, kinds[17]);
-        Assert.Equal(JsTokenKind.Caret, kinds[18]);
-        Assert.Equal(JsTokenKind.Exclamation, kinds[19]);
-        Assert.Equal(JsTokenKind.Assign, kinds[20]);
-        Assert.Equal(JsTokenKind.LessThan, kinds[21]);
-        Assert.Equal(JsTokenKind.GreaterThan, kinds[22]);
+        Assert.Equal(JsTokenKind.Identifier, kinds[0]);
+        Assert.Equal(JsTokenKind.LeftParen, kinds[1]);
+        Assert.Equal(JsTokenKind.RightParen, kinds[2]);
+        Assert.Equal(JsTokenKind.LeftBrace, kinds[3]);
+        Assert.Equal(JsTokenKind.RightBrace, kinds[4]);
+        Assert.Equal(JsTokenKind.LeftBracket, kinds[5]);
+        Assert.Equal(JsTokenKind.RightBracket, kinds[6]);
+        Assert.Equal(JsTokenKind.Semicolon, kinds[7]);
+        Assert.Equal(JsTokenKind.Comma, kinds[8]);
+        Assert.Equal(JsTokenKind.Colon, kinds[9]);
+        Assert.Equal(JsTokenKind.QuestionMark, kinds[10]);
+        Assert.Equal(JsTokenKind.Tilde, kinds[11]);
+        Assert.Equal(JsTokenKind.Plus, kinds[12]);
+        Assert.Equal(JsTokenKind.Minus, kinds[13]);
+        Assert.Equal(JsTokenKind.Star, kinds[14]);
+        // kinds[15] is the second `a`
+        Assert.Equal(JsTokenKind.Slash, kinds[16]);
+        // kinds[17] is the third `a`
+        Assert.Equal(JsTokenKind.Percent, kinds[18]);
+        Assert.Equal(JsTokenKind.Ampersand, kinds[19]);
+        Assert.Equal(JsTokenKind.Pipe, kinds[20]);
+        Assert.Equal(JsTokenKind.Caret, kinds[21]);
+        Assert.Equal(JsTokenKind.Exclamation, kinds[22]);
+        Assert.Equal(JsTokenKind.Assign, kinds[23]);
+        Assert.Equal(JsTokenKind.LessThan, kinds[24]);
+        Assert.Equal(JsTokenKind.GreaterThan, kinds[25]);
     }
 
     [Fact]
@@ -332,14 +341,17 @@ public class JsLexerTests
     [Fact]
     public void Compound_assignment_operators()
     {
-        Assert.Equal(JsTokenKind.PlusAssign, Lex("+=")[0].Kind);
-        Assert.Equal(JsTokenKind.MinusAssign, Lex("-=")[0].Kind);
-        Assert.Equal(JsTokenKind.StarAssign, Lex("*=")[0].Kind);
-        Assert.Equal(JsTokenKind.SlashAssign, Lex("/=")[0].Kind);
-        Assert.Equal(JsTokenKind.PercentAssign, Lex("%=")[0].Kind);
-        Assert.Equal(JsTokenKind.AmpersandAssign, Lex("&=")[0].Kind);
-        Assert.Equal(JsTokenKind.PipeAssign, Lex("|=")[0].Kind);
-        Assert.Equal(JsTokenKind.CaretAssign, Lex("^=")[0].Kind);
+        // Prefix each expression with `a` so `/=` lexes as
+        // division-assign rather than the start of a regex
+        // literal at position 0 of the input.
+        Assert.Equal(JsTokenKind.PlusAssign, Lex("a+=")[1].Kind);
+        Assert.Equal(JsTokenKind.MinusAssign, Lex("a-=")[1].Kind);
+        Assert.Equal(JsTokenKind.StarAssign, Lex("a*=")[1].Kind);
+        Assert.Equal(JsTokenKind.SlashAssign, Lex("a/=")[1].Kind);
+        Assert.Equal(JsTokenKind.PercentAssign, Lex("a%=")[1].Kind);
+        Assert.Equal(JsTokenKind.AmpersandAssign, Lex("a&=")[1].Kind);
+        Assert.Equal(JsTokenKind.PipeAssign, Lex("a|=")[1].Kind);
+        Assert.Equal(JsTokenKind.CaretAssign, Lex("a^=")[1].Kind);
     }
 
     [Fact]

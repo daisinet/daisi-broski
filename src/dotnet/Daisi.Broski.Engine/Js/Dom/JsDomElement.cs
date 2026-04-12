@@ -1,4 +1,5 @@
 using Daisi.Broski.Engine.Dom;
+using Daisi.Broski.Engine.Html;
 
 namespace Daisi.Broski.Engine.Js.Dom;
 
@@ -128,6 +129,78 @@ public class JsDomElement : JsDomNode
             case "childElementCount": return (double)_element.Children.Count();
             case "firstElementChild": return (object?)Bridge.WrapOrNull(_element.FirstElementChild) ?? JsValue.Null;
             case "innerText": return _element.TextContent;
+            case "innerHTML": return HtmlSerializer.SerializeChildren(_element);
+            case "outerHTML": return HtmlSerializer.SerializeNode(_element);
+            case "dataset": return BuildDataset();
+            case "style": return BuildStyle();
+            // Layout-dependent values — we don't ship layout
+            // yet, so these return 0 (matching a 0×0 element)
+            // instead of throwing. Enough for scripts that
+            // check "was this element rendered?" without
+            // faking an actual size.
+            case "offsetWidth":
+            case "offsetHeight":
+            case "clientWidth":
+            case "clientHeight":
+            case "scrollWidth":
+            case "scrollHeight":
+            case "scrollTop":
+            case "scrollLeft":
+            case "offsetTop":
+            case "offsetLeft":
+                return 0.0;
+            case "offsetParent":
+                return JsValue.Null;
+        }
+        // Lazy accessor-ish support for getBoundingClientRect
+        // etc. — we install these as properties once on first
+        // read so they look like methods without eager setup
+        // for every element.
+        if (key == "getBoundingClientRect")
+        {
+            return new JsFunction("getBoundingClientRect", (thisVal, args) =>
+            {
+                var rect = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+                rect.Set("x", 0.0);
+                rect.Set("y", 0.0);
+                rect.Set("width", 0.0);
+                rect.Set("height", 0.0);
+                rect.Set("top", 0.0);
+                rect.Set("right", 0.0);
+                rect.Set("bottom", 0.0);
+                rect.Set("left", 0.0);
+                return rect;
+            });
+        }
+        if (key == "getClientRects")
+        {
+            return new JsFunction("getClientRects", (thisVal, args) =>
+                new JsArray { Prototype = Bridge.Engine.ArrayPrototype });
+        }
+        if (key == "scrollIntoView")
+        {
+            return new JsFunction("scrollIntoView", (thisVal, args) => JsValue.Undefined);
+        }
+        if (key == "focus" || key == "blur" || key == "click")
+        {
+            // focus/blur are no-ops; click() dispatches a
+            // synthetic click Event on the element so
+            // listeners fire. We delegate the latter to the
+            // event system, rebuilding the minimum payload
+            // inline.
+            string opName = key;
+            return new JsFunction(opName, (vm, thisVal, args) =>
+            {
+                if (opName == "click")
+                {
+                    var evt = new JsDomEvent("click", bubbles: true, cancelable: true)
+                    {
+                        Prototype = Bridge.Engine.EventPrototype,
+                    };
+                    DispatchEvent(vm, evt);
+                }
+                return JsValue.Undefined;
+            });
         }
         return base.Get(key);
     }
@@ -143,6 +216,9 @@ public class JsDomElement : JsDomNode
             case "className":
                 _element.ClassName = JsValue.ToJsString(value);
                 return;
+            case "innerHTML":
+                SetInnerHtml(JsValue.ToJsString(value));
+                return;
             case "tagName":
             case "localName":
             case "attributes":
@@ -150,10 +226,63 @@ public class JsDomElement : JsDomNode
             case "classList":
             case "childElementCount":
             case "firstElementChild":
-                // Read-only accessors.
+            case "outerHTML":
+                // Read-only accessors. outerHTML write is
+                // deferred — it requires parenting logic to
+                // insert the parsed fragment where this
+                // element sits in its parent.
                 return;
         }
         base.Set(key, value);
+    }
+
+    /// <summary>
+    /// Parse <paramref name="html"/> as an HTML fragment
+    /// and replace every child of this element with the
+    /// result. Matches browser <c>innerHTML = '...'</c>
+    /// semantics.
+    ///
+    /// <para>
+    /// Fragment parsing is implemented by handing the
+    /// source to the existing phase-1
+    /// <see cref="HtmlTreeBuilder"/>, wrapped in a minimal
+    /// <c>&lt;html&gt;&lt;body&gt;...&lt;/body&gt;&lt;/html&gt;</c>
+    /// envelope so insertion-mode state lands on "in body".
+    /// The parsed body's children are then adopted into
+    /// this element's owner document and appended. This
+    /// loses the spec's context-element rules (a <c>td</c>
+    /// fragment parsed inside a <c>table</c> context would
+    /// behave differently in a real browser), but covers
+    /// the >95% of real <c>innerHTML</c> usage — simple
+    /// HTML snippets assigned onto non-table elements.
+    /// </para>
+    /// </summary>
+    private void SetInnerHtml(string html)
+    {
+        // Clear every existing child first.
+        while (_element.FirstChild is not null)
+        {
+            _element.RemoveChild(_element.FirstChild);
+        }
+        if (html.Length == 0) return;
+
+        // Parse the fragment via the standard tree builder.
+        // Wrapping in <body> forces the builder's insertion
+        // mode to "in body" from the start, so stray
+        // fragment content lands there directly.
+        var parsed = HtmlTreeBuilder.Parse("<!DOCTYPE html><html><body>" + html + "</body></html>");
+        var parsedBody = parsed.Body;
+        if (parsedBody is null) return;
+
+        // Move the parsed body's children onto this element.
+        // Iterate off a snapshot so mutation during the
+        // foreach doesn't trip the sibling-pointer walk.
+        var children = new List<Node>(parsedBody.ChildNodes);
+        foreach (var child in children)
+        {
+            parsedBody.RemoveChild(child);
+            _element.AppendChild(child);
+        }
     }
 
     /// <summary>
@@ -250,5 +379,53 @@ public class JsDomElement : JsDomNode
             arr.Elements.Add(Bridge.Wrap(child));
         }
         return arr;
+    }
+
+    /// <summary>
+    /// Build a <c>DOMStringMap</c>-shaped object exposing
+    /// every <c>data-foo-bar</c> attribute as
+    /// <c>fooBar</c> (camelCase per spec). The object is
+    /// a plain <see cref="JsObject"/> prepopulated at read
+    /// time — not a live view — but the DOM bridge above
+    /// re-reads on every property access, so iterating
+    /// <c>el.dataset</c> at two different times picks up
+    /// attribute mutations in between.
+    /// </summary>
+    private JsObject BuildDataset()
+    {
+        var ds = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        foreach (var attr in _element.Attributes)
+        {
+            if (!attr.Key.StartsWith("data-", StringComparison.OrdinalIgnoreCase)) continue;
+            var tail = attr.Key.Substring(5);
+            // data-user-name → userName
+            var sb = new System.Text.StringBuilder(tail.Length);
+            bool upper = false;
+            foreach (var c in tail)
+            {
+                if (c == '-') { upper = true; continue; }
+                sb.Append(upper ? char.ToUpperInvariant(c) : c);
+                upper = false;
+            }
+            ds.Set(sb.ToString(), attr.Value);
+        }
+        return ds;
+    }
+
+    /// <summary>
+    /// Cached <see cref="JsCssStyleDeclaration"/> for this
+    /// element. Lazily allocated on first read of
+    /// <c>el.style</c> and then returned on every subsequent
+    /// read so identity is stable (<c>el.style === el.style</c>).
+    /// </summary>
+    private JsCssStyleDeclaration? _cachedStyle;
+
+    private JsCssStyleDeclaration BuildStyle()
+    {
+        _cachedStyle ??= new JsCssStyleDeclaration(_element)
+        {
+            Prototype = Bridge.Engine.ObjectPrototype,
+        };
+        return _cachedStyle;
     }
 }

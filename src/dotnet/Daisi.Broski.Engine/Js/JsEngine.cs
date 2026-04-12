@@ -118,6 +118,41 @@ public sealed class JsEngine
     public JsObject PromisePrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// <c>URLSearchParams.prototype</c> — installed by
+    /// <c>BuiltinUrl</c>. Exposed so <see cref="JsUrl"/>
+    /// can lazily construct its <c>searchParams</c> view
+    /// with the right prototype when script reads
+    /// <c>url.searchParams</c>.
+    /// </summary>
+    public JsObject UrlSearchParamsPrototype { get; internal set; } = null!;
+
+    /// <summary>
+    /// <c>Event.prototype</c> — installed by
+    /// <c>BuiltinDomEvents</c>. Used as the chain root for
+    /// every <c>Event</c> / <c>CustomEvent</c> instance so
+    /// <c>evt instanceof Event</c> walks the right prototype
+    /// chain.
+    /// </summary>
+    public JsObject EventPrototype { get; internal set; } = null!;
+
+    /// <summary>
+    /// <c>CustomEvent.prototype</c>. Chains to
+    /// <see cref="EventPrototype"/> so a <c>CustomEvent</c>
+    /// is also an <c>Event</c> via <c>instanceof</c>.
+    /// </summary>
+    public JsObject CustomEventPrototype { get; internal set; } = null!;
+
+    /// <summary>
+    /// <c>RegExp.prototype</c> — installed by
+    /// <c>BuiltinRegExp</c>. Exposed so the VM's
+    /// <see cref="OpCode.NewRegExp"/> handler can set
+    /// fresh <see cref="JsRegExp"/> instances' prototype
+    /// without threading a separate reference through
+    /// bytecode operands.
+    /// </summary>
+    public JsObject RegExpPrototype { get; internal set; } = null!;
+
+    /// <summary>
     /// Module cache keyed by resolved URL. Populated and
     /// read by <see cref="ImportModule"/>. A module is
     /// inserted into the cache as soon as it is created
@@ -132,6 +167,18 @@ public sealed class JsEngine
     /// Set this before calling <see cref="ImportModule"/>.
     /// </summary>
     public ModuleResolver? ModuleResolver { get; set; }
+
+    /// <summary>
+    /// Pluggable handler for the <c>fetch</c> global. The
+    /// default handler (installed at construction) wraps
+    /// the engine's <see cref="Net.HttpFetcher"/> so real
+    /// HTTPS requests run through the same phase-1 network
+    /// stack the CLI and sandbox already use. Tests install
+    /// a stub handler that returns canned responses without
+    /// touching the network, keeping the engine test suite
+    /// offline.
+    /// </summary>
+    public FetchHandler? FetchHandler { get; set; }
 
     /// <summary>
     /// Persistent VM owned by this engine. Reused across every
@@ -199,6 +246,15 @@ public sealed class JsEngine
 
         Builtins.Install(this);
 
+        // Default fetch handler: delegates to a shared
+        // HttpFetcher instance owned by the engine. Tests
+        // overwrite this with a stub before invoking any
+        // fetch from script so the suite stays offline.
+        // The HttpFetcher is lazily constructed on first
+        // use to avoid creating an HttpClient when script
+        // never touches fetch.
+        FetchHandler = DefaultFetchHandler;
+
         // Hidden global used by the compiler to implement
         // dynamic `import('./mod')`. Not enumerable under
         // any user-visible name, just under a reserved
@@ -254,12 +310,25 @@ public sealed class JsEngine
     /// new document. This matches the way a host process
     /// typically reuses one engine across page loads.
     /// </summary>
-    public void AttachDocument(Document document)
+    public void AttachDocument(Document document, Uri? pageUrl = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         AttachedDocument = document;
         DomBridge = new JsDomBridge(this);
         Globals["document"] = DomBridge.Wrap(document);
+
+        // Remember the URL the document was loaded from so
+        // `location.href` + relative-URL-resolution against
+        // `new URL('.', location.href)` produce sensible
+        // values. When no URL is given we fall back to
+        // about:blank which is what scripts see before any
+        // navigation in a real browser.
+        AttachedPageUrl = pageUrl;
+        if (Globals.TryGetValue("location", out var locVal) && locVal is JsLocation loc)
+        {
+            loc.OnPageLoaded(pageUrl);
+        }
+
         // `window` is the global object in a browser. We
         // expose a minimal shim: reads and writes go through
         // the engine's Globals dictionary, so
@@ -271,6 +340,77 @@ public sealed class JsEngine
         {
             Globals["window"] = new JsWindowProxy(this);
         }
+    }
+
+    /// <summary>
+    /// URL the currently attached document was loaded from,
+    /// or <c>null</c> when none was provided. Used by
+    /// <see cref="JsLocation"/> to back <c>location.href</c>
+    /// with a real URL so scripts that resolve
+    /// <c>new URL('.', location.href)</c> don't crash on
+    /// the about:blank placeholder.
+    /// </summary>
+    public Uri? AttachedPageUrl { get; private set; }
+
+    /// <summary>
+    /// The DOM <c>&lt;script&gt;</c> element whose source
+    /// the engine is currently evaluating, set by the host
+    /// driver around each <see cref="RunScript"/> call.
+    /// Surfaces as <c>document.currentScript</c> so
+    /// bootstrap scripts that mount next to their own
+    /// <c>&lt;script&gt;</c> tag (SvelteKit, Next.js, and
+    /// other SSR frameworks all do this) can find their
+    /// parent element.
+    /// </summary>
+    public Daisi.Broski.Engine.Dom.Element? ExecutingScript { get; set; }
+
+    /// <summary>
+    /// Shared <see cref="Net.HttpFetcher"/> for the default
+    /// fetch handler. Lazily constructed on first request
+    /// so engines that never call fetch don't pay the
+    /// <see cref="HttpClient"/> startup cost.
+    /// </summary>
+    private Net.HttpFetcher? _sharedHttpFetcher;
+
+    /// <summary>
+    /// Default implementation of <see cref="FetchHandler"/>.
+    /// Runs the request synchronously on the VM thread via
+    /// <c>.GetAwaiter().GetResult()</c> — the VM is
+    /// single-threaded anyway, so blocking here is
+    /// equivalent to the script awaiting a real promise.
+    /// Returns a <see cref="JsFetchResponse"/> populated
+    /// from the <see cref="Net.FetchResult"/>.
+    /// </summary>
+    private JsFetchResponse DefaultFetchHandler(JsFetchRequest request)
+    {
+        _sharedHttpFetcher ??= new Net.HttpFetcher();
+        if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var uri))
+        {
+            throw new ArgumentException($"Invalid URL: '{request.Url}'");
+        }
+        var result = _sharedHttpFetcher.FetchAsync(uri).GetAwaiter().GetResult();
+        var headers = new JsHeaders();
+        if (Globals.TryGetValue("Headers", out var hctor) &&
+            hctor is JsFunction hfn &&
+            hfn.Get("prototype") is JsObject hproto)
+        {
+            headers.Prototype = hproto;
+        }
+        foreach (var kv in result.Headers)
+        {
+            foreach (var value in kv.Value)
+            {
+                headers.Append(kv.Key, value);
+            }
+        }
+        return new JsFetchResponse
+        {
+            Status = (int)result.Status,
+            StatusText = result.Status.ToString(),
+            Url = result.FinalUrl.ToString(),
+            Headers = headers,
+            Body = result.Body,
+        };
     }
 
     /// <summary>

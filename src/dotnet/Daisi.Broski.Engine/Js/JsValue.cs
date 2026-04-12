@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 
 namespace Daisi.Broski.Engine.Js;
 
@@ -86,6 +87,7 @@ public static class JsValue
         if (v is JsUndefined || v is JsNull) return false;
         if (v is bool b) return b;
         if (v is double d) return d != 0 && !double.IsNaN(d);
+        if (v is BigInteger bi) return !bi.IsZero;
         if (v is string s) return s.Length > 0;
         // Objects (including arrays, functions when we add them)
         // always coerce to true — even empty arrays and boxed
@@ -168,6 +170,7 @@ public static class JsValue
         if (v is JsNull) return "null";
         if (v is bool b) return b ? "true" : "false";
         if (v is double d) return NumberToString(d);
+        if (v is BigInteger bi) return bi.ToString(CultureInfo.InvariantCulture);
         if (v is string s) return s;
         // Array.prototype.toString delegates to join(',') per spec;
         // we inline that to avoid a dependency on the built-in
@@ -228,6 +231,7 @@ public static class JsValue
         if (v is JsNull) return "object"; // historical quirk
         if (v is bool) return "boolean";
         if (v is double) return "number";
+        if (v is BigInteger) return "bigint";
         if (v is string) return "string";
         if (v is JsFunction) return "function";
         return "object";
@@ -254,6 +258,10 @@ public static class JsValue
             if (b is not double bd) return false;
             if (double.IsNaN(ad) || double.IsNaN(bd)) return false;
             return ad == bd;
+        }
+        if (a is BigInteger abi)
+        {
+            return b is BigInteger bbi && abi == bbi;
         }
         if (a is string asStr) return b is string bs && asStr == bs;
         return ReferenceEquals(a, b);
@@ -282,6 +290,33 @@ public static class JsValue
         if (a is bool) return LooseEquals(ToNumber(a), b);
         if (b is bool) return LooseEquals(a, ToNumber(b));
 
+        // BigInt on one side, Number / String on the other: spec
+        // does ordered numeric comparison via exact integer math.
+        // Finite doubles convert cleanly; NaN / infinity always
+        // compare unequal.
+        if (a is BigInteger abi && b is double bd)
+        {
+            if (double.IsNaN(bd) || double.IsInfinity(bd)) return false;
+            if (bd != Math.Truncate(bd)) return false;
+            return abi == new BigInteger(bd);
+        }
+        if (a is double ad && b is BigInteger bbi)
+        {
+            if (double.IsNaN(ad) || double.IsInfinity(ad)) return false;
+            if (ad != Math.Truncate(ad)) return false;
+            return new BigInteger(ad) == bbi;
+        }
+        if (a is BigInteger absi && b is string bsStr)
+        {
+            return BigInteger.TryParse(bsStr.Trim(), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var parsed) && absi == parsed;
+        }
+        if (a is string aStr && b is BigInteger bbsi)
+        {
+            return BigInteger.TryParse(aStr.Trim(), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var parsed) && parsed == bbsi;
+        }
+
         // Slice 3 has no objects — anything else is unequal.
         return false;
     }
@@ -292,6 +327,7 @@ public static class JsValue
         if (a is JsNull) return b is JsNull;
         if (a is bool) return b is bool;
         if (a is double) return b is double;
+        if (a is BigInteger) return b is BigInteger;
         if (a is string) return b is string;
         return a?.GetType() == b?.GetType();
     }
