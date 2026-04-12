@@ -70,6 +70,99 @@ internal static class BuiltinCrypto
             return Guid.NewGuid().ToString("D").ToLowerInvariant();
         }));
 
+        // SubtleCrypto — only `digest` is implemented in
+        // this slice. sign / verify / encrypt / decrypt /
+        // generateKey / importKey all require a real
+        // CryptoKey object model that's deferred to a
+        // future slice. digest is the commonly-used
+        // primitive for content hashing (SRI integrity,
+        // cache keys, dedup), and .NET ships the four
+        // SHA variants out of the box.
+        var subtle = new JsObject { Prototype = engine.ObjectPrototype };
+        subtle.SetNonEnumerable("digest", new JsFunction("digest", (thisVal, args) =>
+        {
+            if (args.Count < 2)
+            {
+                JsThrow.TypeError("crypto.subtle.digest: expected (algorithm, data)");
+                return null;
+            }
+            string algorithmName;
+            if (args[0] is string s)
+            {
+                algorithmName = s;
+            }
+            else if (args[0] is JsObject alg && alg.Get("name") is string n)
+            {
+                algorithmName = n;
+            }
+            else
+            {
+                JsThrow.TypeError("crypto.subtle.digest: algorithm must be a string or object with name");
+                return null;
+            }
+            byte[] input = ExtractBufferBytes(args[1]);
+            byte[] hash;
+            switch (algorithmName.ToUpperInvariant())
+            {
+                case "SHA-1":
+                    hash = SHA1.HashData(input);
+                    break;
+                case "SHA-256":
+                    hash = SHA256.HashData(input);
+                    break;
+                case "SHA-384":
+                    hash = SHA384.HashData(input);
+                    break;
+                case "SHA-512":
+                    hash = SHA512.HashData(input);
+                    break;
+                default:
+                    var rejection = new JsPromise(engine);
+                    var err = new JsObject();
+                    err.Set("name", "NotSupportedError");
+                    err.Set("message", $"Unsupported digest algorithm: {algorithmName}");
+                    rejection.Reject(err);
+                    return rejection;
+            }
+            var buf = new JsArrayBuffer(hash.Length);
+            Array.Copy(hash, buf.Data, hash.Length);
+            var promise = new JsPromise(engine);
+            promise.Resolve(buf);
+            return promise;
+        }));
+        crypto.SetNonEnumerable("subtle", subtle);
+
         engine.Globals["crypto"] = crypto;
+    }
+
+    /// <summary>
+    /// Unwrap a JS value into its raw byte buffer. Accepts
+    /// <see cref="JsArrayBuffer"/> (whole buffer),
+    /// <see cref="JsTypedArray"/> (visible byte range), and
+    /// <see cref="JsDataView"/> (subrange). Used by
+    /// <c>subtle.digest</c> and future bulk operations.
+    /// </summary>
+    private static byte[] ExtractBufferBytes(object? source)
+    {
+        if (source is JsArrayBuffer ab)
+        {
+            var copy = new byte[ab.Data.Length];
+            Array.Copy(ab.Data, copy, ab.Data.Length);
+            return copy;
+        }
+        if (source is JsTypedArray ta)
+        {
+            var copy = new byte[ta.ByteLength];
+            Array.Copy(ta.Buffer.Data, ta.ByteOffset, copy, 0, ta.ByteLength);
+            return copy;
+        }
+        if (source is JsDataView dv)
+        {
+            var copy = new byte[dv.ByteLength];
+            Array.Copy(dv.Buffer.Data, dv.ByteOffset, copy, 0, dv.ByteLength);
+            return copy;
+        }
+        JsThrow.TypeError("crypto.subtle.digest: data must be a BufferSource");
+        return null!;
     }
 }

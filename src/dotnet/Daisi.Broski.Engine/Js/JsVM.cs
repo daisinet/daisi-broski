@@ -652,6 +652,73 @@ public sealed class JsVM
         return iter;
     }
 
+    /// <summary>
+    /// Invoke <paramref name="fn"/> in constructor mode,
+    /// allocating a fresh instance linked to
+    /// <c>fn.prototype</c> and returning the instance (or
+    /// the function's returned object, when it takes over
+    /// per ECMA §13.2.2). Used by <c>Reflect.construct</c>
+    /// and any future native-side code that wants to run
+    /// a user-defined constructor imperatively.
+    ///
+    /// <para>
+    /// Internally delegates to the existing <c>DoNew</c>
+    /// opcode handler by pushing <c>[fn, args...]</c> onto
+    /// the stack, running a nested dispatch loop until the
+    /// constructor returns, and popping the result.
+    /// </para>
+    /// </summary>
+    public object? ConstructJsFunction(JsFunction fn, IReadOnlyList<object?> args)
+    {
+        if (fn.Template?.IsArrow == true)
+        {
+            JsThrow.TypeError("Arrow functions cannot be used as constructors");
+            return null;
+        }
+
+        int enterDepth = _frames.Count;
+        var savedCode = _code;
+        var savedConstants = _constants;
+        var savedNames = _names;
+        int savedIp = _ip;
+        var savedEnv = _env;
+        var savedThis = _this;
+        int savedSp = _sp;
+
+        Push(fn);
+        for (int i = 0; i < args.Count; i++) Push(args[i]);
+
+        _nativeBoundaries.Push(enterDepth);
+        try
+        {
+            DoNew(args.Count);
+            RunLoop(stopFrameDepth: enterDepth);
+            return Pop();
+        }
+        catch (JsThrowSignal)
+        {
+            while (_frames.Count > enterDepth) _frames.Pop();
+            while (_handlers.Count > 0 &&
+                   _handlers.Peek().FrameDepth > enterDepth)
+            {
+                _handlers.Pop();
+            }
+            _code = savedCode;
+            _constants = savedConstants;
+            _names = savedNames;
+            _ip = savedIp;
+            _env = savedEnv;
+            _this = savedThis;
+            _sp = savedSp;
+            _pendingException = null;
+            throw;
+        }
+        finally
+        {
+            _nativeBoundaries.Pop();
+        }
+    }
+
     public object? InvokeJsFunction(
         JsFunction fn,
         object? thisVal,

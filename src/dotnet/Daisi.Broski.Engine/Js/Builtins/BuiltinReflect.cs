@@ -113,11 +113,24 @@ internal static class BuiltinReflect
             return vm.InvokeJsFunction(fn, thisArg, callArgs);
         }));
 
-        // Reflect.construct is deferred until the VM exposes
-        // a constructor-mode invoke helper. The VM's DoNew
-        // opcode handler pushes its result onto the stack
-        // and there's no public entry point to call it from
-        // native code yet.
+        // construct(target, argsArray) — equivalent to
+        // `new target(...args)`. Used by decorator / factory
+        // patterns and by Reflect-as-trap-forwarder handlers
+        // that wrap a class.
+        reflect.SetNonEnumerable("construct", new JsFunction("construct", (vm, thisVal, args) =>
+        {
+            if (args.Count == 0 || args[0] is not JsFunction fn)
+            {
+                JsThrow.TypeError("Reflect.construct: target must be a function");
+                return null;
+            }
+            var ctorArgs = Array.Empty<object?>();
+            if (args.Count > 1 && args[1] is JsArray a)
+            {
+                ctorArgs = a.Elements.ToArray();
+            }
+            return vm.ConstructJsFunction(fn, ctorArgs);
+        }));
 
         engine.Globals["Reflect"] = reflect;
     }

@@ -111,6 +111,69 @@ internal static class BuiltinAbort
             return sig;
         }));
 
+        // AbortSignal.timeout(ms) — returns a signal that
+        // auto-aborts after `ms` milliseconds via a task
+        // scheduled on the event loop. The abort reason
+        // defaults to a TimeoutError-shaped object, matching
+        // the spec.
+        ctor.SetNonEnumerable("timeout", new JsFunction("timeout", (vm, thisVal, args) =>
+        {
+            double delay = args.Count > 0 ? JsValue.ToNumber(args[0]) : 0;
+            var sig = new JsAbortSignal(engine) { Prototype = proto };
+            engine.EventLoop.ScheduleTimer(delay,
+                new JsFunction("[timeout-abort]", (tv, ta) =>
+                {
+                    var reason = new JsObject { Prototype = engine.ErrorPrototype };
+                    reason.Set("name", "TimeoutError");
+                    reason.Set("message", "The operation timed out");
+                    sig.Abort(engine.Vm, reason);
+                    return JsValue.Undefined;
+                }),
+                Array.Empty<object?>(),
+                isInterval: false);
+            return sig;
+        }));
+
+        // AbortSignal.any(iterableOfSignals) — returns a
+        // signal that aborts as soon as any of its input
+        // signals aborts, inheriting its reason.
+        ctor.SetNonEnumerable("any", new JsFunction("any", (vm, thisVal, args) =>
+        {
+            var combined = new JsAbortSignal(engine) { Prototype = proto };
+            if (args.Count == 0 || args[0] is not JsArray arr)
+            {
+                // Spec accepts any iterable; we cover the
+                // array case which is the overwhelmingly
+                // common shape.
+                return combined;
+            }
+
+            // If any input is already aborted, propagate
+            // synchronously before registering listeners.
+            foreach (var entry in arr.Elements)
+            {
+                if (entry is JsAbortSignal pre && pre.Aborted)
+                {
+                    combined.Abort(vm, pre.Reason);
+                    return combined;
+                }
+            }
+
+            foreach (var entry in arr.Elements)
+            {
+                if (entry is not JsAbortSignal input) continue;
+                var captured = input;
+                input.AddListener("abort",
+                    new JsFunction("[any-forward]", (tv, ta) =>
+                    {
+                        combined.Abort(engine.Vm, captured.Reason);
+                        return JsValue.Undefined;
+                    }),
+                    once: true);
+            }
+            return combined;
+        }));
+
         engine.Globals["AbortSignal"] = ctor;
         return proto;
     }
