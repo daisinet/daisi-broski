@@ -131,6 +131,76 @@ public class JsDomElement : JsDomNode
             case "innerText": return _element.TextContent;
             case "innerHTML": return HtmlSerializer.SerializeChildren(_element);
             case "outerHTML": return HtmlSerializer.SerializeNode(_element);
+            case "dataset": return BuildDataset();
+            case "style": return BuildStyle();
+            // Layout-dependent values — we don't ship layout
+            // yet, so these return 0 (matching a 0×0 element)
+            // instead of throwing. Enough for scripts that
+            // check "was this element rendered?" without
+            // faking an actual size.
+            case "offsetWidth":
+            case "offsetHeight":
+            case "clientWidth":
+            case "clientHeight":
+            case "scrollWidth":
+            case "scrollHeight":
+            case "scrollTop":
+            case "scrollLeft":
+            case "offsetTop":
+            case "offsetLeft":
+                return 0.0;
+            case "offsetParent":
+                return JsValue.Null;
+        }
+        // Lazy accessor-ish support for getBoundingClientRect
+        // etc. — we install these as properties once on first
+        // read so they look like methods without eager setup
+        // for every element.
+        if (key == "getBoundingClientRect")
+        {
+            return new JsFunction("getBoundingClientRect", (thisVal, args) =>
+            {
+                var rect = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+                rect.Set("x", 0.0);
+                rect.Set("y", 0.0);
+                rect.Set("width", 0.0);
+                rect.Set("height", 0.0);
+                rect.Set("top", 0.0);
+                rect.Set("right", 0.0);
+                rect.Set("bottom", 0.0);
+                rect.Set("left", 0.0);
+                return rect;
+            });
+        }
+        if (key == "getClientRects")
+        {
+            return new JsFunction("getClientRects", (thisVal, args) =>
+                new JsArray { Prototype = Bridge.Engine.ArrayPrototype });
+        }
+        if (key == "scrollIntoView")
+        {
+            return new JsFunction("scrollIntoView", (thisVal, args) => JsValue.Undefined);
+        }
+        if (key == "focus" || key == "blur" || key == "click")
+        {
+            // focus/blur are no-ops; click() dispatches a
+            // synthetic click Event on the element so
+            // listeners fire. We delegate the latter to the
+            // event system, rebuilding the minimum payload
+            // inline.
+            string opName = key;
+            return new JsFunction(opName, (vm, thisVal, args) =>
+            {
+                if (opName == "click")
+                {
+                    var evt = new JsDomEvent("click", bubbles: true, cancelable: true)
+                    {
+                        Prototype = Bridge.Engine.EventPrototype,
+                    };
+                    DispatchEvent(vm, evt);
+                }
+                return JsValue.Undefined;
+            });
         }
         return base.Get(key);
     }
@@ -309,5 +379,56 @@ public class JsDomElement : JsDomNode
             arr.Elements.Add(Bridge.Wrap(child));
         }
         return arr;
+    }
+
+    /// <summary>
+    /// Build a <c>DOMStringMap</c>-shaped object exposing
+    /// every <c>data-foo-bar</c> attribute as
+    /// <c>fooBar</c> (camelCase per spec). The object is
+    /// a plain <see cref="JsObject"/> prepopulated at read
+    /// time — not a live view — but the DOM bridge above
+    /// re-reads on every property access, so iterating
+    /// <c>el.dataset</c> at two different times picks up
+    /// attribute mutations in between.
+    /// </summary>
+    private JsObject BuildDataset()
+    {
+        var ds = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        foreach (var attr in _element.Attributes)
+        {
+            if (!attr.Key.StartsWith("data-", StringComparison.OrdinalIgnoreCase)) continue;
+            var tail = attr.Key.Substring(5);
+            // data-user-name → userName
+            var sb = new System.Text.StringBuilder(tail.Length);
+            bool upper = false;
+            foreach (var c in tail)
+            {
+                if (c == '-') { upper = true; continue; }
+                sb.Append(upper ? char.ToUpperInvariant(c) : c);
+                upper = false;
+            }
+            ds.Set(sb.ToString(), attr.Value);
+        }
+        return ds;
+    }
+
+    /// <summary>
+    /// Build a CSSStyleDeclaration-shaped stub. We don't
+    /// parse the <c>style</c> attribute — the returned
+    /// object is a read-only bag with empty strings for
+    /// every property lookup, plus a no-op
+    /// <c>setProperty</c>. Enough for scripts that do
+    /// <c>el.style.display = 'none'</c> and expect the
+    /// call to not throw. A future slice can back this
+    /// with a real cssText parser.
+    /// </summary>
+    private JsObject BuildStyle()
+    {
+        var style = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        style.SetNonEnumerable("setProperty", new JsFunction("setProperty", (t, a) => JsValue.Undefined));
+        style.SetNonEnumerable("getPropertyValue", new JsFunction("getPropertyValue", (t, a) => ""));
+        style.SetNonEnumerable("removeProperty", new JsFunction("removeProperty", (t, a) => ""));
+        style.Set("cssText", "");
+        return style;
     }
 }

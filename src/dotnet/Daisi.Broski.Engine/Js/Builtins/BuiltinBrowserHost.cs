@@ -67,6 +67,9 @@ internal static class BuiltinBrowserHost
         InstallLocation(engine);
         InstallPerformance(engine);
         InstallWindowViewport(engine);
+        InstallHistory(engine);
+        InstallAnimationFrame(engine);
+        InstallObservers(engine);
     }
 
     // =======================================================
@@ -268,6 +271,194 @@ internal static class BuiltinBrowserHost
             result.SetNonEnumerable("removeEventListener", new JsFunction("removeEventListener", (tt, aa) => JsValue.Undefined));
             return result;
         });
+    }
+
+    // =======================================================
+    // history
+    // =======================================================
+
+    private static void InstallHistory(JsEngine engine)
+    {
+        // A single History instance per engine, with a
+        // simple entry list so pushState / replaceState /
+        // back / forward have coherent semantics even
+        // though we don't actually navigate.
+        var entries = new List<JsHistoryEntry>
+        {
+            new JsHistoryEntry(JsValue.Null, "", "about:blank"),
+        };
+        int index = 0;
+
+        var history = new JsObject { Prototype = engine.ObjectPrototype };
+
+        history.SetAccessor("length",
+            new JsFunction("get length", (t, a) => (double)entries.Count),
+            null);
+        history.SetAccessor("state",
+            new JsFunction("get state", (t, a) => entries[index].State),
+            null);
+        history.SetAccessor("scrollRestoration",
+            new JsFunction("get scrollRestoration", (t, a) => "auto"),
+            new JsFunction("set scrollRestoration", (t, a) => JsValue.Undefined));
+
+        history.SetNonEnumerable("pushState", new JsFunction("pushState", (thisVal, args) =>
+        {
+            var state = args.Count > 0 ? args[0] : JsValue.Null;
+            var title = args.Count > 1 ? JsValue.ToJsString(args[1]) : "";
+            var url = args.Count > 2 ? JsValue.ToJsString(args[2]) : entries[index].Url;
+            // Truncate any forward history past the current
+            // index, then append the new entry.
+            if (index < entries.Count - 1)
+            {
+                entries.RemoveRange(index + 1, entries.Count - 1 - index);
+            }
+            entries.Add(new JsHistoryEntry(state, title, url));
+            index = entries.Count - 1;
+            return JsValue.Undefined;
+        }));
+
+        history.SetNonEnumerable("replaceState", new JsFunction("replaceState", (thisVal, args) =>
+        {
+            var state = args.Count > 0 ? args[0] : JsValue.Null;
+            var title = args.Count > 1 ? JsValue.ToJsString(args[1]) : "";
+            var url = args.Count > 2 ? JsValue.ToJsString(args[2]) : entries[index].Url;
+            entries[index] = new JsHistoryEntry(state, title, url);
+            return JsValue.Undefined;
+        }));
+
+        history.SetNonEnumerable("back", new JsFunction("back", (thisVal, args) =>
+        {
+            if (index > 0) index--;
+            return JsValue.Undefined;
+        }));
+
+        history.SetNonEnumerable("forward", new JsFunction("forward", (thisVal, args) =>
+        {
+            if (index < entries.Count - 1) index++;
+            return JsValue.Undefined;
+        }));
+
+        history.SetNonEnumerable("go", new JsFunction("go", (thisVal, args) =>
+        {
+            int delta = args.Count > 0 ? (int)JsValue.ToNumber(args[0]) : 0;
+            int target = index + delta;
+            if (target < 0) target = 0;
+            if (target >= entries.Count) target = entries.Count - 1;
+            index = target;
+            return JsValue.Undefined;
+        }));
+
+        engine.Globals["history"] = history;
+    }
+
+    // =======================================================
+    // requestAnimationFrame
+    // =======================================================
+
+    private static void InstallAnimationFrame(JsEngine engine)
+    {
+        // rAF schedules the callback as a zero-delay timer.
+        // Real browsers align with the display refresh
+        // (~16ms per frame); we don't have a render loop
+        // to drive that, so the best approximation is "run
+        // it on the next event-loop tick". Most scripts use
+        // rAF for deferred work rather than precise timing
+        // so this covers the common case.
+        engine.Globals["requestAnimationFrame"] = new JsFunction("requestAnimationFrame", (thisVal, args) =>
+        {
+            if (args.Count == 0 || args[0] is not JsFunction cb)
+            {
+                JsThrow.TypeError("requestAnimationFrame: callback must be a function");
+                return null;
+            }
+            // The callback signature is `cb(domHighResTimestamp)`.
+            // Pass performance.now() equivalent as the arg.
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            double freq = System.Diagnostics.Stopwatch.Frequency;
+            var forwarded = new object?[1];
+            forwarded[0] = 0.0;
+            // The event loop's ScheduleTimer already accepts
+            // a forwarded-args array; we update it to reflect
+            // "time since engine start" at fire time via a
+            // wrapper function.
+            var wrapper = new JsFunction("[raf]", (vm, tv, ta) =>
+            {
+                long delta = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+                double ts = delta * 1000.0 / freq;
+                return vm.InvokeJsFunction(cb, JsValue.Undefined, new object?[] { ts });
+            });
+            int id = engine.EventLoop.ScheduleTimer(0, wrapper,
+                System.Array.Empty<object?>(), isInterval: false);
+            return (double)id;
+        });
+
+        engine.Globals["cancelAnimationFrame"] = new JsFunction("cancelAnimationFrame", (thisVal, args) =>
+        {
+            if (args.Count > 0)
+            {
+                int id = (int)JsValue.ToNumber(args[0]);
+                engine.EventLoop.ClearTimer(id);
+            }
+            return JsValue.Undefined;
+        });
+    }
+
+    // =======================================================
+    // IntersectionObserver / ResizeObserver / MutationObserver
+    // =======================================================
+
+    private static void InstallObservers(JsEngine engine)
+    {
+        // All three observer classes are common enough that
+        // scripts assume they exist, but sitting on top of a
+        // real layout / mutation engine. We install stub
+        // classes that accept the callback + options, never
+        // fire, and expose the spec-shaped methods
+        // (observe / unobserve / disconnect / takeRecords).
+        // Scripts that set up observers get a functional
+        // object they can call into without crashes; they
+        // just don't receive any notifications.
+        engine.Globals["IntersectionObserver"] = MakeObserverCtor(engine, "IntersectionObserver");
+        engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
+        engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
+        engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
+    }
+
+    private static JsFunction MakeObserverCtor(JsEngine engine, string name)
+    {
+        var proto = new JsObject { Prototype = engine.ObjectPrototype };
+        proto.SetNonEnumerable("observe", new JsFunction("observe", (t, a) => JsValue.Undefined));
+        proto.SetNonEnumerable("unobserve", new JsFunction("unobserve", (t, a) => JsValue.Undefined));
+        proto.SetNonEnumerable("disconnect", new JsFunction("disconnect", (t, a) => JsValue.Undefined));
+        proto.SetNonEnumerable("takeRecords", new JsFunction("takeRecords", (t, a) =>
+            new JsArray { Prototype = engine.ArrayPrototype }));
+        var ctor = new JsFunction(name, (thisVal, args) =>
+        {
+            var instance = new JsObject { Prototype = proto };
+            return instance;
+        });
+        ctor.SetNonEnumerable("prototype", proto);
+        proto.SetNonEnumerable("constructor", ctor);
+        return ctor;
+    }
+}
+
+/// <summary>
+/// One entry in the <c>history</c> stack. Stores the
+/// script-supplied state payload, title, and URL tuple
+/// that <c>pushState</c> / <c>replaceState</c> accept.
+/// </summary>
+internal readonly struct JsHistoryEntry
+{
+    public object? State { get; }
+    public string Title { get; }
+    public string Url { get; }
+
+    public JsHistoryEntry(object? state, string title, string url)
+    {
+        State = state;
+        Title = title;
+        Url = url;
     }
 }
 
