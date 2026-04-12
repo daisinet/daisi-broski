@@ -2229,6 +2229,11 @@ public sealed class JsParser
                 return new Literal(tok.Start, tok.End, LiteralKind.BigInt,
                     ParseBigIntLiteralValue(tok));
 
+            case JsTokenKind.RegExpLiteral:
+                Consume();
+                return new Literal(tok.Start, tok.End, LiteralKind.RegExp,
+                    BuildRegExpLiteralValue(tok));
+
             case JsTokenKind.StringLiteral:
                 Consume();
                 return new Literal(tok.Start, tok.End, LiteralKind.String, tok.StringValue);
@@ -2556,6 +2561,23 @@ public sealed class JsParser
         JsTokenKind.Caret => BinaryOperator.BitwiseXor,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not a binary operator"),
     };
+
+    /// <summary>
+    /// Build a <see cref="JsRegExp"/> from the
+    /// <c>pattern|flags</c> payload the lexer stashed on
+    /// a <see cref="JsTokenKind.RegExpLiteral"/> token.
+    /// The parser doesn't compile the backend regex — that
+    /// happens lazily on first use inside
+    /// <see cref="JsRegExp.Compile"/>.
+    /// </summary>
+    private static JsRegExp BuildRegExpLiteralValue(JsToken tok)
+    {
+        var payload = tok.StringValue ?? "|";
+        int pipeIdx = payload.LastIndexOf('|');
+        string pattern = pipeIdx < 0 ? payload : payload.Substring(0, pipeIdx);
+        string flags = pipeIdx < 0 ? "" : payload.Substring(pipeIdx + 1);
+        return new JsRegExp(pattern, flags);
+    }
 
     /// <summary>
     /// Convert the digit text captured by the lexer's

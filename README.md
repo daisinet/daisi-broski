@@ -11,7 +11,7 @@ No third-party NuGet packages in the product code. No Chromium, no WebKit, no V8
 
 ## Status
 
-**Phases 0, 1, 3a, 3b, 3c, and 4 are shipped. Phase 3 is complete — phase 3c landed the ES2020+ sugar (`?.`, `??`, `&&=` / `||=` / `??=`), the JS ↔ DOM bridge with `innerHTML` / `outerHTML`, the DOM event system with full capture/target/bubble phases, the WHATWG web-primitive built-ins (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `atob`/`btoa`), `fetch` + `Headers` + `Request` + `Response`, `Proxy` + `Reflect.*`, `crypto.getRandomValues` / `crypto.randomUUID` / `crypto.subtle.digest`, `AbortController` / `AbortSignal` (including `timeout` and `any`), and `BigInt` with literal syntax + full arithmetic. The next major milestone is phase 5 (sandbox hardening / cross-platform).**
+**Phases 0, 1, 3a, 3b, 3c, and 4 are shipped. Phase 3 is complete — phase 3c landed the ES2020+ sugar (`?.`, `??`, `&&=` / `||=` / `??=`), the JS ↔ DOM bridge with `innerHTML` / `outerHTML`, the DOM event system with full capture/target/bubble phases, the WHATWG web-primitive built-ins (`URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `atob`/`btoa`), `fetch` + `Headers` + `Request` + `Response`, `Proxy` + `Reflect.*`, `crypto.getRandomValues` / `crypto.randomUUID` / `crypto.subtle.digest`, `AbortController` / `AbortSignal` (including `timeout` and `any`), `BigInt` with literal syntax + full arithmetic, and regex literals (`/pattern/flags`) with `RegExp` + the regex-aware `String.prototype` surface. The next major milestone is phase 5 (sandbox hardening / cross-platform).**
 
 What works today, from a clean clone:
 
@@ -56,7 +56,7 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 1403/1403 passing.** Phases 3a–3c (ES5 core, ES2015+ surface, ES2020+ sugar + web platform) are all complete. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1440/1440 passing.** Phases 3a–3c (ES5 core, ES2015+ surface, ES2020+ sugar + web platform) are all complete, plus regex literals. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 

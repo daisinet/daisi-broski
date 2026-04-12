@@ -1869,6 +1869,21 @@ public sealed class JsVM
                     }
                     break;
 
+                case OpCode.NewRegExp:
+                    {
+                        // Stack: [pattern, flags] → [regex]
+                        var flagsVal = Pop();
+                        var patternVal = Pop();
+                        var regex = new JsRegExp(
+                            JsValue.ToJsString(patternVal),
+                            JsValue.ToJsString(flagsVal))
+                        {
+                            Prototype = _engine.RegExpPrototype,
+                        };
+                        Push(regex);
+                    }
+                    break;
+
                 // ---- Completion ----
                 case OpCode.StoreCompletion:
                     CompletionValue = Pop();

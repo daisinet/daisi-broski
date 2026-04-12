@@ -1659,6 +1659,22 @@ public sealed class JsCompiler
                     _chunk.EmitWithU16(OpCode.PushConst, idx);
                 }
                 return;
+            case LiteralKind.RegExp:
+                {
+                    // Regex literals are stateful (lastIndex) so
+                    // each evaluation produces a fresh instance.
+                    // We store the source + flags as a template
+                    // in the constant pool and emit an opcode
+                    // (NewRegExp) that allocates a fresh wrapper
+                    // with those fields on every evaluation.
+                    var template = (JsRegExp)lit.Value!;
+                    int srcIdx = _chunk.AddConstant(template.Source);
+                    int flagsIdx = _chunk.AddConstant(template.Flags);
+                    _chunk.EmitWithU16(OpCode.PushConst, srcIdx);
+                    _chunk.EmitWithU16(OpCode.PushConst, flagsIdx);
+                    _chunk.Emit(OpCode.NewRegExp);
+                }
+                return;
         }
     }
 

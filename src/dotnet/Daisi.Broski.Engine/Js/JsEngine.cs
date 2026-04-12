@@ -143,6 +143,16 @@ public sealed class JsEngine
     public JsObject CustomEventPrototype { get; internal set; } = null!;
 
     /// <summary>
+    /// <c>RegExp.prototype</c> — installed by
+    /// <c>BuiltinRegExp</c>. Exposed so the VM's
+    /// <see cref="OpCode.NewRegExp"/> handler can set
+    /// fresh <see cref="JsRegExp"/> instances' prototype
+    /// without threading a separate reference through
+    /// bytecode operands.
+    /// </summary>
+    public JsObject RegExpPrototype { get; internal set; } = null!;
+
+    /// <summary>
     /// Module cache keyed by resolved URL. Populated and
     /// read by <see cref="ImportModule"/>. A module is
     /// inserted into the cache as soon as it is created

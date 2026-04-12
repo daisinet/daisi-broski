@@ -29,6 +29,16 @@ public enum JsTokenKind
     /// AST-build time without re-parsing.
     /// </summary>
     BigIntLiteral,
+    /// <summary>
+    /// Regular expression literal — <c>/pattern/flags</c>.
+    /// The <see cref="JsToken.StringValue"/> holds the raw
+    /// <c>pattern|flags</c> text joined by a vertical bar
+    /// (chosen because it can't appear in a flag run), so
+    /// the parser can split and construct a
+    /// <see cref="System.Text.RegularExpressions.Regex"/>
+    /// without re-scanning the body.
+    /// </summary>
+    RegExpLiteral,
     StringLiteral,
     NullLiteral,
     TrueLiteral,

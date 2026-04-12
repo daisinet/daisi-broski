@@ -89,6 +89,14 @@ public enum LiteralKind
     /// <see cref="System.Numerics.BigInteger"/>.
     /// </summary>
     BigInt,
+    /// <summary>
+    /// Regular expression literal (<c>/pattern/flags</c>).
+    /// The <see cref="Literal.Value"/> is a
+    /// <see cref="JsRegExp"/> wrapper that lazily
+    /// constructs the underlying .NET
+    /// <see cref="System.Text.RegularExpressions.Regex"/>.
+    /// </summary>
+    RegExp,
 }
 
 /// <summary>
