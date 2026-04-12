@@ -78,6 +78,18 @@ internal static class BuiltinBrowserHost
             engine.Globals["globalThis"] = engine.Globals["window"];
         }
 
+        // Global event target methods — in browsers, bare
+        // `addEventListener('load', fn)` routes to `window`.
+        // Since our JsWindowProxy isn't a JsDomNode with the
+        // event system, we install these as globals that
+        // silently accept the registration. A future slice
+        // can wire them to a real event dispatch on the
+        // window object for events like 'load', 'error',
+        // 'unhandledrejection'.
+        engine.Globals["addEventListener"] = new JsFunction("addEventListener", (t, a) => JsValue.Undefined);
+        engine.Globals["removeEventListener"] = new JsFunction("removeEventListener", (t, a) => JsValue.Undefined);
+        engine.Globals["dispatchEvent"] = new JsFunction("dispatchEvent", (t, a) => true);
+
         InstallStorage(engine);
         InstallNavigator(engine);
         InstallLocation(engine);

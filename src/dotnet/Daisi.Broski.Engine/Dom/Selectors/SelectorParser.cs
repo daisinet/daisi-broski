@@ -230,6 +230,7 @@ public static class SelectorParser
                 case "last-of-type": return new PseudoClassSelector(PseudoClassKind.LastOfType);
                 case "only-of-type": return new PseudoClassSelector(PseudoClassKind.OnlyOfType);
                 case "root": return new PseudoClassSelector(PseudoClassKind.Root);
+                case "scope": return new PseudoClassSelector(PseudoClassKind.Scope);
                 case "empty": return new PseudoClassSelector(PseudoClassKind.Empty);
 
                 case "nth-child":

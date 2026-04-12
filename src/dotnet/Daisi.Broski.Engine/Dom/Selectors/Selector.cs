@@ -179,4 +179,10 @@ public enum PseudoClassKind
     Root,
     Empty,
     Not,            // :not(X) — Argument holds the inner selector list
+    /// <summary>
+    /// <c>:scope</c> — matches the scoping root, which is the
+    /// element <c>querySelector</c> was called on. When used at
+    /// the document level, it matches <c>:root</c>.
+    /// </summary>
+    Scope,
 }

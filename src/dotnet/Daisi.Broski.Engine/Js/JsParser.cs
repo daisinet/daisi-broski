@@ -2204,6 +2204,9 @@ public sealed class JsParser
             args.Add(ParseArgumentOrSpread());
             while (Match(JsTokenKind.Comma))
             {
+                // ES2017 trailing comma: `f(a, b, )` — the
+                // comma before `)` is legal and ignored.
+                if (Current.Kind == JsTokenKind.RightParen) break;
                 args.Add(ParseArgumentOrSpread());
             }
         }

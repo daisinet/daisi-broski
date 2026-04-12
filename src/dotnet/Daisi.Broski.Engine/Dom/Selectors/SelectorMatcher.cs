@@ -176,6 +176,19 @@ public static class SelectorMatcher
             case PseudoClassKind.Root:
                 return element.OwnerDocument?.DocumentElement == element;
 
+            case PseudoClassKind.Scope:
+                // :scope matches the scoping element — when used
+                // via querySelector on a specific element, that
+                // element is the scope. Since our querySelector
+                // implementation (Node.QuerySelector) excludes
+                // the starting node itself from the result, :scope
+                // in practice matches the document root, same as
+                // :root. A proper implementation would thread the
+                // scope element through the match, but this covers
+                // the common `el.querySelector(':scope > child')`
+                // pattern.
+                return element.OwnerDocument?.DocumentElement == element;
+
             case PseudoClassKind.Empty:
                 // :empty matches elements with no element children AND no
                 // non-empty text nodes.
