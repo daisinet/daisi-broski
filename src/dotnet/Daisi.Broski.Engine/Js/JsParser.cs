@@ -2442,7 +2442,41 @@ public sealed class JsParser
             var valueId = new Identifier(idTok.Start, idTok.End, idTok.StringValue!);
             return new Property(start, idTok.End, keyId, valueId, PropertyKind.Init);
         }
+        // Check for async method shorthand: `{ async foo() {} }`
+        bool isAsync = false;
+        bool isGenerator = false;
+        if (Current.Kind == JsTokenKind.Identifier && Current.StringValue == "async" &&
+            Peek(1).Kind == JsTokenKind.Identifier)
+        {
+            isAsync = true;
+            Consume(); // skip 'async'
+        }
+        if (Current.Kind == JsTokenKind.Star)
+        {
+            isGenerator = true;
+            Consume(); // skip '*'
+        }
+
         var key = ParsePropertyName(keywordsAllowed: true);
+
+        // ES2015 shorthand method: `{ foo() {} }` is sugar
+        // for `{ foo: function foo() {} }`. Detected when the
+        // next token after the property name is `(` instead of
+        // `:`. Also handles `{ async foo() {} }` and
+        // `{ *gen() {} }` generator methods.
+        if (Current.Kind == JsTokenKind.LeftParen)
+        {
+            var paramList = ParseFormalParameters();
+            var body = ParseFunctionBody();
+            var fn = new FunctionExpression(
+                start, body.End,
+                id: key is Identifier nameId ? nameId : null,
+                paramList, body,
+                isGenerator: isGenerator,
+                isAsync: isAsync);
+            return new Property(start, body.End, key, fn, PropertyKind.Init);
+        }
+
         Expect(JsTokenKind.Colon, "object property");
         var value = ParseAssignmentExpression(allowIn: true);
         return new Property(start, value.End, key, value, PropertyKind.Init);
