@@ -1,5 +1,7 @@
 using Daisi.Broski;
 using Daisi.Broski.Engine;
+using Daisi.Broski.Engine.Dom;
+using Daisi.Broski.Engine.Js;
 using Daisi.Broski.Engine.Net;
 using Daisi.Broski.Ipc;
 
@@ -52,9 +54,199 @@ public static class Program
         return args[0] switch
         {
             "fetch" => await FetchCommand(args[1..]),
+            "run" => await RunCommand(args[1..]),
             _ => UsageError($"Unknown command '{args[0]}'"),
         };
     }
+
+    // -------------------------------------------------------------------
+    // run — fetch a page, parse it, attach to the JS engine, evaluate
+    //       every inline <script>, and print a before/after summary.
+    //       No sandboxing in this command: the goal is to exercise the
+    //       engine directly so it's easy to iterate on.
+    // -------------------------------------------------------------------
+
+    private static async Task<int> RunCommand(string[] args)
+    {
+        string? urlArg = null;
+        string? select = null;
+        string? userAgent = null;
+        int maxRedirects = 20;
+        bool quiet = false;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            switch (a)
+            {
+                case "--select":
+                    if (i + 1 >= args.Length) return UsageError("--select requires a value");
+                    select = args[++i];
+                    break;
+                case "--ua":
+                    if (i + 1 >= args.Length) return UsageError("--ua requires a value");
+                    userAgent = args[++i];
+                    break;
+                case "--max-redirects":
+                    if (i + 1 >= args.Length) return UsageError("--max-redirects requires a value");
+                    if (!int.TryParse(args[++i], out maxRedirects) || maxRedirects < 0)
+                        return UsageError("--max-redirects must be a non-negative integer");
+                    break;
+                case "--quiet":
+                    quiet = true;
+                    break;
+                default:
+                    if (a.StartsWith('-'))
+                        return UsageError($"Unknown option '{a}'");
+                    if (urlArg is not null)
+                        return UsageError("Multiple positional URLs passed");
+                    urlArg = a;
+                    break;
+            }
+        }
+
+        if (urlArg is null) return UsageError("run requires a URL");
+        if (!Uri.TryCreate(urlArg, UriKind.Absolute, out var url) ||
+            (url.Scheme != "http" && url.Scheme != "https"))
+        {
+            return UsageError($"'{urlArg}' is not an absolute http(s) URL");
+        }
+
+        var options = new HttpFetcherOptions
+        {
+            MaxRedirects = maxRedirects,
+            UserAgent = userAgent ?? new HttpFetcherOptions().UserAgent,
+        };
+
+        try
+        {
+            using var loader = new PageLoader(options);
+            var page = await loader.LoadAsync(url);
+
+            Console.Error.WriteLine(
+                $"{(int)page.Status} {page.Status} {page.FinalUrl} " +
+                $"({page.Body.Length} bytes, {page.Encoding.WebName})");
+
+            var doc = page.Document;
+
+            // Snapshot the pre-JS DOM stats so we can show the delta.
+            int preElements = doc.DescendantElements().Count();
+            int preLinks = doc.QuerySelectorAll("a[href]").Count;
+            int preScripts = doc.QuerySelectorAll("script").Count;
+            int preTextBytes = doc.DocumentElement?.TextContent.Length ?? 0;
+
+            // Wire the engine to the parsed document.
+            var engine = new JsEngine();
+            engine.AttachDocument(doc);
+
+            // Let scripts reach the real network via the slice 3c-6
+            // fetch handler. The engine's default already points at
+            // a shared HttpFetcher, so no extra setup needed.
+
+            // Find every inline <script> and run it in document
+            // order. We skip scripts with a `src` attribute for
+            // this command — a real browser would fetch them, but
+            // the point here is to exercise the engine against
+            // the scripts that actually ship in the HTML response.
+            int ranCount = 0;
+            int errorCount = 0;
+            var scriptErrors = new List<string>();
+            foreach (var script in doc.QuerySelectorAll("script"))
+            {
+                if (script.HasAttribute("src")) continue;
+                var type = script.GetAttribute("type") ?? "text/javascript";
+                // Skip modules / JSON-LD / application-specific types.
+                if (type is not ("" or "text/javascript" or "application/javascript"))
+                {
+                    continue;
+                }
+                var source = script.TextContent;
+                if (string.IsNullOrWhiteSpace(source)) continue;
+                try
+                {
+                    engine.RunScript(source);
+                    ranCount++;
+                }
+                catch (Exception ex)
+                {
+                    errorCount++;
+                    scriptErrors.Add($"{ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
+            // Post-script DOM stats + diff.
+            int postElements = doc.DescendantElements().Count();
+            int postLinks = doc.QuerySelectorAll("a[href]").Count;
+            int postScripts = doc.QuerySelectorAll("script").Count;
+            int postTextBytes = doc.DocumentElement?.TextContent.Length ?? 0;
+
+            var title = doc.QuerySelector("title")?.TextContent ?? "(no title)";
+            Console.Out.WriteLine($"title: {title}");
+            Console.Out.WriteLine(
+                $"scripts ran: {ranCount}/{preScripts}" +
+                (errorCount > 0 ? $" ({errorCount} errored)" : ""));
+            Console.Out.WriteLine(
+                $"elements:    {preElements} → {postElements} " +
+                $"({Delta(postElements - preElements)})");
+            Console.Out.WriteLine(
+                $"a[href]:     {preLinks} → {postLinks} " +
+                $"({Delta(postLinks - preLinks)})");
+            Console.Out.WriteLine(
+                $"text bytes:  {preTextBytes} → {postTextBytes} " +
+                $"({Delta(postTextBytes - preTextBytes)})");
+
+            if (engine.ConsoleOutput.Length > 0 && !quiet)
+            {
+                Console.Out.WriteLine();
+                Console.Out.WriteLine("--- console output ---");
+                Console.Out.Write(engine.ConsoleOutput.ToString());
+                if (engine.ConsoleOutput[engine.ConsoleOutput.Length - 1] != '\n')
+                {
+                    Console.Out.WriteLine();
+                }
+            }
+
+            if (errorCount > 0 && !quiet)
+            {
+                Console.Out.WriteLine();
+                Console.Out.WriteLine("--- script errors ---");
+                foreach (var e in scriptErrors)
+                {
+                    Console.Out.WriteLine(e);
+                }
+            }
+
+            if (select is not null)
+            {
+                Console.Out.WriteLine();
+                Console.Out.WriteLine($"--- select '{select}' after JS ---");
+                foreach (var m in doc.QuerySelectorAll(select))
+                {
+                    Console.Out.WriteLine(NormalizeWhitespace(m.TextContent));
+                }
+            }
+
+            return 0;
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.Error.WriteLine($"fetch error: {ex.Message}");
+            return 1;
+        }
+        catch (HttpFetcherException ex)
+        {
+            Console.Error.WriteLine($"fetch error: {ex.Message}");
+            return 1;
+        }
+        catch (TaskCanceledException)
+        {
+            Console.Error.WriteLine("fetch timed out");
+            return 1;
+        }
+    }
+
+    private static string Delta(int d) =>
+        d > 0 ? $"+{d}" : d.ToString();
 
     private static async Task<int> FetchCommand(string[] args)
     {
@@ -284,17 +476,25 @@ public static class Program
         Console.Out.WriteLine("daisi-broski — native C# headless web browser");
         Console.Out.WriteLine();
         Console.Out.WriteLine("Usage:");
-        Console.Out.WriteLine("  daisi-broski fetch <url> [options]");
+        Console.Out.WriteLine("  daisi-broski fetch <url> [options]    # phase 1 — fetch + parse only");
+        Console.Out.WriteLine("  daisi-broski run   <url> [options]    # phase 3 — also run inline scripts");
         Console.Out.WriteLine();
-        Console.Out.WriteLine("Options:");
+        Console.Out.WriteLine("Shared options:");
         Console.Out.WriteLine("  --select <css>      CSS selector; prints matching elements' text");
-        Console.Out.WriteLine("  --html              Print the decoded HTML body");
         Console.Out.WriteLine("  --ua <string>       Override the User-Agent header");
         Console.Out.WriteLine("  --max-redirects N   Max redirects to follow (default 20)");
-        Console.Out.WriteLine("  --no-sandbox        Run in-process instead of in a Daisi.Broski.Sandbox.exe child");
+        Console.Out.WriteLine();
+        Console.Out.WriteLine("fetch-only options:");
+        Console.Out.WriteLine("  --html              Print the decoded HTML body");
+        Console.Out.WriteLine("  --no-sandbox        Run in-process instead of in Daisi.Broski.Sandbox.exe");
+        Console.Out.WriteLine();
+        Console.Out.WriteLine("run-only options:");
+        Console.Out.WriteLine("  --quiet             Suppress console output + script error traces");
         Console.Out.WriteLine();
         Console.Out.WriteLine("By default, fetch spawns a sandboxed child process under a Win32");
         Console.Out.WriteLine("Job Object with a 256 MiB memory cap and kill-on-close semantics.");
+        Console.Out.WriteLine("The run command always executes in-process (no sandbox) so it can");
+        Console.Out.WriteLine("exercise the JS engine directly.");
     }
 
     private static int UsageError(string message)
