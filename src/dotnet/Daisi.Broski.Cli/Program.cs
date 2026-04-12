@@ -166,6 +166,10 @@ public static class Program
             int externalFetchErrors = 0;
             int skippedTypeCount = 0;
             var scriptErrors = new List<string>();
+            // Deferred scripts: collected during the blocking pass
+            // and executed after all blocking scripts finish, in
+            // document order. Matches the browser's defer semantics.
+            var deferredScripts = new List<(Daisi.Broski.Engine.Dom.Element script, int idx)>();
             int scriptIdx = 0;
             foreach (var script in doc.QuerySelectorAll("script"))
             {
@@ -177,11 +181,18 @@ public static class Program
                     skippedTypeCount++;
                     continue;
                 }
-                // Skip async / defer — these load out of order
-                // in a real browser and we don't have a scheduler.
-                if (script.HasAttribute("async") || script.HasAttribute("defer"))
+                // async scripts load out of order — skip those.
+                if (script.HasAttribute("async"))
                 {
                     externalCount++;
+                    continue;
+                }
+                // defer scripts run in order AFTER all blocking
+                // scripts. Collect them for a second pass.
+                if (script.HasAttribute("defer"))
+                {
+                    externalCount++;
+                    deferredScripts.Add((script, scriptIdx));
                     continue;
                 }
 
@@ -252,6 +263,60 @@ public static class Program
                     scriptErrors.Add(
                         $"[script #{scriptIdx}] {ex.GetType().Name}: {ex.Message}\n" +
                         $"    {label}: {Truncate(source, 400)}");
+                }
+                finally
+                {
+                    engine.ExecutingScript = null;
+                }
+            }
+
+            // Second pass: deferred scripts, in the order
+            // they appeared in the document. These run after
+            // the document is fully parsed + all blocking
+            // scripts have completed, matching browser semantics.
+            foreach (var (deferScript, deferIdx) in deferredScripts)
+            {
+                var src = deferScript.GetAttribute("src");
+                if (string.IsNullOrEmpty(src)) continue;
+                Uri deferUri;
+                try { deferUri = new Uri(page.FinalUrl, src); }
+                catch { externalFetchErrors++; continue; }
+                string deferSource;
+                try
+                {
+                    var result = scriptFetcher.FetchAsync(deferUri).GetAwaiter().GetResult();
+                    deferSource = System.Text.Encoding.UTF8.GetString(result.Body);
+                }
+                catch (Exception fetchEx)
+                {
+                    externalFetchErrors++;
+                    if (!quiet)
+                    {
+                        scriptErrors.Add(
+                            $"[script #{deferIdx} defer src={src}] fetch failed: {fetchEx.Message}");
+                    }
+                    continue;
+                }
+                try
+                {
+                    engine.ExecutingScript = deferScript;
+                    engine.RunScript(deferSource);
+                    ranCount++;
+                }
+                catch (Daisi.Broski.Engine.Js.JsRuntimeException jsEx)
+                {
+                    errorCount++;
+                    string detail = UnpackJsError(jsEx);
+                    scriptErrors.Add(
+                        $"[script #{deferIdx} defer] {detail}\n" +
+                        $"    src={src} ({deferSource.Length} bytes): {Truncate(deferSource, 400)}");
+                }
+                catch (Exception ex)
+                {
+                    errorCount++;
+                    scriptErrors.Add(
+                        $"[script #{deferIdx} defer] {ex.GetType().Name}: {ex.Message}\n" +
+                        $"    src={src} ({deferSource.Length} bytes): {Truncate(deferSource, 400)}");
                 }
                 finally
                 {
