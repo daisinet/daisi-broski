@@ -11,7 +11,7 @@ No third-party NuGet packages in the product code. No Chromium, no WebKit, no V8
 
 ## Status
 
-**Phases 0, 1, 3a, 3b, and 4 are shipped. Phase 3c is in progress — slices 3c-1 through 3c-8 land the ES2020 short-circuit operators, the JS ↔ DOM bridge, the WHATWG web-primitive built-ins (`URL`, `TextEncoder`, `atob`/`btoa`), DOM events with full capture/target/bubble phases, `crypto.getRandomValues` / `crypto.randomUUID`, `fetch` + `Headers` + `Request` + `Response`, `Proxy` + `Reflect` (enough for Vue 3 / MobX / signal-style reactivity), and `element.innerHTML` read/write (round-trips through the phase-1 HTML tree builder and a new HTML serializer).**
+**Phases 0, 1, 3a, 3b, and 4 are shipped. Phase 3c is in progress — slices 3c-1 through 3c-9 land the ES2020 short-circuit operators, the JS ↔ DOM bridge, the WHATWG web-primitive built-ins (`URL`, `TextEncoder`, `atob`/`btoa`), DOM events with full capture/target/bubble phases, `crypto.getRandomValues` / `crypto.randomUUID`, `fetch` + `Headers` + `Request` + `Response`, `Proxy` + `Reflect` (enough for Vue 3 / MobX / signal-style reactivity), `element.innerHTML` read/write, and `AbortController` / `AbortSignal` for script-level cancellation coordination.**
 
 What works today, from a clean clone:
 
@@ -56,7 +56,7 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 1332/1332 passing.** Phase 3b (ES2015+) is complete; phase 3c is underway. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1352/1352 passing.** Phase 3b (ES2015+) is complete; phase 3c is underway. All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 

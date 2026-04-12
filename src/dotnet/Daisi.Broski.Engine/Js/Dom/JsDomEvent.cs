@@ -25,8 +25,12 @@ public class JsDomEvent : JsObject
     public bool Cancelable { get; }
     public double TimeStamp { get; }
 
-    public JsDomNode? Target { get; internal set; }
-    public JsDomNode? CurrentTarget { get; internal set; }
+    // Target and CurrentTarget are typed as JsObject? so
+    // non-DOM event sources (e.g. JsAbortSignal) can fill
+    // them in. JsDomNode values still flow through verbatim
+    // because JsDomNode is-a JsObject.
+    public JsObject? Target { get; internal set; }
+    public JsObject? CurrentTarget { get; internal set; }
     public int EventPhase { get; internal set; } = PhaseNone;
     public bool DefaultPrevented { get; internal set; }
     public bool PropagationStopped { get; internal set; }
