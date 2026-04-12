@@ -27,6 +27,21 @@ internal static class BuiltinRegExp
         var proto = new JsObject { Prototype = engine.ObjectPrototype };
         engine.RegExpPrototype = proto;
 
+        // Install flag-check properties on the prototype so
+        // polyfills that do `'hasIndices' in RegExp.prototype`
+        // or `'dotAll' in RegExp.prototype` see the feature
+        // as available and skip their polyfill path. The
+        // prototype values are `false` (the default for a
+        // regex without the flag); instance values from
+        // JsRegExp.Get override them via the prototype chain.
+        proto.SetNonEnumerable("global", false);
+        proto.SetNonEnumerable("ignoreCase", false);
+        proto.SetNonEnumerable("multiline", false);
+        proto.SetNonEnumerable("dotAll", false);
+        proto.SetNonEnumerable("sticky", false);
+        proto.SetNonEnumerable("unicode", false);
+        proto.SetNonEnumerable("hasIndices", false);
+
         proto.SetNonEnumerable("test", new JsFunction("test", (thisVal, args) =>
         {
             var r = RequireRegExp(thisVal, "RegExp.prototype.test");

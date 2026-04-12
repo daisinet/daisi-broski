@@ -127,6 +127,23 @@ public sealed class JsLexer
             return ScanIdentifierOrKeyword(start);
         }
 
+        // ES2022 private class field / method names: `#name`.
+        // The `#` prefix is part of the identifier. We lex it
+        // as a regular Identifier token with the `#` included
+        // in the StringValue so the parser and compiler can
+        // treat it as a property name. Privacy enforcement is
+        // deferred — the name is stored and looked up like any
+        // other property, just with a `#` prefix that script
+        // code can't synthesize (no `obj['#foo']` equivalent).
+        if (c == '#' && _pos + 1 < _src.Length && IsIdentifierStart(_src[_pos + 1]))
+        {
+            _pos++; // skip '#'
+            int nameStart = _pos;
+            while (_pos < _src.Length && IsIdentifierPart(_src[_pos])) _pos++;
+            var name = "#" + _src[nameStart.._pos];
+            return new JsToken(JsTokenKind.Identifier, start, _pos - start, stringValue: name);
+        }
+
         // Number literal starting with a digit.
         if (c >= '0' && c <= '9')
         {

@@ -1291,10 +1291,10 @@ public sealed class JsParser
         }
         else
         {
-            // Instance field: `name = expr;`. Detect by
-            // peeking: if the current token is an identifier
-            // and the NEXT token is `=`, `;`, or `}`, it's a
-            // field not a method.
+            // Instance field: `name = expr;` or `#name = expr;`.
+            // Detect by peeking: if the current token is an
+            // identifier and the NEXT token is `=`, `;`, or `}`,
+            // it's a field not a method.
             if (Current.Kind != JsTokenKind.Identifier) return false;
             var afterName = Peek(1).Kind;
             if (afterName != JsTokenKind.Assign &&
