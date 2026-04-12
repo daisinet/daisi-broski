@@ -143,30 +143,33 @@ public static class Program
             // instead of the about:blank placeholder.
             engine.AttachDocument(doc, page.FinalUrl);
 
-            // Let scripts reach the real network via the slice 3c-6
-            // fetch handler. The engine's default already points at
-            // a shared HttpFetcher, so no extra setup needed.
+            // A shared fetcher for external script loading,
+            // reusing the same options (UA, redirects) as the
+            // page fetch so the server sees consistent headers.
+            using var scriptFetcher = new HttpFetcher(options);
 
-            // Find every inline <script> and run it in document
-            // order. We skip scripts with a `src` attribute for
-            // this command — a real browser would fetch them, but
-            // the point here is to exercise the engine against
-            // the scripts that actually ship in the HTML response.
+            // Execute every <script> in document order — both
+            // inline and external (src="..."). This matches the
+            // browser's blocking-script execution model: each
+            // script runs to completion before the next one starts,
+            // and scripts see the DOM as it was after all
+            // preceding scripts finished.
+            //
+            // We skip:
+            //   - type="module" (ES module loading deferred)
+            //   - type="application/json" / "application/ld+json"
+            //   - async / defer (would need out-of-order scheduling)
             int ranCount = 0;
             int errorCount = 0;
             int inlineCount = 0;
             int externalCount = 0;
+            int externalFetchErrors = 0;
             int skippedTypeCount = 0;
             var scriptErrors = new List<string>();
             int scriptIdx = 0;
             foreach (var script in doc.QuerySelectorAll("script"))
             {
                 scriptIdx++;
-                if (script.HasAttribute("src"))
-                {
-                    externalCount++;
-                    continue;
-                }
                 var type = script.GetAttribute("type") ?? "text/javascript";
                 // Skip modules / JSON-LD / application-specific types.
                 if (type is not ("" or "text/javascript" or "application/javascript"))
@@ -174,9 +177,58 @@ public static class Program
                     skippedTypeCount++;
                     continue;
                 }
-                var source = script.TextContent;
-                if (string.IsNullOrWhiteSpace(source)) continue;
-                inlineCount++;
+                // Skip async / defer — these load out of order
+                // in a real browser and we don't have a scheduler.
+                if (script.HasAttribute("async") || script.HasAttribute("defer"))
+                {
+                    externalCount++;
+                    continue;
+                }
+
+                string source;
+                string label;
+                bool isExternal = script.HasAttribute("src");
+                if (isExternal)
+                {
+                    externalCount++;
+                    var src = script.GetAttribute("src")!;
+                    // Resolve relative URLs against the page.
+                    Uri scriptUri;
+                    try
+                    {
+                        scriptUri = new Uri(page.FinalUrl, src);
+                    }
+                    catch
+                    {
+                        externalFetchErrors++;
+                        continue;
+                    }
+                    // Fetch the script source.
+                    try
+                    {
+                        var result = scriptFetcher.FetchAsync(scriptUri).GetAwaiter().GetResult();
+                        source = System.Text.Encoding.UTF8.GetString(result.Body);
+                    }
+                    catch (Exception fetchEx)
+                    {
+                        externalFetchErrors++;
+                        if (!quiet)
+                        {
+                            scriptErrors.Add(
+                                $"[script #{scriptIdx} src={src}] fetch failed: {fetchEx.Message}");
+                        }
+                        continue;
+                    }
+                    label = $"src={src} ({source.Length} bytes)";
+                }
+                else
+                {
+                    source = script.TextContent;
+                    if (string.IsNullOrWhiteSpace(source)) continue;
+                    inlineCount++;
+                    label = $"inline ({source.Length} bytes)";
+                }
+
                 try
                 {
                     // Track the currently-executing script
@@ -192,14 +244,14 @@ public static class Program
                     string detail = UnpackJsError(jsEx);
                     scriptErrors.Add(
                         $"[script #{scriptIdx}] {detail}\n" +
-                        $"    source ({source.Length} bytes): {Truncate(source, 400)}");
+                        $"    {label}: {Truncate(source, 400)}");
                 }
                 catch (Exception ex)
                 {
                     errorCount++;
                     scriptErrors.Add(
                         $"[script #{scriptIdx}] {ex.GetType().Name}: {ex.Message}\n" +
-                        $"    source ({source.Length} bytes): {Truncate(source, 400)}");
+                        $"    {label}: {Truncate(source, 400)}");
                 }
                 finally
                 {
@@ -215,12 +267,14 @@ public static class Program
 
             var title = doc.QuerySelector("title")?.TextContent ?? "(no title)";
             Console.Out.WriteLine($"title: {title}");
+            int totalRunnable = inlineCount + externalCount;
             Console.Out.WriteLine(
                 $"scripts:     {preScripts} total (" +
                 $"{inlineCount} inline, {externalCount} external, {skippedTypeCount} other type)");
             Console.Out.WriteLine(
-                $"inline run:  {ranCount}/{inlineCount}" +
-                (errorCount > 0 ? $" ({errorCount} errored)" : ""));
+                $"executed:    {ranCount}/{totalRunnable}" +
+                (errorCount > 0 ? $" ({errorCount} errored)" : "") +
+                (externalFetchErrors > 0 ? $" ({externalFetchErrors} fetch failed)" : ""));
             Console.Out.WriteLine(
                 $"elements:    {preElements} → {postElements} " +
                 $"({Delta(postElements - preElements)})");
