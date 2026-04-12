@@ -271,16 +271,39 @@ internal static class BuiltinBrowserHost
         engine.Globals["scrollBy"] = new JsFunction("scrollBy", (t, a) => JsValue.Undefined);
         engine.Globals["scroll"] = new JsFunction("scroll", (t, a) => JsValue.Undefined);
 
-        // matchMedia returns an object with a `matches`
-        // boolean and a no-op `addListener`. Enough for
-        // responsive script to not crash; always reports
-        // the query as matching the light-theme /
-        // landscape default.
+        // getComputedStyle — returns the element's inline style
+        // object (which is the best we can do without a real
+        // cascade / layout). Scripts that check
+        // getComputedStyle(el).display get the inline-set
+        // value back, which covers the common "did my
+        // script-side style change take effect?" pattern.
+        engine.Globals["getComputedStyle"] = new JsFunction("getComputedStyle", (thisVal, args) =>
+        {
+            if (args.Count == 0 || args[0] is not Daisi.Broski.Engine.Js.Dom.JsDomElement el)
+            {
+                // Return a stub with empty getPropertyValue
+                // so script code that blindly calls
+                // getComputedStyle(nonElement) doesn't crash.
+                var stub = new JsObject { Prototype = engine.ObjectPrototype };
+                stub.SetNonEnumerable("getPropertyValue",
+                    new JsFunction("getPropertyValue", (t, a) => ""));
+                return stub;
+            }
+            // Delegate to the element's own style object.
+            return el.Get("style");
+        });
+
+        // matchMedia returns a MediaQueryList-shaped object.
+        // We evaluate a small subset of common media queries
+        // against the engine's viewport constants (innerWidth
+        // / innerHeight at 1280×800, light theme, no-motion).
         engine.Globals["matchMedia"] = new JsFunction("matchMedia", (t, a) =>
         {
+            var query = a.Count > 0 ? JsValue.ToJsString(a[0]) : "";
+            bool matches = EvaluateMediaQuery(query);
             var result = new JsObject { Prototype = engine.ObjectPrototype };
-            result.Set("matches", false);
-            result.Set("media", a.Count > 0 ? JsValue.ToJsString(a[0]) : "");
+            result.Set("matches", matches);
+            result.Set("media", query);
             result.SetNonEnumerable("addListener", new JsFunction("addListener", (tt, aa) => JsValue.Undefined));
             result.SetNonEnumerable("removeListener", new JsFunction("removeListener", (tt, aa) => JsValue.Undefined));
             result.SetNonEnumerable("addEventListener", new JsFunction("addEventListener", (tt, aa) => JsValue.Undefined));
@@ -317,6 +340,38 @@ internal static class BuiltinBrowserHost
             new JsFunction("get scrollRestoration", (t, a) => "auto"),
             new JsFunction("set scrollRestoration", (t, a) => JsValue.Undefined));
 
+        // Helper: update location.href when the current
+        // history entry changes URL.
+        void UpdateLocation()
+        {
+            if (engine.Globals.TryGetValue("location", out var loc) && loc is JsLocation jLoc)
+            {
+                jLoc.Set("href", entries[index].Url);
+            }
+        }
+
+        // Helper: fire a popstate event on window with the
+        // current entry's state. Per spec, popstate fires
+        // only on back / forward / go — NOT on pushState
+        // or replaceState.
+        void FirePopstate(JsVM vm)
+        {
+            if (engine.Globals.TryGetValue("window", out var win) && win is JsObject winObj)
+            {
+                var evt = new Daisi.Broski.Engine.Js.Dom.JsDomCustomEvent(
+                    "popstate", bubbles: false, cancelable: false, entries[index].State)
+                {
+                    Prototype = engine.EventPrototype,
+                };
+                // If window is a JsDomNode we can dispatch properly;
+                // otherwise just look for an onpopstate handler.
+                if (winObj is Daisi.Broski.Engine.Js.Dom.JsDomNode domWin)
+                {
+                    domWin.DispatchEvent(vm, evt);
+                }
+            }
+        }
+
         history.SetNonEnumerable("pushState", new JsFunction("pushState", (thisVal, args) =>
         {
             var state = args.Count > 0 ? args[0] : JsValue.Null;
@@ -330,6 +385,9 @@ internal static class BuiltinBrowserHost
             }
             entries.Add(new JsHistoryEntry(state, title, url));
             index = entries.Count - 1;
+            // Per spec: pushState updates location but does
+            // NOT fire popstate.
+            UpdateLocation();
             return JsValue.Undefined;
         }));
 
@@ -339,28 +397,45 @@ internal static class BuiltinBrowserHost
             var title = args.Count > 1 ? JsValue.ToJsString(args[1]) : "";
             var url = args.Count > 2 ? JsValue.ToJsString(args[2]) : entries[index].Url;
             entries[index] = new JsHistoryEntry(state, title, url);
+            UpdateLocation();
             return JsValue.Undefined;
         }));
 
-        history.SetNonEnumerable("back", new JsFunction("back", (thisVal, args) =>
+        history.SetNonEnumerable("back", new JsFunction("back", (vm, thisVal, args) =>
         {
-            if (index > 0) index--;
+            if (index > 0)
+            {
+                index--;
+                UpdateLocation();
+                FirePopstate(vm);
+            }
             return JsValue.Undefined;
         }));
 
-        history.SetNonEnumerable("forward", new JsFunction("forward", (thisVal, args) =>
+        history.SetNonEnumerable("forward", new JsFunction("forward", (vm, thisVal, args) =>
         {
-            if (index < entries.Count - 1) index++;
+            if (index < entries.Count - 1)
+            {
+                index++;
+                UpdateLocation();
+                FirePopstate(vm);
+            }
             return JsValue.Undefined;
         }));
 
-        history.SetNonEnumerable("go", new JsFunction("go", (thisVal, args) =>
+        history.SetNonEnumerable("go", new JsFunction("go", (vm, thisVal, args) =>
         {
             int delta = args.Count > 0 ? (int)JsValue.ToNumber(args[0]) : 0;
+            if (delta == 0) return JsValue.Undefined;
             int target = index + delta;
             if (target < 0) target = 0;
             if (target >= entries.Count) target = entries.Count - 1;
-            index = target;
+            if (target != index)
+            {
+                index = target;
+                UpdateLocation();
+                FirePopstate(vm);
+            }
             return JsValue.Undefined;
         }));
 
@@ -438,6 +513,136 @@ internal static class BuiltinBrowserHost
         engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
         engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
         engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
+    }
+
+    /// <summary>
+    /// Evaluate a media query string against the engine's
+    /// hardcoded viewport (1280×800, light theme, no motion
+    /// preference, screen media). Covers the common queries
+    /// real scripts actually test:
+    /// <list type="bullet">
+    /// <item><c>(min-width: Npx)</c> / <c>(max-width: Npx)</c></item>
+    /// <item><c>(min-height: Npx)</c> / <c>(max-height: Npx)</c></item>
+    /// <item><c>(prefers-color-scheme: dark|light)</c></item>
+    /// <item><c>(prefers-reduced-motion: reduce|no-preference)</c></item>
+    /// <item><c>screen</c> / <c>print</c> / <c>all</c></item>
+    /// </list>
+    /// Unknown queries default to <c>false</c>.
+    /// </summary>
+    private static bool EvaluateMediaQuery(string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        var q = query.Trim().ToLowerInvariant();
+
+        // Media type bare checks.
+        if (q == "all" || q == "screen") return true;
+        if (q == "print") return false;
+
+        // Compound checks BEFORE single-paren stripping —
+        // otherwise `(a) and (b)` would strip the outer
+        // parens and misparse.
+        if (q.StartsWith("not "))
+        {
+            return !EvaluateMediaQuery(q.Substring(4));
+        }
+        if (q.Contains(") and ("))
+        {
+            foreach (var part in q.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!EvaluateMediaQuery(part.Trim())) return false;
+            }
+            return true;
+        }
+        if (q.Contains(") or (") || q.Contains("), ("))
+        {
+            var sep = q.Contains(") or (") ? " or " : ", ";
+            foreach (var part in q.Split(new[] { sep }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (EvaluateMediaQuery(part.Trim())) return true;
+            }
+            return false;
+        }
+
+        // Simple feature queries — extract the content
+        // between the outermost parens.
+        if (q.StartsWith('(') && q.EndsWith(')'))
+        {
+            var inner = q.Substring(1, q.Length - 2).Trim();
+            return EvaluateFeature(inner);
+        }
+
+        // Unknown query → false (safe default).
+        return false;
+    }
+
+    private static bool EvaluateFeature(string feature)
+    {
+        // Split on ':'
+        var colon = feature.IndexOf(':');
+        if (colon < 0)
+        {
+            // Bare feature test like `(color)` → true for a
+            // color-capable display.
+            return feature is "color" or "hover" or "pointer";
+        }
+        var name = feature.Substring(0, colon).Trim();
+        var value = feature.Substring(colon + 1).Trim();
+
+        // Viewport dimensions (our constants: 1280×800).
+        const int W = 1280;
+        const int H = 800;
+
+        switch (name)
+        {
+            case "min-width":
+                return TryParsePx(value, out var minW) && W >= minW;
+            case "max-width":
+                return TryParsePx(value, out var maxW) && W <= maxW;
+            case "min-height":
+                return TryParsePx(value, out var minH) && H >= minH;
+            case "max-height":
+                return TryParsePx(value, out var maxH) && H <= maxH;
+            case "prefers-color-scheme":
+                return value == "light";
+            case "prefers-reduced-motion":
+                return value == "no-preference";
+            case "display-mode":
+                return value == "browser";
+            case "orientation":
+                return value == "landscape"; // 1280 > 800
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryParsePx(string s, out int px)
+    {
+        px = 0;
+        if (s.EndsWith("px"))
+        {
+            return int.TryParse(s.Substring(0, s.Length - 2).Trim(),
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out px);
+        }
+        // rem / em — approximate as 16px per unit.
+        if (s.EndsWith("rem") || s.EndsWith("em"))
+        {
+            var numPart = s.Substring(0, s.Length - (s.EndsWith("rem") ? 3 : 2)).Trim();
+            if (double.TryParse(numPart,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var val))
+            {
+                px = (int)(val * 16);
+                return true;
+            }
+        }
+        // Plain number — treat as px.
+        return int.TryParse(s.Trim(),
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out px);
     }
 
     private static JsFunction MakeObserverCtor(JsEngine engine, string name)

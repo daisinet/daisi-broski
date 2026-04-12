@@ -111,6 +111,35 @@ public class JsObject
     public Dictionary<string, object?> Properties { get; } = new();
 
     /// <summary>
+    /// Object integrity flags matching the ES5+ spec model:
+    /// <list type="bullet">
+    /// <item><c>Frozen</c>: no new props, no deletes, no writes
+    ///   to existing data properties (Object.freeze).</item>
+    /// <item><c>Sealed</c>: no new props, no deletes, but
+    ///   existing data properties are still writable
+    ///   (Object.seal).</item>
+    /// <item><c>NonExtensible</c>: no new props, but deletes
+    ///   and writes are still allowed
+    ///   (Object.preventExtensions).</item>
+    /// </list>
+    /// All three are one-way: once set, they can't be cleared.
+    /// The flags are checked in <see cref="Set"/> and
+    /// <see cref="Delete"/> so script-visible mutations are
+    /// rejected in non-strict mode (silent no-op) without
+    /// needing per-property descriptors.
+    /// </summary>
+    public bool IsFrozen { get; private set; }
+    public bool IsSealed { get; private set; }
+    public bool IsNonExtensible { get; private set; }
+
+    /// <summary>Mark this object as frozen (implies sealed + non-extensible).</summary>
+    public void Freeze() { IsFrozen = true; IsSealed = true; IsNonExtensible = true; }
+    /// <summary>Mark this object as sealed (implies non-extensible).</summary>
+    public void Seal() { IsSealed = true; IsNonExtensible = true; }
+    /// <summary>Mark this object as non-extensible.</summary>
+    public void PreventExtensions() { IsNonExtensible = true; }
+
+    /// <summary>
     /// Names that have been marked non-enumerable (skipped by
     /// <c>for..in</c> and <see cref="OwnKeys"/>). Phase 3a does
     /// not yet implement the full ES5 property descriptor model
@@ -184,6 +213,8 @@ public class JsObject
     /// </summary>
     public virtual void Set(string key, object? value)
     {
+        if (IsFrozen) return; // silently reject in non-strict
+        if (IsNonExtensible && !Properties.ContainsKey(key)) return;
         Properties[key] = value;
     }
 
@@ -231,6 +262,7 @@ public class JsObject
     /// </summary>
     public virtual bool Delete(string key)
     {
+        if (IsSealed) return false; // sealed objects reject deletes
         Properties.Remove(key);
         return true;
     }

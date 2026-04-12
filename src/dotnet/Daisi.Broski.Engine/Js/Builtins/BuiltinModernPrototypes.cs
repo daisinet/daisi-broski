@@ -444,19 +444,37 @@ internal static class BuiltinModernPrototypes
             return result;
         }));
 
-        // freeze / isFrozen are approximate — we don't enforce
-        // immutability because there's no configurable/writable
-        // descriptor model yet. The no-op keeps script code that
-        // calls them from crashing.
         fn.SetNonEnumerable("freeze", new JsFunction("freeze", (thisVal, args) =>
-            args.Count > 0 ? args[0] : JsValue.Undefined));
-        fn.SetNonEnumerable("isFrozen", new JsFunction("isFrozen", (thisVal, args) => false));
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) obj.Freeze();
+            return args.Count > 0 ? args[0] : JsValue.Undefined;
+        }));
+        fn.SetNonEnumerable("isFrozen", new JsFunction("isFrozen", (thisVal, args) =>
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) return obj.IsFrozen;
+            // Primitives are considered frozen per spec.
+            return true;
+        }));
         fn.SetNonEnumerable("seal", new JsFunction("seal", (thisVal, args) =>
-            args.Count > 0 ? args[0] : JsValue.Undefined));
-        fn.SetNonEnumerable("isSealed", new JsFunction("isSealed", (thisVal, args) => false));
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) obj.Seal();
+            return args.Count > 0 ? args[0] : JsValue.Undefined;
+        }));
+        fn.SetNonEnumerable("isSealed", new JsFunction("isSealed", (thisVal, args) =>
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) return obj.IsSealed;
+            return true;
+        }));
         fn.SetNonEnumerable("preventExtensions", new JsFunction("preventExtensions", (thisVal, args) =>
-            args.Count > 0 ? args[0] : JsValue.Undefined));
-        fn.SetNonEnumerable("isExtensible", new JsFunction("isExtensible", (thisVal, args) => true));
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) obj.PreventExtensions();
+            return args.Count > 0 ? args[0] : JsValue.Undefined;
+        }));
+        fn.SetNonEnumerable("isExtensible", new JsFunction("isExtensible", (thisVal, args) =>
+        {
+            if (args.Count > 0 && args[0] is JsObject obj) return !obj.IsNonExtensible;
+            return false;
+        }));
 
         fn.SetNonEnumerable("getOwnPropertyNames", new JsFunction("getOwnPropertyNames", (thisVal, args) =>
         {

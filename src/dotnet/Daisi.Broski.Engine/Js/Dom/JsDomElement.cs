@@ -413,22 +413,19 @@ public class JsDomElement : JsDomNode
     }
 
     /// <summary>
-    /// Build a CSSStyleDeclaration-shaped stub. We don't
-    /// parse the <c>style</c> attribute — the returned
-    /// object is a read-only bag with empty strings for
-    /// every property lookup, plus a no-op
-    /// <c>setProperty</c>. Enough for scripts that do
-    /// <c>el.style.display = 'none'</c> and expect the
-    /// call to not throw. A future slice can back this
-    /// with a real cssText parser.
+    /// Cached <see cref="JsCssStyleDeclaration"/> for this
+    /// element. Lazily allocated on first read of
+    /// <c>el.style</c> and then returned on every subsequent
+    /// read so identity is stable (<c>el.style === el.style</c>).
     /// </summary>
-    private JsObject BuildStyle()
+    private JsCssStyleDeclaration? _cachedStyle;
+
+    private JsCssStyleDeclaration BuildStyle()
     {
-        var style = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
-        style.SetNonEnumerable("setProperty", new JsFunction("setProperty", (t, a) => JsValue.Undefined));
-        style.SetNonEnumerable("getPropertyValue", new JsFunction("getPropertyValue", (t, a) => ""));
-        style.SetNonEnumerable("removeProperty", new JsFunction("removeProperty", (t, a) => ""));
-        style.Set("cssText", "");
-        return style;
+        _cachedStyle ??= new JsCssStyleDeclaration(_element)
+        {
+            Prototype = Bridge.Engine.ObjectPrototype,
+        };
+        return _cachedStyle;
     }
 }
