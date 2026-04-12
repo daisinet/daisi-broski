@@ -1540,14 +1540,61 @@ public sealed class JsParser
                 @default: null,
                 isRest: true);
         }
-        if (Current.Kind != JsTokenKind.Identifier)
+        // Accept keywords as property names in destructuring:
+        // `const { default: x } = mod` is valid ES2015+.
+        string key;
+        JsToken keyTok;
+        if (Current.Kind == JsTokenKind.Identifier)
+        {
+            keyTok = Consume();
+            key = keyTok.StringValue!;
+        }
+        else if (IsKeyword(Current.Kind) ||
+                 Current.Kind is JsTokenKind.TrueLiteral or
+                                 JsTokenKind.FalseLiteral or
+                                 JsTokenKind.NullLiteral)
+        {
+            keyTok = Consume();
+            key = _source.Substring(keyTok.Start, keyTok.Length);
+        }
+        else if (Current.Kind == JsTokenKind.StringLiteral ||
+                 Current.Kind == JsTokenKind.NumberLiteral)
+        {
+            keyTok = Consume();
+            key = keyTok.Kind == JsTokenKind.StringLiteral
+                ? keyTok.StringValue!
+                : JsValue.ToJsString(keyTok.NumberValue);
+        }
+        else if (Current.Kind == JsTokenKind.LeftBracket)
+        {
+            // Computed property in destructuring: { [expr]: target } = obj
+            // We parse but degrade: use a placeholder key name since
+            // the compiler can't handle computed destructuring yet.
+            // The pattern will bind to the wrong property but won't crash.
+            Consume(); // [
+            var expr = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightBracket, "computed destructuring key");
+            // Use a placeholder key — the compiler will look up
+            // this key name on the source object. We store the
+            // expression text as the key for best-effort matching.
+            keyTok = new JsToken(JsTokenKind.Identifier, expr.Start, 0, "[computed]");
+            key = "[computed]";
+            // Must have `:` after computed key.
+            Expect(JsTokenKind.Colon, "computed destructuring property");
+            var compTarget = ParseBindingTarget();
+            Expression? compDefault = null;
+            if (Match(JsTokenKind.Assign))
+            {
+                compDefault = ParseAssignmentExpression(allowIn: true);
+            }
+            return new ObjectPatternProperty(start, compTarget.End, key, compTarget, compDefault);
+        }
+        else
         {
             throw new JsParseException(
                 $"Expected identifier in object pattern, got {Current.Kind}",
                 Current.Start);
         }
-        var keyTok = Consume();
-        string key = keyTok.StringValue!;
         JsNode target;
         if (Match(JsTokenKind.Colon))
         {

@@ -138,6 +138,101 @@ internal static class BuiltinBrowserHost
             return evaluator;
         });
 
+        // ReadableStream — the WHATWG Streams API. PlanetScale
+        // and other sites use it for streaming responses.
+        // Install a minimal stub constructor so feature-
+        // detection code doesn't crash. A real implementation
+        // would need async iteration + the controller API.
+        engine.Globals["ReadableStream"] = new JsFunction("ReadableStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.SetNonEnumerable("getReader", new JsFunction("getReader", (tt, aa) =>
+            {
+                var reader = new JsObject { Prototype = engine.ObjectPrototype };
+                reader.SetNonEnumerable("read", new JsFunction("read", (rt, ra) =>
+                {
+                    // Return a resolved promise with {done: true}
+                    var result = new JsObject { Prototype = engine.ObjectPrototype };
+                    result.Set("done", true);
+                    result.Set("value", JsValue.Undefined);
+                    var p = new JsPromise(engine);
+                    p.Resolve(result);
+                    return p;
+                }));
+                reader.SetNonEnumerable("cancel", new JsFunction("cancel", (rt, ra) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                reader.SetNonEnumerable("releaseLock", new JsFunction("releaseLock", (rt, ra) => JsValue.Undefined));
+                return reader;
+            }));
+            stream.SetNonEnumerable("cancel", new JsFunction("cancel", (tt, aa) =>
+            {
+                var p = new JsPromise(engine);
+                p.Resolve(JsValue.Undefined);
+                return p;
+            }));
+            stream.Set("locked", false);
+            // If a source was passed, try calling start() on it
+            // so the controller pattern minimally works.
+            if (a.Count > 0 && a[0] is JsObject source)
+            {
+                var startFn = source.Get("start");
+                if (startFn is JsFunction sf)
+                {
+                    var controller = new JsObject { Prototype = engine.ObjectPrototype };
+                    controller.SetNonEnumerable("enqueue", new JsFunction("enqueue", (ct, ca) => JsValue.Undefined));
+                    controller.SetNonEnumerable("close", new JsFunction("close", (ct, ca) => JsValue.Undefined));
+                    controller.SetNonEnumerable("error", new JsFunction("error", (ct, ca) => JsValue.Undefined));
+                    try
+                    {
+                        engine.Vm.InvokeJsFunction(sf, source, new object?[] { controller });
+                    }
+                    catch { } // Don't crash on errors in the source start callback
+                }
+            }
+            return stream;
+        });
+
+        // WritableStream stub — some sites check for this too.
+        engine.Globals["WritableStream"] = new JsFunction("WritableStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.SetNonEnumerable("getWriter", new JsFunction("getWriter", (tt, aa) =>
+            {
+                var writer = new JsObject { Prototype = engine.ObjectPrototype };
+                writer.SetNonEnumerable("write", new JsFunction("write", (wt, wa) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                writer.SetNonEnumerable("close", new JsFunction("close", (wt, wa) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                writer.SetNonEnumerable("releaseLock", new JsFunction("releaseLock", (wt, wa) => JsValue.Undefined));
+                return writer;
+            }));
+            stream.Set("locked", false);
+            return stream;
+        });
+
+        // TransformStream stub
+        engine.Globals["TransformStream"] = new JsFunction("TransformStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.Set("readable", engine.Vm.InvokeJsFunction(
+                (JsFunction)engine.Globals["ReadableStream"]!, JsValue.Undefined, System.Array.Empty<object?>()));
+            stream.Set("writable", engine.Vm.InvokeJsFunction(
+                (JsFunction)engine.Globals["WritableStream"]!, JsValue.Undefined, System.Array.Empty<object?>()));
+            return stream;
+        });
+
         // XMLHttpRequest — the legacy XHR API. SolidJS and
         // other frameworks check for its existence. Install
         // a stub that accepts open/send calls as no-ops.
