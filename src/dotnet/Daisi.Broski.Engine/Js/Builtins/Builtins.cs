@@ -44,6 +44,7 @@ internal static class Builtins
         BuiltinAbort.Install(engine);
         BuiltinBigInt.Install(engine);
         BuiltinRegExp.Install(engine);
+        BuiltinBrowserHost.Install(engine);
     }
 
     /// <summary>
