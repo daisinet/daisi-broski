@@ -2320,30 +2320,13 @@ public sealed class JsCompiler
             if (prop.Kind is PropertyKind.Get or PropertyKind.Set)
             {
                 // Getter / setter in object literal — stored
-                // as a regular property for now. Spec-correct
-                // accessor dispatch (where reading the property
-                // calls the getter) requires a dedicated opcode
-                // or a runtime fixup pass. This pragmatic
-                // approach prevents parse/compile crashes and
-                // covers the common case where getters in object
-                // literals are used for feature detection
-                // (`{ get passive() { flag = true } }`) where
-                // the object is passed to addEventListener —
-                // the browser reads the `passive` property,
-                // triggering the getter. In our engine the
-                // property holds the function value instead,
-                // which is truthy, so the feature-detect still
-                // "passes" even though the getter didn't fire.
-                var accName = PropertyKeyToName(prop.Key);
-                int accNameIdx = _chunk.AddName(accName);
+                // as a regular property for now.
                 CompileExpression(prop.Value);
-                _chunk.EmitWithU16(OpCode.InitProperty, accNameIdx);
+                EmitPropertyInit(prop.Key);
                 continue;
             }
-            var name = PropertyKeyToName(prop.Key);
-            int nameIdx = _chunk.AddName(name);
             CompileExpression(prop.Value);
-            _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
+            EmitPropertyInit(prop.Key);
         }
     }
 
@@ -3276,13 +3259,54 @@ public sealed class JsCompiler
     /// compiler and VM only deal with string names, so we coerce
     /// once here.
     /// </summary>
-    private static string PropertyKeyToName(Expression key) => key switch
+    /// <summary>
+    /// Emit the init for a property on the object under
+    /// construction. If the key is a static name (identifier,
+    /// string literal, number literal), use the fast
+    /// <see cref="OpCode.InitProperty"/>. Otherwise compile
+    /// the key expression and use
+    /// <see cref="OpCode.SetPropertyComputed"/>.
+    /// </summary>
+    private void EmitPropertyInit(Expression key)
+    {
+        var staticName = TryPropertyKeyToName(key);
+        if (staticName is not null)
+        {
+            int nameIdx = _chunk.AddName(staticName);
+            _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
+        }
+        else
+        {
+            // Stack: [..., obj, value]. We need [..., obj, key, value].
+            // Swap to get [..., obj, value] → [..., value, obj],
+            // compile the key → [..., value, obj, key], swap again
+            // → [..., value, key, obj]... this gets messy. Simpler:
+            // use StoreScratch to park the value, compile the key,
+            // LoadScratch, then SetPropertyComputed.
+            _chunk.Emit(OpCode.StoreScratch); // park value
+            CompileExpression(key);           // push key
+            _chunk.Emit(OpCode.LoadScratch);  // push value
+            _chunk.Emit(OpCode.SetPropertyComputed);
+        }
+    }
+
+    /// <summary>
+    /// Try to resolve a property key to a compile-time string.
+    /// Returns <c>null</c> for computed keys that require
+    /// runtime evaluation (member expressions, template
+    /// literals, arbitrary expressions inside <c>[...]</c>).
+    /// </summary>
+    private static string? TryPropertyKeyToName(Expression key) => key switch
     {
         Identifier id => id.Name,
         Literal { Kind: LiteralKind.String, Value: string s } => s,
         Literal { Kind: LiteralKind.Number, Value: double n } => JsValue.ToJsString(n),
-        _ => throw new JsCompileException($"Unsupported property key: {key.GetType().Name}", key.Start),
+        _ => null,
     };
+
+    private static string PropertyKeyToName(Expression key) =>
+        TryPropertyKeyToName(key) ??
+        throw new JsCompileException($"Unsupported property key: {key.GetType().Name}", key.Start);
 
     // -------------------------------------------------------------------
     // Operator tables
