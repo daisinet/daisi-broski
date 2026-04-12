@@ -279,4 +279,67 @@ public class JsBrowserHostTests
             "undefined",
             Eval("typeof matchMedia('(prefers-reduced-motion: reduce)').addListener(function () {});"));
     }
+
+    // ========================================================
+    // self / globalThis aliases
+    // ========================================================
+
+    [Fact]
+    public void Self_exists_and_is_object()
+    {
+        Assert.Equal("object", Eval("typeof self;"));
+    }
+
+    [Fact]
+    public void GlobalThis_exists_and_is_object()
+    {
+        Assert.Equal("object", Eval("typeof globalThis;"));
+    }
+
+    [Fact]
+    public void Self_equals_window()
+    {
+        Assert.Equal(true, Eval("self === window;"));
+    }
+
+    [Fact]
+    public void GlobalThis_equals_window()
+    {
+        Assert.Equal(true, Eval("globalThis === window;"));
+    }
+
+    [Fact]
+    public void Assigning_to_self_property_is_visible_on_window()
+    {
+        // Next.js sites do this constantly:
+        //   self.__next_f = self.__next_f || [];
+        //   self.__next_f.push(...)
+        // For that to work, `self.X` and `window.X` must
+        // alias the same storage.
+        Assert.Equal(
+            3.0,
+            Eval(@"
+                self.__next_f = [];
+                self.__next_f.push(1);
+                self.__next_f.push(2);
+                self.__next_f.push(3);
+                window.__next_f.length;
+            "));
+    }
+
+    [Fact]
+    public void Nextjs_style_streaming_hydration_pattern()
+    {
+        // The exact pattern every Next.js-based site ships
+        // in each streamed chunk. 185 of these in a row
+        // on tailwindcss.com's homepage before this was
+        // wired up.
+        Assert.Equal(
+            2.0,
+            Eval(@"
+                (self.__next_f = self.__next_f || []).push([0, 'payload-a']);
+                (self.__next_f = self.__next_f || []).push([0, 'payload-b']);
+                self.__next_f.length;
+            "));
+    }
 }

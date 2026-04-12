@@ -154,20 +154,29 @@ public static class Program
             // the scripts that actually ship in the HTML response.
             int ranCount = 0;
             int errorCount = 0;
+            int inlineCount = 0;
+            int externalCount = 0;
+            int skippedTypeCount = 0;
             var scriptErrors = new List<string>();
             int scriptIdx = 0;
             foreach (var script in doc.QuerySelectorAll("script"))
             {
                 scriptIdx++;
-                if (script.HasAttribute("src")) continue;
+                if (script.HasAttribute("src"))
+                {
+                    externalCount++;
+                    continue;
+                }
                 var type = script.GetAttribute("type") ?? "text/javascript";
                 // Skip modules / JSON-LD / application-specific types.
                 if (type is not ("" or "text/javascript" or "application/javascript"))
                 {
+                    skippedTypeCount++;
                     continue;
                 }
                 var source = script.TextContent;
                 if (string.IsNullOrWhiteSpace(source)) continue;
+                inlineCount++;
                 try
                 {
                     // Track the currently-executing script
@@ -207,7 +216,10 @@ public static class Program
             var title = doc.QuerySelector("title")?.TextContent ?? "(no title)";
             Console.Out.WriteLine($"title: {title}");
             Console.Out.WriteLine(
-                $"scripts ran: {ranCount}/{preScripts}" +
+                $"scripts:     {preScripts} total (" +
+                $"{inlineCount} inline, {externalCount} external, {skippedTypeCount} other type)");
+            Console.Out.WriteLine(
+                $"inline run:  {ranCount}/{inlineCount}" +
                 (errorCount > 0 ? $" ({errorCount} errored)" : ""));
             Console.Out.WriteLine(
                 $"elements:    {preElements} → {postElements} " +

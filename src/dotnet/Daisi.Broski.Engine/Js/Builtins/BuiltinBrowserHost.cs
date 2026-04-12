@@ -61,6 +61,22 @@ internal static class BuiltinBrowserHost
         {
             engine.Globals["window"] = new Daisi.Broski.Engine.Js.Dom.JsWindowProxy(engine);
         }
+        // `self` and `globalThis` are both spec aliases for
+        // the global object. Next.js-based sites (and every
+        // modern bundler's streaming-SSR runtime) call
+        // `self.__next_f.push(...)` on every chunk, so
+        // failing to install `self` blocks the entire
+        // hydration pipeline. Install as aliases for the
+        // window proxy so any assignment to `self.X` also
+        // reaches `window.X` and vice versa.
+        if (!engine.Globals.ContainsKey("self"))
+        {
+            engine.Globals["self"] = engine.Globals["window"];
+        }
+        if (!engine.Globals.ContainsKey("globalThis"))
+        {
+            engine.Globals["globalThis"] = engine.Globals["window"];
+        }
 
         InstallStorage(engine);
         InstallNavigator(engine);
