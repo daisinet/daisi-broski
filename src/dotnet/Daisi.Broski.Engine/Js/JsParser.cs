@@ -929,9 +929,16 @@ public sealed class JsParser
         {
             int cStart = Current.Start;
             Consume(); // catch
-            Expect(JsTokenKind.LeftParen, "catch");
-            var param = ParseBindingIdentifier();
-            Expect(JsTokenKind.RightParen, "catch");
+            // ES2019 optional catch binding: `catch { ... }`
+            // without a parameter. The catch body still runs
+            // but the thrown value isn't bound to a name.
+            Identifier? param = null;
+            if (Current.Kind == JsTokenKind.LeftParen)
+            {
+                Consume();
+                param = ParseBindingIdentifier();
+                Expect(JsTokenKind.RightParen, "catch");
+            }
             var body = ParseBlockStatement();
             handler = new CatchClause(cStart, body.End, param, body);
         }

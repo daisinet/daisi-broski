@@ -78,6 +78,21 @@ internal static class BuiltinBrowserHost
             engine.Globals["globalThis"] = engine.Globals["window"];
         }
 
+        // `top` and `parent` are frame-hierarchy globals. In a
+        // single-frame headless context they all point at window.
+        if (!engine.Globals.ContainsKey("top"))
+        {
+            engine.Globals["top"] = engine.Globals["window"];
+        }
+        if (!engine.Globals.ContainsKey("parent"))
+        {
+            engine.Globals["parent"] = engine.Globals["window"];
+        }
+        if (!engine.Globals.ContainsKey("frames"))
+        {
+            engine.Globals["frames"] = engine.Globals["window"];
+        }
+
         // Global event target methods — in browsers, bare
         // `addEventListener('load', fn)` routes to `window`.
         // Since our JsWindowProxy isn't a JsDomNode with the
@@ -89,6 +104,63 @@ internal static class BuiltinBrowserHost
         engine.Globals["addEventListener"] = new JsFunction("addEventListener", (t, a) => JsValue.Undefined);
         engine.Globals["removeEventListener"] = new JsFunction("removeEventListener", (t, a) => JsValue.Undefined);
         engine.Globals["dispatchEvent"] = new JsFunction("dispatchEvent", (t, a) => true);
+
+        // XPathEvaluator — htmx and other DOM libraries check
+        // for its existence as a feature-detection signal.
+        // Install a minimal stub that creates evaluator
+        // instances with an evaluate() method returning an
+        // empty result set.
+        engine.Globals["XPathEvaluator"] = new JsFunction("XPathEvaluator", (t, a) =>
+        {
+            var evaluator = new JsObject { Prototype = engine.ObjectPrototype };
+            evaluator.SetNonEnumerable("evaluate", new JsFunction("evaluate", (et, ea) =>
+            {
+                var result = new JsObject { Prototype = engine.ObjectPrototype };
+                result.Set("resultType", 0.0);
+                result.Set("snapshotLength", 0.0);
+                result.SetNonEnumerable("iterateNext", new JsFunction("iterateNext", (rt, ra) => JsValue.Null));
+                result.SetNonEnumerable("snapshotItem", new JsFunction("snapshotItem", (rt, ra) => JsValue.Null));
+                return result;
+            }));
+            evaluator.SetNonEnumerable("createExpression", new JsFunction("createExpression", (et, ea) =>
+            {
+                var expr = new JsObject { Prototype = engine.ObjectPrototype };
+                expr.SetNonEnumerable("evaluate", new JsFunction("evaluate", (rt, ra) =>
+                {
+                    var result = new JsObject { Prototype = engine.ObjectPrototype };
+                    result.Set("resultType", 0.0);
+                    result.Set("snapshotLength", 0.0);
+                    result.SetNonEnumerable("iterateNext", new JsFunction("iterateNext", (rrt, rra) => JsValue.Null));
+                    return result;
+                }));
+                return expr;
+            }));
+            return evaluator;
+        });
+
+        // XMLHttpRequest — the legacy XHR API. SolidJS and
+        // other frameworks check for its existence. Install
+        // a stub that accepts open/send calls as no-ops.
+        engine.Globals["XMLHttpRequest"] = new JsFunction("XMLHttpRequest", (t, a) =>
+        {
+            var xhr = new JsObject { Prototype = engine.ObjectPrototype };
+            xhr.Set("readyState", 0.0);
+            xhr.Set("status", 0.0);
+            xhr.Set("responseText", "");
+            xhr.Set("response", "");
+            xhr.Set("onload", JsValue.Null);
+            xhr.Set("onerror", JsValue.Null);
+            xhr.Set("onreadystatechange", JsValue.Null);
+            xhr.SetNonEnumerable("open", new JsFunction("open", (tt, aa) => JsValue.Undefined));
+            xhr.SetNonEnumerable("send", new JsFunction("send", (tt, aa) => JsValue.Undefined));
+            xhr.SetNonEnumerable("setRequestHeader", new JsFunction("setRequestHeader", (tt, aa) => JsValue.Undefined));
+            xhr.SetNonEnumerable("getResponseHeader", new JsFunction("getResponseHeader", (tt, aa) => JsValue.Null));
+            xhr.SetNonEnumerable("getAllResponseHeaders", new JsFunction("getAllResponseHeaders", (tt, aa) => ""));
+            xhr.SetNonEnumerable("abort", new JsFunction("abort", (tt, aa) => JsValue.Undefined));
+            xhr.SetNonEnumerable("addEventListener", new JsFunction("addEventListener", (tt, aa) => JsValue.Undefined));
+            xhr.SetNonEnumerable("removeEventListener", new JsFunction("removeEventListener", (tt, aa) => JsValue.Undefined));
+            return xhr;
+        });
 
         InstallStorage(engine);
         InstallNavigator(engine);
@@ -269,6 +341,34 @@ internal static class BuiltinBrowserHost
         perf.SetNonEnumerable("clearMeasures", new JsFunction("clearMeasures", (thisVal, args) => JsValue.Undefined));
         perf.SetNonEnumerable("getEntries", new JsFunction("getEntries", (thisVal, args) =>
             new JsArray { Prototype = engine.ArrayPrototype }));
+
+        // Legacy Navigation Timing API (performance.timing).
+        // Deprecated in favor of PerformanceNavigationTiming
+        // but still widely used by analytics libraries
+        // (SolidJS, Qwik, Express sites all read
+        // performance.timing.navigationStart).
+        var timing = new JsObject { Prototype = engine.ObjectPrototype };
+        timing.Set("navigationStart", origin);
+        timing.Set("unloadEventStart", 0.0);
+        timing.Set("unloadEventEnd", 0.0);
+        timing.Set("redirectStart", 0.0);
+        timing.Set("redirectEnd", 0.0);
+        timing.Set("fetchStart", origin);
+        timing.Set("domainLookupStart", origin);
+        timing.Set("domainLookupEnd", origin);
+        timing.Set("connectStart", origin);
+        timing.Set("connectEnd", origin);
+        timing.Set("requestStart", origin);
+        timing.Set("responseStart", origin);
+        timing.Set("responseEnd", origin);
+        timing.Set("domLoading", origin);
+        timing.Set("domInteractive", origin);
+        timing.Set("domContentLoadedEventStart", origin);
+        timing.Set("domContentLoadedEventEnd", origin);
+        timing.Set("domComplete", origin);
+        timing.Set("loadEventStart", origin);
+        timing.Set("loadEventEnd", origin);
+        perf.SetNonEnumerable("timing", timing);
 
         engine.Globals["performance"] = perf;
     }

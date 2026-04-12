@@ -115,10 +115,14 @@ internal static class BuiltinObject
     /// </summary>
     private static object? GetPrototypeOf(object? thisVal, IReadOnlyList<object?> args)
     {
-        if (args.Count == 0 || args[0] is not JsObject obj)
-        {
-            return JsThrow.TypeError("Object.getPrototypeOf called on non-object");
-        }
+        if (args.Count == 0) return JsValue.Null;
+        // ES6 spec: Object.getPrototypeOf coerces primitives
+        // to their wrapper objects. We don't box primitives
+        // into wrapper objects, so for non-JsObject values
+        // we return null instead of throwing — this covers
+        // the jQuery pattern `Object.getPrototypeOf(str)`
+        // which checks if something is a plain object.
+        if (args[0] is not JsObject obj) return JsValue.Null;
         return (object?)obj.Prototype ?? JsValue.Null;
     }
 

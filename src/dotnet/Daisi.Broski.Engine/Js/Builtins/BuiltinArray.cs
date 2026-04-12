@@ -144,9 +144,30 @@ internal static class BuiltinArray
 
     private static object? Push(object? thisVal, IReadOnlyList<object?> args)
     {
-        var arr = RequireArray(thisVal, "push");
-        foreach (var a in args) arr.Elements.Add(a);
-        return (double)arr.Elements.Count;
+        // Fast path for real arrays.
+        if (thisVal is JsArray arr)
+        {
+            foreach (var a in args) arr.Elements.Add(a);
+            return (double)arr.Elements.Count;
+        }
+        // Generic path — jQuery and other libraries do
+        // `Array.prototype.push.call(arrayLikeObj, item)`.
+        // The spec says push works on any object with a
+        // numeric `length` property.
+        if (thisVal is JsObject obj)
+        {
+            var lenVal = obj.Get("length");
+            int len = lenVal is double d ? (int)d : 0;
+            foreach (var a in args)
+            {
+                obj.Set(len.ToString(System.Globalization.CultureInfo.InvariantCulture), a);
+                len++;
+            }
+            obj.Set("length", (double)len);
+            return (double)len;
+        }
+        JsThrow.TypeError("Array.prototype.push called on non-object");
+        return null;
     }
 
     private static object? Pop(object? thisVal, IReadOnlyList<object?> args)

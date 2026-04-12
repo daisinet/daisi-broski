@@ -3108,7 +3108,7 @@ public sealed class JsCompiler
         int endJump = _chunk.EmitJump(OpCode.Jump);
 
         _chunk.PatchJump(catchJump);
-        EmitCatchParamBind(handler.Param.Name);
+        if (handler.Param is not null) EmitCatchParamBind(handler.Param.Name);
         CompileStatement(handler.Body);
         _chunk.Emit(OpCode.PopEnv);
         _chunk.PatchJump(endJump);
@@ -3185,7 +3185,7 @@ public sealed class JsCompiler
 
         _chunk.PatchJump(catchJump);
         int finallyExcJump = _chunk.EmitJump(OpCode.PushFinallyHandler);
-        EmitCatchParamBind(handler.Param.Name);
+        if (handler.Param is not null) EmitCatchParamBind(handler.Param.Name);
         CompileStatement(handler.Body);
         _chunk.Emit(OpCode.PopEnv);
         _chunk.Emit(OpCode.PopHandler);
