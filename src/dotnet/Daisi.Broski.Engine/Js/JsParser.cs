@@ -1367,8 +1367,11 @@ public sealed class JsParser
         }
 
         // Method name — accept a plain Identifier, or a
-        // contextual keyword that would otherwise be reserved
-        // (like "static" standalone as a method name fallback).
+        // ES2015+: any keyword is a valid method name in a
+        // class body — `class { export() {}, import() {},
+        // default() {}, delete() {} }` are all legal. We
+        // accept identifiers, keywords, and literal tokens
+        // (true / false / null) as method names.
         string methodName;
         int keyStart = Current.Start;
         int keyEnd = Current.End;
@@ -1376,6 +1379,32 @@ public sealed class JsParser
         {
             var tok = Consume();
             methodName = tok.StringValue!;
+        }
+        else if (IsKeyword(Current.Kind) ||
+                 Current.Kind is JsTokenKind.TrueLiteral or
+                                 JsTokenKind.FalseLiteral or
+                                 JsTokenKind.NullLiteral)
+        {
+            var tok = Consume();
+            methodName = _source.Substring(tok.Start, tok.Length);
+        }
+        else if (Current.Kind == JsTokenKind.StringLiteral)
+        {
+            var tok = Consume();
+            methodName = tok.StringValue!;
+        }
+        else if (Current.Kind == JsTokenKind.NumberLiteral)
+        {
+            var tok = Consume();
+            methodName = JsValue.ToJsString(tok.NumberValue);
+        }
+        else if (Current.Kind == JsTokenKind.LeftBracket)
+        {
+            // Computed method name: `class { [expr]() {} }`
+            Consume();
+            var expr = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightBracket, "computed method name");
+            methodName = "[computed]"; // placeholder
         }
         else
         {
@@ -1637,12 +1666,15 @@ public sealed class JsParser
             return ParseYieldExpression(allowIn);
         }
 
-        // ES2017: AwaitExpression — only legal inside async
-        // function bodies. Same expression-level placement as
-        // yield. `await` is a contextual keyword (a plain
-        // Identifier token outside async bodies).
-        if (_inAsyncBody &&
-            Current.Kind == JsTokenKind.Identifier &&
+        // ES2017: AwaitExpression. Originally only legal inside
+        // async function bodies, but top-level await (ES2022)
+        // and webpack/bundler IIFE wrappers make it appear at
+        // any level in real-world code. We recognize it
+        // everywhere — the VM's async machinery handles it
+        // regardless of the syntactic context, and rejecting
+        // it here would block every bundled Next.js / webpack
+        // chunk that uses top-level await.
+        if (Current.Kind == JsTokenKind.Identifier &&
             Current.StringValue == "await" &&
             CanStartExpression(Peek(1).Kind) &&
             !_hasLineBefore[_pos + 1])
@@ -1923,6 +1955,21 @@ public sealed class JsParser
     private Expression ParseUnaryExpression()
     {
         int start = Current.Start;
+
+        // await as a unary prefix — recognized in any
+        // expression position so `x && await y` works
+        // even when the `await` appears as the right
+        // operand of a binary expression (which routes
+        // through ParseUnaryExpression, not
+        // ParseAssignmentExpression where the first await
+        // check lives).
+        if (Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "await" &&
+            CanStartExpression(Peek(1).Kind))
+        {
+            return ParseAwaitExpression(allowIn: true);
+        }
+
         UnaryOperator? unaryOp = Current.Kind switch
         {
             JsTokenKind.KeywordDelete => UnaryOperator.Delete,

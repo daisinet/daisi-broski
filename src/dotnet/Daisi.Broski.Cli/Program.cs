@@ -257,6 +257,22 @@ public static class Program
                         $"[script #{scriptIdx}] {detail}\n" +
                         $"    {label}: {Truncate(source, 400)}");
                 }
+                catch (Daisi.Broski.Engine.Js.JsParseException parseEx)
+                {
+                    errorCount++;
+                    // Show the source around the error offset so
+                    // we can see exactly what syntax tripped up.
+                    string ctx = "";
+                    if (parseEx.Offset >= 0 && parseEx.Offset < source.Length)
+                    {
+                        int from = Math.Max(0, parseEx.Offset - 40);
+                        int to = Math.Min(source.Length, parseEx.Offset + 60);
+                        ctx = $"\n    context: ...{source[from..to].Replace('\n', ' ')}...";
+                    }
+                    scriptErrors.Add(
+                        $"[script #{scriptIdx}] {parseEx.GetType().Name}: {parseEx.Message} (offset {parseEx.Offset}){ctx}\n" +
+                        $"    {label}");
+                }
                 catch (Exception ex)
                 {
                     errorCount++;
@@ -310,6 +326,20 @@ public static class Program
                     scriptErrors.Add(
                         $"[script #{deferIdx} defer] {detail}\n" +
                         $"    src={src} ({deferSource.Length} bytes): {Truncate(deferSource, 400)}");
+                }
+                catch (Daisi.Broski.Engine.Js.JsParseException parseEx)
+                {
+                    errorCount++;
+                    string ctx = "";
+                    if (parseEx.Offset >= 0 && parseEx.Offset < deferSource.Length)
+                    {
+                        int from = Math.Max(0, parseEx.Offset - 40);
+                        int to = Math.Min(deferSource.Length, parseEx.Offset + 60);
+                        ctx = $"\n    context: ...{deferSource[from..to].Replace('\n', ' ')}...";
+                    }
+                    scriptErrors.Add(
+                        $"[script #{deferIdx} defer] {parseEx.Message} (offset {parseEx.Offset}){ctx}\n" +
+                        $"    src={src}");
                 }
                 catch (Exception ex)
                 {
