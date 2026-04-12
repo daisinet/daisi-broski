@@ -84,11 +84,11 @@ internal static class BuiltinUrl
             {
                 JsThrow.TypeError("URL constructor requires at least one argument");
             }
-            var input = JsValue.ToJsString(args[0]);
+            var input = CoerceUrlArg(args[0]);
             string? baseStr = null;
             if (args.Count > 1 && args[1] is not JsUndefined && args[1] is not JsNull)
             {
-                baseStr = JsValue.ToJsString(args[1]);
+                baseStr = CoerceUrlArg(args[1]);
             }
             var u = new JsUrl { Prototype = proto };
             u.Parse(input, baseStr);
@@ -97,6 +97,28 @@ internal static class BuiltinUrl
         ctor.SetNonEnumerable("prototype", proto);
         proto.SetNonEnumerable("constructor", ctor);
         engine.Globals["URL"] = ctor;
+    }
+
+    /// <summary>
+    /// Coerce an argument to the string form the URL
+    /// constructor / base wants. Plain strings pass through.
+    /// A <see cref="JsUrl"/> uses its own <c>href</c>. Any
+    /// other <see cref="JsObject"/> that exposes a string
+    /// <c>href</c> (e.g. <see cref="JsLocation"/>) uses that
+    /// — matching the spec's "if v is a USVString or
+    /// URL record, use its href" rule. Everything else
+    /// falls back to the normal string coercion.
+    /// </summary>
+    private static string CoerceUrlArg(object? v)
+    {
+        if (v is string s) return s;
+        if (v is JsUrl u) return u.Href;
+        if (v is JsObject obj)
+        {
+            var href = obj.Get("href");
+            if (href is string hs) return hs;
+        }
+        return JsValue.ToJsString(v);
     }
 
     private static void InstallUrlGetter(JsObject proto, string name, Func<JsUrl, string> read)

@@ -111,7 +111,12 @@ public sealed class JsDomDocument : JsDomNode
             case "referrer":
                 return "";
             case "currentScript":
-                return JsValue.Null;
+                // The host driver sets engine.ExecutingScript
+                // before each script runs, so SSR bootstraps
+                // that mount next to their own <script> tag can
+                // find their parent via document.currentScript.
+                var cur = Bridge.Engine.ExecutingScript;
+                return cur is not null ? Bridge.Wrap(cur) : (object)JsValue.Null;
             case "contentType":
                 return "text/html";
             case "characterSet":

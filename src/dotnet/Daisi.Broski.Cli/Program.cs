@@ -155,8 +155,10 @@ public static class Program
             int ranCount = 0;
             int errorCount = 0;
             var scriptErrors = new List<string>();
+            int scriptIdx = 0;
             foreach (var script in doc.QuerySelectorAll("script"))
             {
+                scriptIdx++;
                 if (script.HasAttribute("src")) continue;
                 var type = script.GetAttribute("type") ?? "text/javascript";
                 // Skip modules / JSON-LD / application-specific types.
@@ -168,24 +170,31 @@ public static class Program
                 if (string.IsNullOrWhiteSpace(source)) continue;
                 try
                 {
+                    // Track the currently-executing script
+                    // element so `document.currentScript`
+                    // resolves during the run.
+                    engine.ExecutingScript = script;
                     engine.RunScript(source);
                     ranCount++;
                 }
                 catch (Daisi.Broski.Engine.Js.JsRuntimeException jsEx)
                 {
-                    // A script-visible throw surfaces here as a
-                    // JsRuntimeException whose JsValue is the
-                    // structured error. Unpack name + message so
-                    // the user sees the real failure cause instead
-                    // of an opaque "[object Object]".
                     errorCount++;
                     string detail = UnpackJsError(jsEx);
-                    scriptErrors.Add(detail);
+                    scriptErrors.Add(
+                        $"[script #{scriptIdx}] {detail}\n" +
+                        $"    source ({source.Length} bytes): {Truncate(source, 400)}");
                 }
                 catch (Exception ex)
                 {
                     errorCount++;
-                    scriptErrors.Add($"{ex.GetType().Name}: {ex.Message}");
+                    scriptErrors.Add(
+                        $"[script #{scriptIdx}] {ex.GetType().Name}: {ex.Message}\n" +
+                        $"    source ({source.Length} bytes): {Truncate(source, 400)}");
+                }
+                finally
+                {
+                    engine.ExecutingScript = null;
                 }
             }
 
@@ -262,6 +271,21 @@ public static class Program
 
     private static string Delta(int d) =>
         d > 0 ? $"+{d}" : d.ToString();
+
+    /// <summary>
+    /// Collapse whitespace runs and trim the source to at
+    /// most <paramref name="maxLen"/> characters so we can
+    /// print a readable single-line snippet for failure
+    /// diagnostics. Long scripts get ellipsised with a
+    /// <c>...</c> so the caller can see the beginning.
+    /// </summary>
+    private static string Truncate(string s, int maxLen)
+    {
+        var compact = NormalizeWhitespace(s);
+        return compact.Length <= maxLen
+            ? compact
+            : compact.Substring(0, maxLen) + "...";
+    }
 
     /// <summary>
     /// Walk the <see cref="Daisi.Broski.Engine.Js.JsRuntimeException"/>

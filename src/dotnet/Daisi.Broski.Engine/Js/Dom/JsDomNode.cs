@@ -113,6 +113,73 @@ public class JsDomNode : JsObject
             return BackingNode.HasChildNodes;
         }));
 
+        // ParentNode mixin — `append` and `prepend` both
+        // accept a variadic list of Node or string values
+        // and insert them as children. Strings become text
+        // nodes at the point they're inserted.
+        SetNonEnumerable("append", new JsFunction("append", (thisVal, args) =>
+        {
+            foreach (var a in args)
+            {
+                BackingNode.AppendChild(CoerceChild(a));
+            }
+            return JsValue.Undefined;
+        }));
+        SetNonEnumerable("prepend", new JsFunction("prepend", (thisVal, args) =>
+        {
+            var first = BackingNode.FirstChild;
+            foreach (var a in args)
+            {
+                BackingNode.InsertBefore(CoerceChild(a), first);
+            }
+            return JsValue.Undefined;
+        }));
+        SetNonEnumerable("replaceChildren", new JsFunction("replaceChildren", (thisVal, args) =>
+        {
+            while (BackingNode.FirstChild is not null)
+            {
+                BackingNode.RemoveChild(BackingNode.FirstChild);
+            }
+            foreach (var a in args)
+            {
+                BackingNode.AppendChild(CoerceChild(a));
+            }
+            return JsValue.Undefined;
+        }));
+
+        // ChildNode mixin — `remove` detaches this node
+        // from its parent (no-op if already detached);
+        // `before` / `after` insert siblings relative to
+        // this node. All three accept Node or string
+        // arguments like `append`.
+        SetNonEnumerable("remove", new JsFunction("remove", (thisVal, args) =>
+        {
+            var parent = BackingNode.ParentNode;
+            parent?.RemoveChild(BackingNode);
+            return JsValue.Undefined;
+        }));
+        SetNonEnumerable("before", new JsFunction("before", (thisVal, args) =>
+        {
+            var parent = BackingNode.ParentNode;
+            if (parent is null) return JsValue.Undefined;
+            foreach (var a in args)
+            {
+                parent.InsertBefore(CoerceChild(a), BackingNode);
+            }
+            return JsValue.Undefined;
+        }));
+        SetNonEnumerable("after", new JsFunction("after", (thisVal, args) =>
+        {
+            var parent = BackingNode.ParentNode;
+            if (parent is null) return JsValue.Undefined;
+            var next = BackingNode.NextSibling;
+            foreach (var a in args)
+            {
+                parent.InsertBefore(CoerceChild(a), next);
+            }
+            return JsValue.Undefined;
+        }));
+
         // ----- Event target surface (slice 3c-4) -----
         SetNonEnumerable("addEventListener", new JsFunction("addEventListener", (thisVal, args) =>
         {
@@ -332,6 +399,25 @@ public class JsDomNode : JsObject
             return null!; // unreachable
         }
         return node;
+    }
+
+    /// <summary>
+    /// Coerce an <c>append</c> / <c>prepend</c> / <c>before</c>
+    /// / <c>after</c> argument into a real <see cref="Node"/>.
+    /// Per spec these methods accept either Node or string
+    /// values; strings are converted to <see cref="Text"/>
+    /// nodes at the point they're inserted.
+    /// </summary>
+    private Node CoerceChild(object? arg)
+    {
+        if (arg is JsDomNode node) return node.BackingNode;
+        var owner = BackingNode.OwnerDocument ?? BackingNode as Document;
+        if (owner is null)
+        {
+            JsThrow.TypeError("Cannot insert child into detached node");
+            return null!;
+        }
+        return owner.CreateTextNode(JsValue.ToJsString(arg));
     }
 
     /// <inheritdoc />

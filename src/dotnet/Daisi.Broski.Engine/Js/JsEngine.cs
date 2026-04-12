@@ -353,6 +353,18 @@ public sealed class JsEngine
     public Uri? AttachedPageUrl { get; private set; }
 
     /// <summary>
+    /// The DOM <c>&lt;script&gt;</c> element whose source
+    /// the engine is currently evaluating, set by the host
+    /// driver around each <see cref="RunScript"/> call.
+    /// Surfaces as <c>document.currentScript</c> so
+    /// bootstrap scripts that mount next to their own
+    /// <c>&lt;script&gt;</c> tag (SvelteKit, Next.js, and
+    /// other SSR frameworks all do this) can find their
+    /// parent element.
+    /// </summary>
+    public Daisi.Broski.Engine.Dom.Element? ExecutingScript { get; set; }
+
+    /// <summary>
     /// Shared <see cref="Net.HttpFetcher"/> for the default
     /// fetch handler. Lazily constructed on first request
     /// so engines that never call fetch don't pay the
