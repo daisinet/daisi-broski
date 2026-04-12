@@ -975,6 +975,21 @@ public sealed class JsLexer
                 return new JsToken(JsTokenKind.Minus, start, 1);
 
             case '*':
+                if (Peek(1) == '*')
+                {
+                    if (Peek(2) == '=')
+                    {
+                        _pos += 3;
+                        // **= (exponent-assign) — not yet wired as
+                        // a compound operator; lex it so the parser
+                        // can reject it with a clear error instead
+                        // of a confusing "unexpected Star".
+                        return new JsToken(JsTokenKind.StarStar, start, 2);
+                        // TODO: StarStarAssign token + wiring
+                    }
+                    _pos += 2;
+                    return new JsToken(JsTokenKind.StarStar, start, 2);
+                }
                 if (Peek(1) == '=')
                 {
                     _pos += 2;

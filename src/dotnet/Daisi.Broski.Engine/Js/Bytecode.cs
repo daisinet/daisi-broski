@@ -505,6 +505,8 @@ public enum OpCode : byte
     /// object every time control reaches it.
     /// </summary>
     NewRegExp,
+    /// <summary>ES2016 exponentiation <c>a ** b</c>.</summary>
+    Pow,
 
     // ---- Program completion ----
     /// <summary>

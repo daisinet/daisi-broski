@@ -106,6 +106,7 @@ public enum JsTokenKind
     Star,               // *
     Slash,              // /
     Percent,            // %
+    StarStar,           // ** (ES2016 exponentiation)
     PlusPlus,           // ++
     MinusMinus,         // --
 

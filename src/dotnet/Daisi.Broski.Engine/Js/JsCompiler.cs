@@ -3295,6 +3295,7 @@ public sealed class JsCompiler
         BinaryOperator.Multiply => OpCode.Mul,
         BinaryOperator.Divide => OpCode.Div,
         BinaryOperator.Modulo => OpCode.Mod,
+        BinaryOperator.Exponentiate => OpCode.Pow,
         BinaryOperator.Equal => OpCode.LooseEq,
         BinaryOperator.NotEqual => OpCode.LooseNotEq,
         BinaryOperator.StrictEqual => OpCode.StrictEq,

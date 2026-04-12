@@ -1921,7 +1921,11 @@ public sealed class JsParser
 
             var opKind = Current.Kind;
             Consume();
-            var right = ParseBinaryExpression(prec + 1, allowIn);
+            // Right-associative operators (only `**` for now)
+            // use the same prec for the right side so
+            // `a ** b ** c` = `a ** (b ** c)`.
+            int rightPrec = opKind == JsTokenKind.StarStar ? prec : prec + 1;
+            var right = ParseBinaryExpression(rightPrec, allowIn);
 
             if (opKind == JsTokenKind.AmpersandAmpersand)
             {
@@ -2628,6 +2632,7 @@ public sealed class JsParser
             or JsTokenKind.UnsignedRightShift => 11,
         JsTokenKind.Plus or JsTokenKind.Minus => 12,
         JsTokenKind.Star or JsTokenKind.Slash or JsTokenKind.Percent => 13,
+        JsTokenKind.StarStar => 14, // exponentiation — right-associative
         _ => 0,
     };
 
@@ -2651,6 +2656,7 @@ public sealed class JsParser
         JsTokenKind.Star => BinaryOperator.Multiply,
         JsTokenKind.Slash => BinaryOperator.Divide,
         JsTokenKind.Percent => BinaryOperator.Modulo,
+        JsTokenKind.StarStar => BinaryOperator.Exponentiate,
         JsTokenKind.Ampersand => BinaryOperator.BitwiseAnd,
         JsTokenKind.Pipe => BinaryOperator.BitwiseOr,
         JsTokenKind.Caret => BinaryOperator.BitwiseXor,

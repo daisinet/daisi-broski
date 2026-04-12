@@ -886,6 +886,7 @@ public enum BinaryOperator
     Multiply,           // *
     Divide,             // /
     Modulo,             // %
+    Exponentiate,       // ** (ES2016)
 
     // Bitwise
     BitwiseAnd,         // &

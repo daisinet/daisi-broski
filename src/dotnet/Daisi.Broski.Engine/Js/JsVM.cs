@@ -1520,6 +1520,9 @@ public sealed class JsVM
                     else
                         DoNumericBinary((a, b) => a % b);
                     break;
+                case OpCode.Pow:
+                    DoNumericBinary((a, b) => Math.Pow(a, b));
+                    break;
                 case OpCode.Negate:
                     if (_stack[_sp - 1] is System.Numerics.BigInteger negBi)
                         _stack[_sp - 1] = -negBi;
