@@ -366,6 +366,12 @@ internal static class BuiltinJson
     private static bool StringifyValue(object? value, StringBuilder sb, HashSet<JsObject> seen)
     {
         if (value is JsUndefined || value is JsFunction) return false;
+        if (value is System.Numerics.BigInteger)
+        {
+            // Spec: JSON.stringify throws TypeError on a
+            // BigInt because there's no JSON syntax for it.
+            JsThrow.TypeError("Do not know how to serialize a BigInt");
+        }
         if (value is JsNull || value is null)
         {
             sb.Append("null");

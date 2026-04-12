@@ -42,6 +42,7 @@ internal static class Builtins
         BuiltinProxy.Install(engine);
         BuiltinReflect.Install(engine);
         BuiltinAbort.Install(engine);
+        BuiltinBigInt.Install(engine);
     }
 
     /// <summary>

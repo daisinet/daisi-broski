@@ -1653,6 +1653,7 @@ public sealed class JsCompiler
                 return;
             case LiteralKind.Number:
             case LiteralKind.String:
+            case LiteralKind.BigInt:
                 {
                     int idx = _chunk.AddConstant(lit.Value);
                     _chunk.EmitWithU16(OpCode.PushConst, idx);

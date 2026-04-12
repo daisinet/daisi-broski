@@ -20,6 +20,15 @@ public enum JsTokenKind
     // Literals
     Identifier,
     NumberLiteral,
+    /// <summary>
+    /// ES2020 BigInt literal — an integer followed by an
+    /// <c>n</c> suffix (<c>42n</c>, <c>0x1fn</c>). The
+    /// <see cref="JsToken.StringValue"/> holds the raw
+    /// digit text so the parser can construct the
+    /// <see cref="System.Numerics.BigInteger"/> at
+    /// AST-build time without re-parsing.
+    /// </summary>
+    BigIntLiteral,
     StringLiteral,
     NullLiteral,
     TrueLiteral,

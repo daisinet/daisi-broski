@@ -2224,6 +2224,11 @@ public sealed class JsParser
                 Consume();
                 return new Literal(tok.Start, tok.End, LiteralKind.Number, tok.NumberValue);
 
+            case JsTokenKind.BigIntLiteral:
+                Consume();
+                return new Literal(tok.Start, tok.End, LiteralKind.BigInt,
+                    ParseBigIntLiteralValue(tok));
+
             case JsTokenKind.StringLiteral:
                 Consume();
                 return new Literal(tok.Start, tok.End, LiteralKind.String, tok.StringValue);
@@ -2551,6 +2556,34 @@ public sealed class JsParser
         JsTokenKind.Caret => BinaryOperator.BitwiseXor,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Not a binary operator"),
     };
+
+    /// <summary>
+    /// Convert the digit text captured by the lexer's
+    /// <see cref="JsTokenKind.BigIntLiteral"/> token into a
+    /// <see cref="System.Numerics.BigInteger"/>. Accepts the
+    /// canonical decimal form (<c>42</c>) and the hex form
+    /// (<c>0x1f</c>) — the lexer handles the <c>n</c> suffix
+    /// before handing the text off here.
+    /// </summary>
+    private static System.Numerics.BigInteger ParseBigIntLiteralValue(JsToken tok)
+    {
+        var text = tok.StringValue ?? "0";
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            // BigInteger.Parse requires a leading 0 to
+            // interpret the value as unsigned; the spec
+            // guarantees BigInt literals are non-negative.
+            var hexDigits = "0" + text.Substring(2);
+            return System.Numerics.BigInteger.Parse(
+                hexDigits,
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return System.Numerics.BigInteger.Parse(
+            text,
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     private static AssignmentOperator? ToAssignmentOperator(JsTokenKind kind) => kind switch
     {

@@ -331,17 +331,30 @@ public sealed class JsLexer
             }
 
             var hexText = _src[digitStart.._pos];
+            // BigInt hex suffix: `0x1fn`. Emit as a BigIntLiteral
+            // with the digit text stashed in StringValue so the
+            // parser can build a BigInteger via TryParse.
+            if (_pos < _src.Length && _src[_pos] == 'n')
+            {
+                _pos++;
+                return new JsToken(JsTokenKind.BigIntLiteral, start, _pos - start,
+                    stringValue: "0x" + hexText);
+            }
             double hexValue = (double)long.Parse(hexText, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
             return new JsToken(JsTokenKind.NumberLiteral, start, _pos - start, numberValue: hexValue);
         }
 
         // Decimal integer part. '.5' and '0.5' both land here because
         // the caller routed leading-dot numbers to ScanNumber.
+        int intStart = _pos;
         while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
+        int intEnd = _pos;
+        bool hasFractionOrExp = false;
 
         // Fractional part.
         if (_pos < _src.Length && _src[_pos] == '.')
         {
+            hasFractionOrExp = true;
             _pos++;
             while (_pos < _src.Length && _src[_pos] >= '0' && _src[_pos] <= '9') _pos++;
         }
@@ -349,6 +362,7 @@ public sealed class JsLexer
         // Exponent.
         if (_pos < _src.Length && (_src[_pos] == 'e' || _src[_pos] == 'E'))
         {
+            hasFractionOrExp = true;
             _pos++;
             if (_pos < _src.Length && (_src[_pos] == '+' || _src[_pos] == '-')) _pos++;
             int expStart = _pos;
@@ -357,6 +371,16 @@ public sealed class JsLexer
             {
                 return new JsToken(JsTokenKind.Unknown, start, _pos - start);
             }
+        }
+
+        // BigInt decimal suffix: `42n`. Only allowed on integer
+        // literals — `3.14n` is a syntax error per spec.
+        if (!hasFractionOrExp && _pos < _src.Length && _src[_pos] == 'n')
+        {
+            var digitText = _src[intStart..intEnd];
+            _pos++;
+            return new JsToken(JsTokenKind.BigIntLiteral, start, _pos - start,
+                stringValue: digitText);
         }
 
         var text = _src[start.._pos];

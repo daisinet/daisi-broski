@@ -83,6 +83,12 @@ public enum LiteralKind
     Boolean,
     Number,
     String,
+    /// <summary>
+    /// ES2020 <c>BigInt</c> literal (<c>42n</c>, <c>0x1fn</c>).
+    /// The <see cref="Literal.Value"/> is a boxed
+    /// <see cref="System.Numerics.BigInteger"/>.
+    /// </summary>
+    BigInt,
 }
 
 /// <summary>
