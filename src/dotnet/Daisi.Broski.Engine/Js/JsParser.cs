@@ -1103,6 +1103,8 @@ public sealed class JsParser
             list.Add(ParseFunctionParameter());
             while (Match(JsTokenKind.Comma))
             {
+                // ES2017 trailing comma: `(a, b,) => ...`
+                if (Current.Kind == JsTokenKind.RightParen) break;
                 // A rest parameter must be the last entry — disallow
                 // a trailing comma after one or another param after it.
                 if (list[list.Count - 1].IsRest)
@@ -1289,9 +1291,18 @@ public sealed class JsParser
         }
         else
         {
-            // Non-static fields aren't supported yet —
-            // instance fields need constructor-time init.
-            return false;
+            // Instance field: `name = expr;`. Detect by
+            // peeking: if the current token is an identifier
+            // and the NEXT token is `=`, `;`, or `}`, it's a
+            // field not a method.
+            if (Current.Kind != JsTokenKind.Identifier) return false;
+            var afterName = Peek(1).Kind;
+            if (afterName != JsTokenKind.Assign &&
+                afterName != JsTokenKind.Semicolon &&
+                afterName != JsTokenKind.RightBrace)
+            {
+                return false;
+            }
         }
 
         if (Current.Kind != JsTokenKind.Identifier)

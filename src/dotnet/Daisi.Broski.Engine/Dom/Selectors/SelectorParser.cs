@@ -251,6 +251,9 @@ public static class SelectorParser
                     }
 
                 case "not":
+                case "has":
+                case "is":
+                case "where":
                     {
                         Expect('(');
                         SkipWhitespace();
@@ -262,11 +265,18 @@ public static class SelectorParser
                             else if (_src[_pos] == ')') depth--;
                             if (depth > 0) _pos++;
                         }
-                        if (_pos >= _src.Length) throw Fail("Unterminated :not(");
+                        if (_pos >= _src.Length) throw Fail($"Unterminated :{name}(");
                         var inner = _src[start.._pos];
                         _pos++; // consume ')'
                         var innerList = SelectorParser.Parse(inner);
-                        return new PseudoClassSelector(PseudoClassKind.Not, innerList);
+                        var pseudoKind = name switch
+                        {
+                            "not" => PseudoClassKind.Not,
+                            "has" => PseudoClassKind.Has,
+                            "is" or "where" => PseudoClassKind.Is,
+                            _ => throw Fail("unreachable"),
+                        };
+                        return new PseudoClassSelector(pseudoKind, innerList);
                     }
 
                 default:

@@ -47,6 +47,7 @@ public sealed class JsRegExp : JsObject
     public bool DotAll { get; }
     public bool Sticky { get; }
     public bool Unicode { get; }
+    public bool HasIndices { get; }
 
     /// <summary>
     /// Current match index for global / sticky execution.
@@ -74,6 +75,7 @@ public sealed class JsRegExp : JsObject
         DotAll = flags.Contains('s');
         Sticky = flags.Contains('y');
         Unicode = flags.Contains('u');
+        HasIndices = flags.Contains('d');
     }
 
     /// <summary>
@@ -129,6 +131,7 @@ public sealed class JsRegExp : JsObject
         "dotAll" => DotAll,
         "sticky" => Sticky,
         "unicode" => Unicode,
+        "hasIndices" => HasIndices,
         "lastIndex" => (double)LastIndex,
         _ => base.Get(key),
     };
@@ -142,7 +145,7 @@ public sealed class JsRegExp : JsObject
             return;
         }
         if (key is "source" or "flags" or "global" or "ignoreCase" or
-            "multiline" or "dotAll" or "sticky" or "unicode")
+            "multiline" or "dotAll" or "sticky" or "unicode" or "hasIndices")
         {
             // Read-only accessors; silently ignore writes in
             // non-strict mode.

@@ -176,6 +176,21 @@ public static class SelectorMatcher
             case PseudoClassKind.Root:
                 return element.OwnerDocument?.DocumentElement == element;
 
+            case PseudoClassKind.Has:
+                // :has(X) — true if any descendant matches X.
+                if (p.Argument is null) return false;
+                foreach (var desc in element.DescendantElements())
+                {
+                    if (Matches(desc, p.Argument)) return true;
+                }
+                return false;
+
+            case PseudoClassKind.Is:
+                // :is(X) / :where(X) — true if the element
+                // itself matches any selector in the list.
+                if (p.Argument is null) return false;
+                return Matches(element, p.Argument);
+
             case PseudoClassKind.Scope:
                 // :scope matches the scoping element — when used
                 // via querySelector on a specific element, that

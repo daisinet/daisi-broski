@@ -180,6 +180,17 @@ public enum PseudoClassKind
     Empty,
     Not,            // :not(X) — Argument holds the inner selector list
     /// <summary>
+    /// <c>:has(X)</c> — matches elements that contain a
+    /// descendant matching X. CSS Selectors Level 4.
+    /// </summary>
+    Has,
+    /// <summary>
+    /// <c>:is(X)</c> / <c>:where(X)</c> — forgiving
+    /// selector list that matches if any selector in X
+    /// matches the element.
+    /// </summary>
+    Is,
+    /// <summary>
     /// <c>:scope</c> — matches the scoping root, which is the
     /// element <c>querySelector</c> was called on. When used at
     /// the document level, it matches <c>:root</c>.
