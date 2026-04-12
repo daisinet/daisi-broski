@@ -357,6 +357,80 @@ public sealed class JsVM
     }
 
     /// <summary>
+    /// Run <paramref name="chunk"/> while another script is
+    /// already executing on the VM, snapshotting and
+    /// restoring all caller state so the outer dispatch loop
+    /// can resume cleanly after the nested chunk completes.
+    /// Used by native built-ins that want to compile +
+    /// evaluate script source on the fly (the <c>Function</c>
+    /// constructor, <c>eval</c>-style helpers) without
+    /// trampling the caller's instruction pointer and stack.
+    /// Returns the nested chunk's completion value.
+    /// </summary>
+    public object? RunChunkNested(Chunk chunk)
+    {
+        // Snapshot everything the RunLoop mutates. We save
+        // more than RunChunk resets on entry because the
+        // inner chunk may push frames / handlers / stack
+        // entries that need to vanish cleanly on return.
+        var savedCode = _code;
+        var savedConstants = _constants;
+        var savedNames = _names;
+        int savedIp = _ip;
+        int savedSp = _sp;
+        var savedEnv = _env;
+        var savedThis = _this;
+        bool savedHalted = _halted;
+        var savedCompletion = CompletionValue;
+        int savedFrames = _frames.Count;
+        int savedHandlers = _handlers.Count;
+        int savedNativeBoundaries = _nativeBoundaries.Count;
+
+        try
+        {
+            _code = chunk.Code;
+            _constants = chunk.Constants;
+            _names = chunk.Names;
+            _ip = 0;
+            _halted = false;
+            // Reset env to the globals env for the duration
+            // of the nested run, same as RunChunk.
+            while (_env.Parent is not null) _env = _env.Parent;
+
+            _nativeBoundaries.Push(_frames.Count);
+            try
+            {
+                RunLoop(stopFrameDepth: -1);
+            }
+            finally
+            {
+                // Pop the native boundary marker.
+                while (_nativeBoundaries.Count > savedNativeBoundaries)
+                {
+                    _nativeBoundaries.Pop();
+                }
+            }
+            return CompletionValue;
+        }
+        finally
+        {
+            // Restore every caller state field. Pop any
+            // frames / handlers the nested chunk left behind.
+            while (_frames.Count > savedFrames) _frames.Pop();
+            while (_handlers.Count > savedHandlers) _handlers.Pop();
+            _code = savedCode;
+            _constants = savedConstants;
+            _names = savedNames;
+            _ip = savedIp;
+            _sp = savedSp;
+            _env = savedEnv;
+            _this = savedThis;
+            _halted = savedHalted;
+            CompletionValue = savedCompletion;
+        }
+    }
+
+    /// <summary>
     /// Run an ES2015 module chunk. Unlike
     /// <see cref="RunChunk"/>, this pushes a fresh
     /// module-local env chained above the engine's globals

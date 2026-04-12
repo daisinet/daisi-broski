@@ -522,11 +522,21 @@ public sealed class JsLocation : JsObject
     private string CurrentHref()
     {
         if (_href is not null) return _href;
-        // The attached document's URL is not stored on
-        // Document itself yet (phase 1 only tracked the
-        // response); if we wire that in later this is the
-        // place to read it from.
+        if (_engine.AttachedPageUrl is not null)
+        {
+            return _engine.AttachedPageUrl.ToString();
+        }
         return "about:blank";
+    }
+
+    /// <summary>
+    /// Called by <see cref="JsEngine.AttachDocument"/> when
+    /// a new document is attached. Clears the explicit
+    /// override so the next read picks up the real page URL.
+    /// </summary>
+    internal void OnPageLoaded(Uri? pageUrl)
+    {
+        _href = null;
     }
 
     /// <inheritdoc />

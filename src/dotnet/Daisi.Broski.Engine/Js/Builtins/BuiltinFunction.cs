@@ -27,6 +27,78 @@ internal static class BuiltinFunction
         proto.SetNonEnumerable("bind",
             new JsFunction("bind", (vm, t, a) => Bind(engine, t, a)));
         Builtins.Method(proto, "toString", ToStringMethod);
+
+        // The `Function` global constructor. Behaves like
+        // `eval('(function (...args) { body })')` — last
+        // positional arg is the body, earlier args are
+        // parameter names. Scripts commonly use this for
+        // dynamic function building (template engines,
+        // feature detection, eval-as-a-service) and also
+        // for `x instanceof Function` type checks.
+        var ctor = new JsFunction("Function", (thisVal, args) =>
+        {
+            if (args.Count == 0)
+            {
+                // `Function()` with no args returns a no-op
+                // function matching `function anonymous() {}`.
+                return CompileDynamicFunction(engine, Array.Empty<string>(), "");
+            }
+            // Collect parameter names from all but the last arg.
+            var paramNames = new List<string>(args.Count);
+            for (int i = 0; i < args.Count - 1; i++)
+            {
+                paramNames.Add(JsValue.ToJsString(args[i]));
+            }
+            var body = JsValue.ToJsString(args[^1]);
+            return CompileDynamicFunction(engine, paramNames, body);
+        });
+        ctor.SetNonEnumerable("prototype", proto);
+        proto.SetNonEnumerable("constructor", ctor);
+        engine.Globals["Function"] = ctor;
+    }
+
+    /// <summary>
+    /// Build a <see cref="JsFunction"/> from runtime-supplied
+    /// parameter names + body source. Wraps the body in a
+    /// top-level function expression, parses it with the
+    /// normal <see cref="JsParser"/>, compiles with
+    /// <see cref="JsCompiler"/>, and evaluates the resulting
+    /// program to produce the function value. A parse /
+    /// compile error surfaces as a script-visible
+    /// <c>SyntaxError</c>.
+    /// </summary>
+    private static JsFunction CompileDynamicFunction(JsEngine engine, IReadOnlyList<string> paramNames, string body)
+    {
+        var paramList = string.Join(", ", paramNames);
+        var source = $"(function ({paramList}) {{ {body} }})";
+        Chunk chunk;
+        try
+        {
+            var program = new JsParser(source).ParseProgram();
+            chunk = new JsCompiler().Compile(program);
+        }
+        catch (JsParseException ex)
+        {
+            JsThrow.SyntaxError($"Function constructor: {ex.Message}");
+            return null!;
+        }
+        catch (JsCompileException ex)
+        {
+            JsThrow.SyntaxError($"Function constructor: {ex.Message}");
+            return null!;
+        }
+
+        // Run the chunk through the nested dispatch helper so
+        // it doesn't trample the caller's VM state. The
+        // chunk is just a program that pushes our function
+        // expression as its completion value.
+        var result = engine.Vm.RunChunkNested(chunk);
+        if (result is not JsFunction fn)
+        {
+            JsThrow.SyntaxError("Function constructor produced a non-function value");
+            return null!;
+        }
+        return fn;
     }
 
     /// <summary>

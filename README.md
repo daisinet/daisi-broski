@@ -56,7 +56,7 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 1500/1500 passing.** Phases 3a–3c are all complete, plus regex literals and two rounds of browser host shims (`localStorage` / `sessionStorage` / `navigator` / `location` / `performance` / viewport + `matchMedia` + `history` / `requestAnimationFrame` / `document.cookie` / `document.readyState` + element `dataset` / `getBoundingClientRect` / layout stubs / `.click()` dispatch + `IntersectionObserver` / `ResizeObserver` / `MutationObserver` / `PerformanceObserver` stubs). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1566/1566 passing.** Phases 3a–3c are all complete, plus regex literals, two rounds of browser host shims, and the ES2015+ prototype additions (`Array.from` / `Array.of` / `find` / `findLast` / `flat` / `flatMap` / `includes` / `at` / `fill` + `Object.assign` / `entries` / `values` / `fromEntries` / `is` / `defineProperty` + `String.startsWith` / `endsWith` / `includes` / `padStart` / `padEnd` / `repeat` / `trimStart` / `trimEnd` / `at` + `Number.isInteger` / `isFinite` / `MAX_SAFE_INTEGER` / `EPSILON` + the `Function` constructor global for dynamic function compilation). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 

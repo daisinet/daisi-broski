@@ -137,7 +137,11 @@ public static class Program
 
             // Wire the engine to the parsed document.
             var engine = new JsEngine();
-            engine.AttachDocument(doc);
+            // Pass the final (post-redirect) URL so scripts
+            // that read location.href or do
+            // `new URL('.', location.href)` see a real URL
+            // instead of the about:blank placeholder.
+            engine.AttachDocument(doc, page.FinalUrl);
 
             // Let scripts reach the real network via the slice 3c-6
             // fetch handler. The engine's default already points at
@@ -166,6 +170,17 @@ public static class Program
                 {
                     engine.RunScript(source);
                     ranCount++;
+                }
+                catch (Daisi.Broski.Engine.Js.JsRuntimeException jsEx)
+                {
+                    // A script-visible throw surfaces here as a
+                    // JsRuntimeException whose JsValue is the
+                    // structured error. Unpack name + message so
+                    // the user sees the real failure cause instead
+                    // of an opaque "[object Object]".
+                    errorCount++;
+                    string detail = UnpackJsError(jsEx);
+                    scriptErrors.Add(detail);
                 }
                 catch (Exception ex)
                 {
@@ -247,6 +262,27 @@ public static class Program
 
     private static string Delta(int d) =>
         d > 0 ? $"+{d}" : d.ToString();
+
+    /// <summary>
+    /// Walk the <see cref="Daisi.Broski.Engine.Js.JsRuntimeException"/>
+    /// and produce a readable one-line description. When the thrown
+    /// value is a normal Error-shaped object, we pull <c>name</c> +
+    /// <c>message</c> off it — otherwise we fall back to the string
+    /// coercion so primitive throws still print something useful.
+    /// </summary>
+    private static string UnpackJsError(Daisi.Broski.Engine.Js.JsRuntimeException ex)
+    {
+        if (ex.JsValue is Daisi.Broski.Engine.Js.JsObject obj)
+        {
+            var nameVal = obj.Get("name");
+            var msgVal = obj.Get("message");
+            var name = nameVal is string ns ? ns : "Error";
+            var msg = msgVal is string ms ? ms : "";
+            return string.IsNullOrEmpty(msg) ? name : $"{name}: {msg}";
+        }
+        if (ex.JsValue is string s) return s;
+        return ex.Message;
+    }
 
     private static async Task<int> FetchCommand(string[] args)
     {

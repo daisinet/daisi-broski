@@ -310,12 +310,25 @@ public sealed class JsEngine
     /// new document. This matches the way a host process
     /// typically reuses one engine across page loads.
     /// </summary>
-    public void AttachDocument(Document document)
+    public void AttachDocument(Document document, Uri? pageUrl = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         AttachedDocument = document;
         DomBridge = new JsDomBridge(this);
         Globals["document"] = DomBridge.Wrap(document);
+
+        // Remember the URL the document was loaded from so
+        // `location.href` + relative-URL-resolution against
+        // `new URL('.', location.href)` produce sensible
+        // values. When no URL is given we fall back to
+        // about:blank which is what scripts see before any
+        // navigation in a real browser.
+        AttachedPageUrl = pageUrl;
+        if (Globals.TryGetValue("location", out var locVal) && locVal is JsLocation loc)
+        {
+            loc.OnPageLoaded(pageUrl);
+        }
+
         // `window` is the global object in a browser. We
         // expose a minimal shim: reads and writes go through
         // the engine's Globals dictionary, so
@@ -328,6 +341,16 @@ public sealed class JsEngine
             Globals["window"] = new JsWindowProxy(this);
         }
     }
+
+    /// <summary>
+    /// URL the currently attached document was loaded from,
+    /// or <c>null</c> when none was provided. Used by
+    /// <see cref="JsLocation"/> to back <c>location.href</c>
+    /// with a real URL so scripts that resolve
+    /// <c>new URL('.', location.href)</c> don't crash on
+    /// the about:blank placeholder.
+    /// </summary>
+    public Uri? AttachedPageUrl { get; private set; }
 
     /// <summary>
     /// Shared <see cref="Net.HttpFetcher"/> for the default
