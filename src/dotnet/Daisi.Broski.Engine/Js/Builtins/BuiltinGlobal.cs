@@ -18,6 +18,55 @@ internal static class BuiltinGlobal
         engine.Globals["isNaN"] = new JsFunction("isNaN", IsNaN);
         engine.Globals["isFinite"] = new JsFunction("isFinite", IsFinite);
 
+        // URI encoding / decoding — ES5 globals that every
+        // web framework and URL handler uses. We delegate to
+        // .NET's Uri.EscapeDataString / UnescapeDataString
+        // which implement the RFC 3986 percent-encoding that
+        // the spec's encodeURIComponent / decodeURIComponent
+        // are based on.
+        engine.Globals["encodeURIComponent"] = new JsFunction("encodeURIComponent", (t, a) =>
+        {
+            if (a.Count == 0) return "undefined";
+            return Uri.EscapeDataString(JsValue.ToJsString(a[0]));
+        });
+        engine.Globals["decodeURIComponent"] = new JsFunction("decodeURIComponent", (t, a) =>
+        {
+            if (a.Count == 0) return "undefined";
+            try { return Uri.UnescapeDataString(JsValue.ToJsString(a[0])); }
+            catch { JsThrow.TypeError("URI malformed"); return null; }
+        });
+        engine.Globals["encodeURI"] = new JsFunction("encodeURI", (t, a) =>
+        {
+            if (a.Count == 0) return "undefined";
+            // encodeURI leaves :/?#[]@!$&'()*+,;= unencoded.
+            var s = JsValue.ToJsString(a[0]);
+            var sb = new System.Text.StringBuilder(s.Length * 2);
+            foreach (var c in s)
+            {
+                if (":/?#[]@!$&'()*+,;=-._~".IndexOf(c) >= 0 ||
+                    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                    (c >= '0' && c <= '9'))
+                {
+                    sb.Append(c);
+                }
+                else
+                {
+                    foreach (var b in System.Text.Encoding.UTF8.GetBytes(new[] { c }))
+                    {
+                        sb.Append('%');
+                        sb.Append(b.ToString("X2"));
+                    }
+                }
+            }
+            return sb.ToString();
+        });
+        engine.Globals["decodeURI"] = new JsFunction("decodeURI", (t, a) =>
+        {
+            if (a.Count == 0) return "undefined";
+            try { return Uri.UnescapeDataString(JsValue.ToJsString(a[0])); }
+            catch { JsThrow.TypeError("URI malformed"); return null; }
+        });
+
         // eval(source) — direct eval. Parses + compiles the
         // source string and executes it in a nested dispatch
         // loop so the caller's VM state survives. The nested
