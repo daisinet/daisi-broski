@@ -17,6 +17,41 @@ internal static class BuiltinGlobal
         engine.Globals["parseFloat"] = new JsFunction("parseFloat", ParseFloat);
         engine.Globals["isNaN"] = new JsFunction("isNaN", IsNaN);
         engine.Globals["isFinite"] = new JsFunction("isFinite", IsFinite);
+
+        // eval(source) — direct eval. Parses + compiles the
+        // source string and executes it in a nested dispatch
+        // loop so the caller's VM state survives. The nested
+        // chunk runs in the SAME scope (globals env), matching
+        // the spec's "direct eval" semantics: declarations
+        // made inside eval are visible to the outer program
+        // after eval returns. A parse / compile error surfaces
+        // as a script-visible SyntaxError.
+        engine.Globals["eval"] = new JsFunction("eval", (thisVal, args) =>
+        {
+            if (args.Count == 0) return JsValue.Undefined;
+            if (args[0] is not string source)
+            {
+                // Spec: eval(non-string) returns the argument.
+                return args[0];
+            }
+            Chunk chunk;
+            try
+            {
+                var program = new JsParser(source).ParseProgram();
+                chunk = new JsCompiler().Compile(program);
+            }
+            catch (JsParseException ex)
+            {
+                JsThrow.SyntaxError($"eval: {ex.Message}");
+                return null;
+            }
+            catch (JsCompileException ex)
+            {
+                JsThrow.SyntaxError($"eval: {ex.Message}");
+                return null;
+            }
+            return engine.Vm.RunChunkNested(chunk);
+        });
     }
 
     /// <summary>

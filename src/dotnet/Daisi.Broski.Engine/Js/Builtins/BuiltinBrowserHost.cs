@@ -86,6 +86,22 @@ internal static class BuiltinBrowserHost
         InstallHistory(engine);
         InstallAnimationFrame(engine);
         InstallObservers(engine);
+
+        // Image constructor — `new Image()` is used for beacon
+        // pixels (Google analytics, error reporting) and image
+        // preloads. The object just needs `src`, `width`,
+        // `height` properties; setting `src` triggers a fetch
+        // in a real browser but we leave it as a no-op in
+        // headless mode.
+        engine.Globals["Image"] = new JsFunction("Image", (thisVal, args) =>
+        {
+            var img = new JsObject { Prototype = engine.ObjectPrototype };
+            img.Set("width", args.Count > 0 ? JsValue.ToNumber(args[0]) : 0.0);
+            img.Set("height", args.Count > 1 ? JsValue.ToNumber(args[1]) : 0.0);
+            img.Set("src", "");
+            img.Set("complete", false);
+            return img;
+        });
     }
 
     // =======================================================

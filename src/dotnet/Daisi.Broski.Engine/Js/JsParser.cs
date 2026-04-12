@@ -2495,6 +2495,25 @@ public sealed class JsParser
             var text = _source.Substring(tok.Start, tok.Length);
             return new Identifier(tok.Start, tok.End, text);
         }
+        // ES5+ allows literal tokens (true / false / null) as
+        // property names in object literals and member access
+        // (`{true: 1}`, `obj.default`, etc.).
+        if (keywordsAllowed && tok.Kind is JsTokenKind.TrueLiteral
+                                       or JsTokenKind.FalseLiteral
+                                       or JsTokenKind.NullLiteral)
+        {
+            Consume();
+            var text = _source.Substring(tok.Start, tok.Length);
+            return new Identifier(tok.Start, tok.End, text);
+        }
+        // Computed property names: `{ [expr]: value }` — ES2015
+        if (tok.Kind == JsTokenKind.LeftBracket)
+        {
+            Consume();
+            var expr = ParseAssignmentExpression(allowIn: true);
+            Expect(JsTokenKind.RightBracket, "computed property name");
+            return expr;
+        }
         throw new JsParseException(
             $"Expected property name, got {tok.Kind}",
             tok.Start);
