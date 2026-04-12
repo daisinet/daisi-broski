@@ -1666,21 +1666,13 @@ public sealed class JsParser
             return ParseYieldExpression(allowIn);
         }
 
-        // ES2017: AwaitExpression. Originally only legal inside
-        // async function bodies, but top-level await (ES2022)
-        // and webpack/bundler IIFE wrappers make it appear at
-        // any level in real-world code. We recognize it
-        // everywhere — the VM's async machinery handles it
-        // regardless of the syntactic context, and rejecting
-        // it here would block every bundled Next.js / webpack
-        // chunk that uses top-level await.
-        if (Current.Kind == JsTokenKind.Identifier &&
-            Current.StringValue == "await" &&
-            CanStartExpression(Peek(1).Kind) &&
-            !_hasLineBefore[_pos + 1])
-        {
-            return ParseAwaitExpression(allowIn);
-        }
+        // Note: `await` is handled in ParseUnaryExpression so
+        // it participates correctly in binary expressions:
+        // `await fn() && other` parses as `(await fn()) && other`,
+        // not as `await (fn() && other)`. Previously this check
+        // was here in ParseAssignmentExpression, which caused a
+        // short-circuit return that never reached the binary
+        // expression parser.
 
         var arrow = TryParseArrowFunction(allowIn);
         if (arrow is not null) return arrow;
