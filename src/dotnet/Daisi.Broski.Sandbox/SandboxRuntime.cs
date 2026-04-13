@@ -251,8 +251,10 @@ internal static class SandboxRuntime
         // "same-origin reload sees its own state" semantics a real
         // browser offers, without the host having to thread a
         // storage path through IPC for every run.
-        engine.SetStorageBackend(new FileStorageBackend(
-            EngineBroski.DefaultStoragePath()));
+        var storagePath = EngineBroski.DefaultStoragePath();
+        engine.SetStorageBackend(new FileStorageBackend(storagePath));
+        engine.IndexedDbBackend = new FileIndexedDbBackend(
+            Path.Combine(storagePath, "indexeddb"));
         engine.AttachDocument(page.Document, page.FinalUrl);
 
         var scriptResult = new PageScriptsResult

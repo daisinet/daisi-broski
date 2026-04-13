@@ -233,6 +233,15 @@ public sealed class JsEngine
         StorageManager?.OnBackendChanged();
     }
 
+    /// <summary>Persistence strategy for IndexedDB. Defaults to
+    /// <see cref="Js.NullIndexedDbBackend"/> (transient — the
+    /// in-memory snapshot inside <see cref="Js.JsIDBDatabase"/>
+    /// still keeps data alive for the engine's lifetime). Set a
+    /// <see cref="Js.FileIndexedDbBackend"/> to persist
+    /// databases as JSON files under a chosen directory.</summary>
+    public Js.IIndexedDbBackend IndexedDbBackend { get; set; } =
+        Js.NullIndexedDbBackend.Instance;
+
     /// <summary>
     /// Collected <c>console.log</c> / <c>warn</c> / <c>error</c>
     /// output. Tests inspect <see cref="StringBuilder.ToString"/>

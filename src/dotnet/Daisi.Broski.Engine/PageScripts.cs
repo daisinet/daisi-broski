@@ -54,6 +54,8 @@ public static class PageScripts
         if (!string.IsNullOrEmpty(storagePath))
         {
             engine.SetStorageBackend(new FileStorageBackend(storagePath));
+            engine.IndexedDbBackend = new FileIndexedDbBackend(
+                Path.Combine(storagePath, "indexeddb"));
         }
         engine.AttachDocument(doc, page.FinalUrl);
 
