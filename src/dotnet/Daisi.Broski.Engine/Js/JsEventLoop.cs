@@ -134,7 +134,19 @@ public sealed class JsEventLoop
     /// been performed. The latter is a safety net against
     /// pathological interval loops in tests.
     /// </summary>
-    public void Drain(int maxIterations = 100_000)
+    /// <param name="maxIterations">Hard cap on dispatches.</param>
+    /// <param name="maxWaitMs">Maximum time to <c>Thread.Sleep</c>
+    /// waiting for a future timer's due-time. Drain returns when a
+    /// timer's wait would exceed this. Default 250 ms is enough to
+    /// let any pending fetch / Promise chain settle on a fast
+    /// network without hanging the host on long
+    /// <c>setInterval</c>s — sites routinely register 5-minute
+    /// stats refreshers, and a one-shot scrape has no business
+    /// blocking the caller for that long. Pass <see cref="int.MaxValue"/>
+    /// to restore the original "block until the loop is truly
+    /// idle" behavior (only safe in interactive UIs that have
+    /// some other way to interrupt).</param>
+    public void Drain(int maxIterations = 100_000, int maxWaitMs = 250)
     {
         int iterations = 0;
         while (iterations++ < maxIterations)
@@ -155,9 +167,20 @@ public sealed class JsEventLoop
             var next = _timers.First();
             long dueAt = next.Key;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (dueAt > now)
+            long waitMs = dueAt - now;
+            if (waitMs > maxWaitMs)
             {
-                Thread.Sleep((int)Math.Min(dueAt - now, int.MaxValue));
+                // Future timers exceed our patience — let the loop
+                // exit so the host can extract the post-script DOM.
+                // Background intervals (setInterval(stats, 5min) on
+                // peerllm.com / many Next.js sites) live in this
+                // bucket; an interactive runtime would re-enter the
+                // loop later when the timer fires.
+                return;
+            }
+            if (waitMs > 0)
+            {
+                Thread.Sleep((int)waitMs);
             }
 
             // Fire every timer at this due-time key.

@@ -269,11 +269,17 @@ else
 
     private async Task GoBack() => await Session.GoBackAsync();
 
-    private void OnScriptingToggle(ChangeEventArgs e)
+    private async Task OnScriptingToggle(ChangeEventArgs e)
     {
         Session.ScriptingEnabled = e.Value is bool b && b;
-        // Takes effect on the next navigation; no need to refetch
-        // the current page automatically.
+        // Re-skim the current page immediately so the Reader /
+        // Markdown / JSON view reflects the new mode without the
+        // user having to retype the URL. No-op when the page is
+        // empty (toggle was flipped before any navigation).
+        if (Session.CurrentRequestUrl is { Length: > 0 } cur)
+        {
+            await Session.NavigateAsync(cur);
+        }
     }
 
     private async Task OnUrlKeyDown(KeyboardEventArgs e)
