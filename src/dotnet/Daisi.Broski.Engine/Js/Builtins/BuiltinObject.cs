@@ -166,14 +166,21 @@ internal static class BuiltinObject
 
     private static object? ToStringMethod(object? thisVal, IReadOnlyList<object?> args)
     {
-        // Slice-6b subset of §15.2.4.2: [[Class]] would drive
-        // the bracket content (<c>[object Array]</c> etc.) but
-        // phase 3a doesn't track [[Class]]. We return a shape
-        // that's close enough for logging.
+        // §19.1.3.6 — return the [[Class]]-shaped tag. We switch
+        // on the host type rather than tracking an explicit
+        // [[Class]] slot; the tags below cover everything real
+        // sites check for via `Object.prototype.toString.call(x)`.
+        // Polyfills that sniff flags (e.g. core-js) compare
+        // against these exact tags, so naming matters.
         if (thisVal is null || thisVal is JsUndefined) return "[object Undefined]";
         if (thisVal is JsNull) return "[object Null]";
         if (thisVal is JsArray) return "[object Array]";
+        if (thisVal is JsRegExp) return "[object RegExp]";
+        if (thisVal is JsDate) return "[object Date]";
         if (thisVal is JsFunction) return "[object Function]";
+        if (thisVal is string) return "[object String]";
+        if (thisVal is bool) return "[object Boolean]";
+        if (thisVal is double) return "[object Number]";
         return "[object Object]";
     }
 

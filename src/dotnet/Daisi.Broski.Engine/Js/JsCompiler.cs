@@ -648,6 +648,13 @@ public sealed class JsCompiler
                 }
                 HoistInStatement(fo.Body);
                 break;
+            case ForInStatement fi:
+                // `for (var a in obj)` — the var binding hoists to
+                // the enclosing function. See CompileForIn where
+                // the matching DeclareGlobal is emitted just before
+                // the loop runs.
+                HoistInStatement(fi.Body);
+                break;
             case LabeledStatement l:
                 HoistInStatement(l.Body);
                 break;
@@ -1634,6 +1641,9 @@ public sealed class JsCompiler
                 throw new JsCompileException(
                     "'super' must be followed by a member access or call",
                     sup.Start);
+            case NewTarget:
+                _chunk.Emit(OpCode.LoadNewTarget);
+                return;
 
             default:
                 throw new JsCompileException(
@@ -2905,6 +2915,26 @@ public sealed class JsCompiler
                 stmt.Start);
         }
         int nameIdx = _chunk.AddName(bindingName);
+
+        // For `for (var x in obj)` declare `x` in the current env
+        // so the per-iteration StoreGlobal writes locally instead
+        // of walking up and clobbering a same-named binding in an
+        // enclosing scope. Seen in stripe's polyfill where the
+        // outer `a` is a helper function that the inner's for-in
+        // would otherwise overwrite with the last iterated key.
+        //
+        // Emit this HERE rather than in the HoistInStatement pass —
+        // the hoist walks all nested statements (including nested
+        // functions' interiors in some compilers) and it's safer
+        // to declare exactly once right before the loop runs.
+        // DeclareGlobal's DeclareLocal semantics are "no-op if
+        // already bound" so the declaration is idempotent with a
+        // same-named parameter or hoisted var in the function.
+        if (stmt.Left is VariableDeclaration fiVd &&
+            fiVd.Kind == VariableDeclarationKind.Var)
+        {
+            _chunk.EmitWithU16(OpCode.DeclareGlobal, nameIdx);
+        }
 
         // Evaluate the source object and start the iterator.
         CompileExpression(stmt.Right);

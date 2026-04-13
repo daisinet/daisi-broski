@@ -20,5 +20,8 @@
     <!-- CLI smoke tests invoke the daisi-broski exe as a subprocess. -->
     <ProjectReference Include="..\..\Daisi.Broski.Cli\Daisi.Broski.Cli.csproj"
                       ReferenceOutputAssembly="false" />
+    <!-- Skimmer is a library + CLI; tests consume the library types
+         directly to exercise extraction without going through stdout. -->
+    <ProjectReference Include="..\..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
   </ItemGroup>
 </Project>

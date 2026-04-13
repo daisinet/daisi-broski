@@ -251,7 +251,50 @@ public class JsObject
     public virtual bool Has(string key)
     {
         if (Properties.ContainsKey(key)) return true;
+        if (_accessors is not null && _accessors.ContainsKey(key)) return true;
         return Prototype?.Has(key) ?? false;
+    }
+
+    /// <summary>
+    /// Like <see cref="Has"/> but only considers this object's
+    /// own properties (data slot or accessor) — does not walk
+    /// the prototype chain. Used by <c>Object.hasOwn</c> /
+    /// <c>Object.getOwnPropertyDescriptor</c>.
+    /// </summary>
+    public bool HasOwn(string key)
+    {
+        if (Properties.ContainsKey(key)) return true;
+        if (_accessors is not null && _accessors.ContainsKey(key)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Look up an own accessor descriptor without walking the
+    /// prototype chain. Used by <c>Object.getOwnPropertyDescriptor</c>
+    /// to correctly report data vs accessor properties.
+    /// </summary>
+    public bool TryGetOwnAccessor(string key, out AccessorDescriptor descriptor)
+    {
+        if (_accessors is not null && _accessors.TryGetValue(key, out var d))
+        {
+            descriptor = d;
+            return true;
+        }
+        descriptor = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Enumerate the own accessor descriptors. Used by the
+    /// engine's bootstrap walker to post-patch native getters
+    /// / setters with the correct Function.prototype link so
+    /// <c>Object.getOwnPropertyDescriptor(proto,'x').get.call(...)</c>
+    /// works on host-installed accessors.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, AccessorDescriptor>> OwnAccessors()
+    {
+        if (_accessors is null) yield break;
+        foreach (var kv in _accessors) yield return kv;
     }
 
     /// <summary>

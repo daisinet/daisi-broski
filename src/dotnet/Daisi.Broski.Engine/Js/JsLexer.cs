@@ -127,6 +127,32 @@ public sealed class JsLexer
             return ScanIdentifierOrKeyword(start);
         }
 
+        // ES2015 Unicode-escape identifier prefix: `\u0275prov` is
+        // the same identifier as `ɵprov`. Real-world bundles
+        // (Angular's internal symbols, generated bundles) use
+        // these heavily. Decode the escape and continue scanning.
+        if (c == '\\' && _pos + 1 < _src.Length && _src[_pos + 1] == 'u')
+        {
+            return ScanUnicodeEscapedIdentifier(start);
+        }
+
+        // ES2022 private class field / method names: `#name`.
+        // The `#` prefix is part of the identifier. We lex it
+        // as a regular Identifier token with the `#` included
+        // in the StringValue so the parser and compiler can
+        // treat it as a property name. Privacy enforcement is
+        // deferred — the name is stored and looked up like any
+        // other property, just with a `#` prefix that script
+        // code can't synthesize (no `obj['#foo']` equivalent).
+        if (c == '#' && _pos + 1 < _src.Length && IsIdentifierStart(_src[_pos + 1]))
+        {
+            _pos++; // skip '#'
+            int nameStart = _pos;
+            while (_pos < _src.Length && IsIdentifierPart(_src[_pos])) _pos++;
+            var name = "#" + _src[nameStart.._pos];
+            return new JsToken(JsTokenKind.Identifier, start, _pos - start, stringValue: name);
+        }
+
         // Number literal starting with a digit.
         if (c >= '0' && c <= '9')
         {
@@ -264,12 +290,103 @@ public sealed class JsLexer
     private JsToken ScanIdentifierOrKeyword(int start)
     {
         _pos++; // consume the start char we already validated
-        while (_pos < _src.Length && IsIdentifierPart(_src[_pos]))
+        while (_pos < _src.Length)
         {
-            _pos++;
+            char c = _src[_pos];
+            if (IsIdentifierPart(c))
+            {
+                _pos++;
+            }
+            else if (c == '\\' && _pos + 1 < _src.Length && _src[_pos + 1] == 'u')
+            {
+                // Mid-identifier unicode escape — fold into the
+                // running text via the slow path so the resulting
+                // identifier matches the de-escaped form.
+                return ScanUnicodeEscapedIdentifier(start);
+            }
+            else
+            {
+                break;
+            }
         }
 
         var text = _src[start.._pos];
+        var kind = LookupKeyword(text);
+        return new JsToken(kind, start, _pos - start, kind == JsTokenKind.Identifier ? text : null);
+    }
+
+    /// <summary>
+    /// Slow-path identifier scanner used when the identifier
+    /// contains one or more <c>\uXXXX</c> Unicode escapes. Builds
+    /// the de-escaped text in a buffer and emits an Identifier
+    /// token whose <c>StringValue</c> is the resolved name (so
+    /// `\u0275prov` collides with a property literally named
+    /// <c>ɵprov</c>). Both <c>\uXXXX</c> and <c>\u{XXXXX}</c>
+    /// braced forms are accepted.
+    /// </summary>
+    private JsToken ScanUnicodeEscapedIdentifier(int start)
+    {
+        var sb = new System.Text.StringBuilder();
+        // Re-scan from `start` to the current position, decoding
+        // any escapes encountered.
+        _pos = start;
+        bool first = true;
+        while (_pos < _src.Length)
+        {
+            char c = _src[_pos];
+            int codepoint;
+            if (c == '\\' && _pos + 1 < _src.Length && _src[_pos + 1] == 'u')
+            {
+                int saveIp = _pos;
+                _pos += 2; // skip "\u"
+                if (_pos < _src.Length && _src[_pos] == '{')
+                {
+                    _pos++;
+                    int hexStart = _pos;
+                    while (_pos < _src.Length && IsHexDigit(_src[_pos])) _pos++;
+                    if (_pos >= _src.Length || _src[_pos] != '}')
+                    {
+                        throw new JsParseException(
+                            "Invalid unicode escape in identifier", saveIp);
+                    }
+                    var hex = _src[hexStart.._pos];
+                    codepoint = int.Parse(hex, System.Globalization.NumberStyles.HexNumber);
+                    _pos++; // skip '}'
+                }
+                else if (_pos + 4 <= _src.Length &&
+                         IsHexDigit(_src[_pos]) && IsHexDigit(_src[_pos + 1]) &&
+                         IsHexDigit(_src[_pos + 2]) && IsHexDigit(_src[_pos + 3]))
+                {
+                    var hex = _src[_pos..(_pos + 4)];
+                    codepoint = int.Parse(hex, System.Globalization.NumberStyles.HexNumber);
+                    _pos += 4;
+                }
+                else
+                {
+                    throw new JsParseException(
+                        "Invalid unicode escape in identifier", saveIp);
+                }
+            }
+            else
+            {
+                bool ok = first ? IsIdentifierStart(c) : IsIdentifierPart(c);
+                if (!ok) break;
+                codepoint = c;
+                _pos++;
+            }
+
+            if (codepoint > 0xFFFF)
+            {
+                sb.Append(char.ConvertFromUtf32(codepoint));
+            }
+            else
+            {
+                sb.Append((char)codepoint);
+            }
+            first = false;
+        }
+
+        var text = sb.ToString();
         var kind = LookupKeyword(text);
         return new JsToken(kind, start, _pos - start, kind == JsTokenKind.Identifier ? text : null);
     }
@@ -1094,10 +1211,23 @@ public sealed class JsLexer
         c == '\u00A0';
 
     private static bool IsIdentifierStart(char c) =>
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' ||
+        // ES2015+ allows any Unicode letter (UnicodeIDStart) as an
+        // identifier start. We approximate via .NET's
+        // <see cref="char.IsLetter"/> which covers all letter
+        // categories — the spec also includes Number-letter
+        // (Nl, e.g. Roman numerals) which IsLetter does not, but
+        // those are vanishingly rare in real code. Common cases
+        // we care about: minified bundlers that emit non-ASCII
+        // property keys (ã, ñ, ko/ja chars) inside transliteration
+        // tables; without this, our lexer rejected those keys.
+        (c >= 0x80 && char.IsLetter(c));
 
     private static bool IsIdentifierPart(char c) =>
-        IsIdentifierStart(c) || (c >= '0' && c <= '9');
+        IsIdentifierStart(c) || (c >= '0' && c <= '9') ||
+        // Unicode digits (Nd) and combining marks (Mn/Mc) are
+        // allowed in identifier continuation per UnicodeIDContinue.
+        (c >= 0x80 && (char.IsDigit(c) || char.IsLetter(c)));
 
     private static bool IsHexDigit(char c) =>
         (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');

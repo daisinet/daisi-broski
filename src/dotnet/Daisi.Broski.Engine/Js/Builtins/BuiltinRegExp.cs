@@ -27,6 +27,35 @@ internal static class BuiltinRegExp
         var proto = new JsObject { Prototype = engine.ObjectPrototype };
         engine.RegExpPrototype = proto;
 
+        // Install flag-check properties on the prototype as real
+        // accessor getters so polyfills that inspect
+        // `Object.getOwnPropertyDescriptor(RegExp.prototype, 'dotAll').get`
+        // see a native function and keep the existing accessor
+        // (rather than installing their own — and then calling
+        // the getter in a way that assumes `this` is registered
+        // in the polyfill's internal WeakMap, which throws).
+        //
+        // When the accessor fires with `this` = JsRegExp instance,
+        // return the underlying C# flag; when `this` = the prototype
+        // itself, return `undefined` (matching V8 behavior).
+        InstallFlagGetter(proto, "global", r => r.Global);
+        InstallFlagGetter(proto, "ignoreCase", r => r.IgnoreCase);
+        InstallFlagGetter(proto, "multiline", r => r.Multiline);
+        InstallFlagGetter(proto, "dotAll", r => r.DotAll);
+        InstallFlagGetter(proto, "sticky", r => r.Sticky);
+        InstallFlagGetter(proto, "unicode", r => r.Unicode);
+        InstallFlagGetter(proto, "hasIndices", r => r.HasIndices);
+        proto.SetAccessor("flags", new JsFunction("get flags", (thisVal, args) =>
+        {
+            if (thisVal is JsRegExp r) return (object?)r.Flags;
+            return JsValue.Undefined;
+        }), null);
+        proto.SetAccessor("source", new JsFunction("get source", (thisVal, args) =>
+        {
+            if (thisVal is JsRegExp r) return (object?)r.Source;
+            return JsValue.Undefined;
+        }), null);
+
         proto.SetNonEnumerable("test", new JsFunction("test", (thisVal, args) =>
         {
             var r = RequireRegExp(thisVal, "RegExp.prototype.test");
@@ -75,6 +104,23 @@ internal static class BuiltinRegExp
         engine.Globals["RegExp"] = ctor;
 
         InstallStringRegExpHelpers(engine);
+    }
+
+    /// <summary>
+    /// Install a read-only accessor property on
+    /// <c>RegExp.prototype</c> backed by a C# predicate on the
+    /// receiver <see cref="JsRegExp"/>. When the accessor fires
+    /// with a non-regex receiver (e.g. the prototype itself),
+    /// returns <c>undefined</c>.
+    /// </summary>
+    private static void InstallFlagGetter(JsObject proto, string name, Func<JsRegExp, bool> pick)
+    {
+        var getter = new JsFunction("get " + name, (thisVal, args) =>
+        {
+            if (thisVal is JsRegExp r) return (object?)pick(r);
+            return JsValue.Undefined;
+        });
+        proto.SetAccessor(name, getter, null);
     }
 
     private static JsRegExp RequireRegExp(object? thisVal, string name)

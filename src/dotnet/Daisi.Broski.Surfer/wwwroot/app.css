@@ -1,0 +1,364 @@
+/* Daisi Broski Surfer — minimal reader/browser styling. Hand-rolled
+   to match the project's "no third-party CSS framework" stance. */
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #f6f8fa;
+    color: #1f2328;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+}
+
+.surfer-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* ---------- Address bar ---------- */
+
+.address-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #ffffff;
+    border-bottom: 1px solid #d0d7de;
+    flex: 0 0 auto;
+}
+
+.address-bar .back-btn,
+.address-bar .go-btn {
+    padding: 6px 14px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #f6f8fa;
+    cursor: pointer;
+    font-size: 14px;
+    color: #1f2328;
+}
+.address-bar .back-btn { font-size: 18px; padding: 4px 10px; }
+.address-bar .back-btn:hover:not([disabled]),
+.address-bar .go-btn:hover:not([disabled]) { background: #eef2f6; }
+.address-bar .go-btn { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+.address-bar .go-btn:hover:not([disabled]) { background: #1858c4; }
+.address-bar button[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+.address-bar input.url {
+    flex: 1 1 auto;
+    padding: 6px 10px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    background: #ffffff;
+    color: #1f2328;
+}
+.address-bar input.url:focus {
+    outline: none;
+    border-color: #1f6feb;
+    box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.15);
+}
+
+.format-toggle {
+    display: flex;
+    margin-left: 6px;
+}
+.format-toggle button {
+    padding: 6px 10px;
+    border: 1px solid #d0d7de;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 13px;
+    color: #1f2328;
+    border-right-width: 0;
+}
+.format-toggle button:first-child { border-radius: 6px 0 0 6px; }
+.format-toggle button:last-child  { border-radius: 0 6px 6px 0; border-right-width: 1px; }
+.format-toggle button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+
+.js-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    padding: 6px 8px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 12px;
+    color: #57606a;
+    cursor: pointer;
+    user-select: none;
+}
+.js-toggle input { margin: 0; cursor: pointer; }
+
+/* ---------- Status / error banners ---------- */
+
+.error {
+    padding: 8px 16px;
+    background: #ffebe9;
+    color: #82071e;
+    border-bottom: 1px solid #ffc1ba;
+}
+
+.loading {
+    padding: 16px;
+    color: #57606a;
+    font-style: italic;
+}
+
+/* ---------- Meta strip ---------- */
+
+.meta-strip {
+    padding: 16px 24px 4px;
+    background: #ffffff;
+    border-bottom: 1px solid #eaeef2;
+}
+.meta-strip .page-title {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 700;
+    color: #1f2328;
+}
+.meta-strip .meta-line {
+    font-size: 12px;
+    color: #57606a;
+}
+.meta-strip .meta-line span { margin-right: 4px; }
+
+/* ---------- Content area ---------- */
+
+.content {
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 24px;
+}
+
+.content.reader {
+    max-width: 740px;
+    margin: 0 auto;
+}
+.content.reader img.hero {
+    width: 100%;
+    max-height: 320px;
+    object-fit: cover;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+.content.reader .lead {
+    font-size: 17px;
+    color: #424a53;
+    margin: 0 0 16px;
+    font-style: italic;
+    border-left: 3px solid #1f6feb;
+    padding-left: 12px;
+}
+.content.reader .reader-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    color: #1f2328;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+}
+
+.content.reader .reader-body {
+    font-size: 16px;
+    line-height: 1.65;
+    color: #1f2328;
+}
+.content.reader .reader-body h1,
+.content.reader .reader-body h2,
+.content.reader .reader-body h3,
+.content.reader .reader-body h4,
+.content.reader .reader-body h5,
+.content.reader .reader-body h6 {
+    margin: 1.4em 0 0.5em;
+    line-height: 1.3;
+}
+.content.reader .reader-body h1 { font-size: 1.8em; }
+.content.reader .reader-body h2 { font-size: 1.5em; }
+.content.reader .reader-body h3 { font-size: 1.25em; }
+.content.reader .reader-body h4,
+.content.reader .reader-body h5,
+.content.reader .reader-body h6 { font-size: 1.1em; }
+.content.reader .reader-body p { margin: 0 0 1em; }
+.content.reader .reader-body a {
+    color: #1f6feb;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.content.reader .reader-body a:hover { color: #1858c4; }
+.content.reader .reader-body img {
+    max-width: 100%;
+    height: auto;
+    margin: 1em 0;
+    border-radius: 4px;
+}
+.content.reader .reader-body ul,
+.content.reader .reader-body ol {
+    padding-left: 1.6em;
+    margin: 0 0 1em;
+}
+.content.reader .reader-body li { margin: 0.25em 0; }
+.content.reader .reader-body code {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 0.9em;
+}
+.content.reader .reader-body pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 12px;
+    overflow: auto;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px;
+}
+.content.reader .reader-body pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+}
+.content.reader .reader-body blockquote {
+    border-left: 3px solid #d0d7de;
+    margin: 0 0 1em;
+    padding: 0 1em;
+    color: #57606a;
+}
+.content.reader .reader-body table {
+    border-collapse: collapse;
+    margin: 1em 0;
+}
+.content.reader .reader-body th,
+.content.reader .reader-body td {
+    border: 1px solid #d0d7de;
+    padding: 6px 10px;
+    text-align: left;
+}
+.content.reader .reader-body th { background: #f6f8fa; font-weight: 600; }
+
+/* Nav-links summary table rendered at the top of every article
+   by HtmlFormatter. Compact, muted, readable. */
+.content.reader .reader-body table.nav-links {
+    width: 100%;
+    margin: 0 0 1.5em;
+    font-size: 13px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #f6f8fa;
+}
+.content.reader .reader-body table.nav-links th,
+.content.reader .reader-body table.nav-links td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #eaeef2;
+    border-right: 0;
+    border-left: 0;
+    border-top: 0;
+}
+.content.reader .reader-body table.nav-links thead th {
+    background: #eaeef2;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #57606a;
+}
+.content.reader .reader-body table.nav-links tbody tr:last-child td {
+    border-bottom: 0;
+}
+.content.reader .reader-body table.nav-links code {
+    font-size: 11px;
+    color: #57606a;
+    background: transparent;
+    border: 0;
+    padding: 0;
+}
+
+.content.code pre {
+    margin: 0;
+    padding: 16px;
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-family: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #1f2328;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.content.links h3 {
+    margin: 0 0 12px;
+    font-size: 14px;
+    color: #57606a;
+    font-weight: 600;
+}
+.content.links ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.content.links li {
+    padding: 6px 0;
+    border-bottom: 1px solid #eaeef2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.content.links .link-href {
+    font-size: 11px;
+    color: #57606a;
+    font-family: ui-monospace, monospace;
+}
+
+button.link-nav {
+    background: none;
+    border: none;
+    color: #1f6feb;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 0;
+    font-size: inherit;
+    font-family: inherit;
+    text-align: left;
+}
+button.link-nav:hover { color: #1858c4; }
+
+/* ---------- Empty state ---------- */
+
+.empty {
+    padding: 48px 24px;
+    max-width: 640px;
+    margin: 0 auto;
+    color: #424a53;
+}
+.empty h2 { margin: 0 0 16px; font-size: 22px; }
+.empty p  { margin: 0 0 12px; }
+.empty ul { padding-left: 20px; }
+.empty li { padding: 4px 0; }
+
+kbd {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+}

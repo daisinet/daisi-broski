@@ -234,6 +234,13 @@ public enum OpCode : byte
     /// </summary>
     LoadSuper,
 
+    /// <summary>
+    /// Push the value of the ES2015 <c>new.target</c> meta-property:
+    /// the constructor function if the current frame was entered
+    /// via <c>new</c>, otherwise <c>undefined</c>. No operands.
+    /// </summary>
+    LoadNewTarget,
+
     // ---- ES2015 iterator protocol ----
     /// <summary>
     /// Start iterating an iterable value via the ES2015

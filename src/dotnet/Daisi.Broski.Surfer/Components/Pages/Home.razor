@@ -1,0 +1,315 @@
+@page "/"
+@inject SkimSession Session
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="address-bar">
+    <button class="back-btn" @onclick="GoBack" disabled="@(!Session.History.Any())"
+            title="Back to previous page">←</button>
+
+    <input class="url" type="text" value="@_urlInput" @oninput="OnUrlInput"
+           @onkeydown="OnUrlKeyDown" @ref="_urlInputRef"
+           placeholder="Type a URL (https://example.com)..."
+           disabled="@Session.IsLoading" />
+
+    <button class="go-btn" @onclick="Go" disabled="@(string.IsNullOrWhiteSpace(_urlInput) || Session.IsLoading)">
+        @(Session.IsLoading ? "..." : "Go")
+    </button>
+
+    <div class="format-toggle">
+        @foreach (var f in Formats)
+        {
+            <button class="@(f == _format ? "active" : "")" @onclick="@(() => _format = f)">
+                @f
+            </button>
+        }
+    </div>
+
+    <label class="js-toggle" title="Run page scripts before extracting (slower; needed for SPAs)">
+        <input type="checkbox" checked="@Session.ScriptingEnabled"
+               @onchange="OnScriptingToggle" />
+        JS
+    </label>
+</div>
+
+@if (Session.Error is not null)
+{
+    <div class="error">⚠ @Session.Error</div>
+}
+
+@if (Session.IsLoading)
+{
+    <div class="loading">Skimming @Session.CurrentRequestUrl …</div>
+}
+else if (Session.Current is { } article)
+{
+    <div class="meta-strip">
+        @if (!string.IsNullOrWhiteSpace(article.Title))
+        {
+            <h1 class="page-title">@article.Title</h1>
+        }
+        <div class="meta-line">
+            @if (!string.IsNullOrWhiteSpace(article.Byline))
+            {
+                <span class="byline">By <strong>@article.Byline</strong></span>
+            }
+            @if (!string.IsNullOrWhiteSpace(article.PublishedAt))
+            {
+                <span class="date">· @article.PublishedAt</span>
+            }
+            @if (!string.IsNullOrWhiteSpace(article.SiteName))
+            {
+                <span class="site">· @article.SiteName</span>
+            }
+            <span class="wc">· @article.WordCount words</span>
+        </div>
+    </div>
+
+    @switch (_format)
+    {
+        case "Reader":
+            <div class="content reader">
+                @if (!string.IsNullOrWhiteSpace(article.HeroImage))
+                {
+                    <img class="hero" src="@article.HeroImage" alt="" />
+                }
+                @if (!string.IsNullOrWhiteSpace(article.Description))
+                {
+                    <p class="lead">@article.Description</p>
+                }
+                <div class="reader-body" @ref="_readerBody">
+                    @((MarkupString)HtmlFormatter.Format(article))
+                </div>
+            </div>
+            break;
+        case "Markdown":
+            <div class="content code">
+                <pre>@MarkdownFormatter.Format(article)</pre>
+            </div>
+            break;
+        case "JSON":
+            <div class="content code">
+                <pre>@JsonFormatter.Format(article)</pre>
+            </div>
+            break;
+        case "Links":
+            <div class="content links">
+                <h3>@article.Links.Count outbound link@(article.Links.Count == 1 ? "" : "s")</h3>
+                <ul>
+                    @foreach (var link in article.Links)
+                    {
+                        <li>
+                            <button class="link-nav" @onclick="@(() => Navigate(link.Href))" title="@link.Href">
+                                @link.Text
+                            </button>
+                            <span class="link-href">@link.Href</span>
+                        </li>
+                    }
+                </ul>
+            </div>
+            break;
+    }
+}
+else
+{
+    <div class="empty">
+        <h2>Loading <strong>daisi-broski-surfer</strong> …</h2>
+        <p>The home page <code>@HomeUrl</code> is being skimmed.
+           If this hangs, type a URL above and press <kbd>Enter</kbd>, or pick one:</p>
+        <ul>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://daisi.ai"))'>daisi.ai</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://news.ycombinator.com"))'>news.ycombinator.com</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://en.wikipedia.org/wiki/JavaScript"))'>en.wikipedia.org/wiki/JavaScript</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://www.linkedin.com/company/daisinet"))'>linkedin.com/company/daisinet</button></li>
+        </ul>
+    </div>
+}
+
+@code {
+    private static readonly string[] Formats = { "Reader", "Markdown", "JSON", "Links" };
+
+    private string _urlInput = "";
+    private string _format = "Reader";
+    private ElementReference _readerBody;
+    private ElementReference _urlInputRef;
+    private DotNetObjectReference<Home>? _selfRef;
+    private bool _interceptInstalled;
+
+    /// <summary>
+    /// Default page loaded on first launch. Sets the Surfer's
+    /// landing experience to the DAISI Learn portal — a real
+    /// content-rich page that exercises the Skimmer end-to-end on
+    /// every cold start.
+    /// </summary>
+    private const string HomeUrl = "https://daisi.ai/learn";
+
+    protected override void OnInitialized()
+    {
+        Session.StateChanged += OnSessionChanged;
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+        _selfRef = DotNetObjectReference.Create(this);
+    }
+
+    /// <summary>Auto-skim the configured home URL on first render.
+    /// We do this in <c>OnAfterRenderAsync</c> rather than
+    /// <c>OnInitialized</c> so the loading spinner has somewhere to
+    /// render — the address bar is up and visible by the time the
+    /// fetch starts.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Install the address-bar select-on-click handler once.
+            // The handler selects everything inside the URL input on
+            // any click — matches Chrome / Firefox / Edge address-bar
+            // behavior so users can paste over the existing URL with
+            // a single click + paste.
+            try
+            {
+                await JS.InvokeVoidAsync("eval",
+                    "window.surferBindAddressBar=window.surferBindAddressBar||function(el){" +
+                    "if(!el||el.dataset.surferAddrBound)return;" +
+                    "el.dataset.surferAddrBound='1';" +
+                    "el.addEventListener('focus',function(){this.select();});" +
+                    "el.addEventListener('click',function(){this.select();});" +
+                    "};");
+                await JS.InvokeVoidAsync("surferBindAddressBar", _urlInputRef);
+            }
+            catch { /* binder is idempotent JS-side; no retry needed */ }
+        }
+        if (firstRender && Session.Current is null && !Session.IsLoading)
+        {
+            await Navigate(HomeUrl);
+            return;
+        }
+        await InstallReaderInterceptorIfNeeded();
+    }
+
+    /// <summary>Install the anchor-click interceptor on the reader
+    /// body container. The interceptor lives in JS (registered
+    /// inline via <c>eval</c> so we don't have to ship a separate
+    /// .js file), captures clicks on links inside the
+    /// <c>MarkupString</c>-rendered HTML, prevents the default
+    /// browser navigation, and posts the URL back to .NET so the
+    /// Surfer's own router handles it.</summary>
+    private async Task InstallReaderInterceptorIfNeeded()
+    {
+        if (!_interceptInstalled && _format == "Reader" &&
+            Session.Current is not null)
+        {
+            try
+            {
+                // Idempotent installer — sentinel attribute prevents
+                // listener stacking across re-renders.
+                await JS.InvokeVoidAsync("eval",
+                    "window.surferInstall=window.surferInstall||function(el,dn){" +
+                    "if(!el||el.dataset.surferBound)return;" +
+                    "el.dataset.surferBound='1';" +
+                    "el.addEventListener('click',function(e){" +
+                    "var a=e.target;while(a&&a!==el&&a.tagName!=='A')a=a.parentElement;" +
+                    "if(!a||a.tagName!=='A')return;" +
+                    "var href=a.getAttribute('href');" +
+                    "if(!href||href[0]==='#')return;" +
+                    "e.preventDefault();" +
+                    "dn.invokeMethodAsync('NavigateFromReader',href);" +
+                    "},true);};");
+                await JS.InvokeVoidAsync("surferInstall", _readerBody, _selfRef);
+                _interceptInstalled = true;
+            }
+            catch
+            {
+                // BlazorWebView's JS bridge can fail during fast
+                // re-renders — the next pass will retry.
+            }
+        }
+        if (_format != "Reader") _interceptInstalled = false;
+    }
+
+    [JSInvokable]
+    public Task NavigateFromReader(string href) => Navigate(href);
+
+    private void OnSessionChanged()
+    {
+        // Reader body is rebuilt on every navigation — the interceptor
+        // needs to re-attach to the new DOM node.
+        _interceptInstalled = false;
+
+        // Keep the address bar synced with whatever URL the session
+        // is on now. Important for back-nav (which doesn't go
+        // through Home.Navigate, so _urlInput would otherwise stick
+        // to the page the user just left) and for post-redirect
+        // updates after a forward nav.
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Go()
+    {
+        await Navigate(_urlInput);
+    }
+
+    private async Task Navigate(string url)
+    {
+        _urlInput = url;
+        await Session.NavigateAsync(url);
+        // Sync the address bar with the post-redirect URL (NavigateAsync
+        // overwrites CurrentRequestUrl with FinalUrl on success).
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+        // Force a re-render: when this method is called from
+        // [JSInvokable] NavigateFromReader (the in-page link click
+        // path), Blazor doesn't auto-render after the call returns
+        // the way it does for component-bound event handlers.
+        // OnSessionChanged usually catches it, but the explicit
+        // render guarantees the address bar reflects the
+        // post-redirect URL the moment the navigation completes.
+        StateHasChanged();
+    }
+
+    private async Task GoBack() => await Session.GoBackAsync();
+
+    private async Task OnScriptingToggle(ChangeEventArgs e)
+    {
+        Session.ScriptingEnabled = e.Value is bool b && b;
+        // Re-skim the current page immediately so the Reader /
+        // Markdown / JSON view reflects the new mode without the
+        // user having to retype the URL. No-op when the page is
+        // empty (toggle was flipped before any navigation).
+        if (Session.CurrentRequestUrl is { Length: > 0 } cur)
+        {
+            await Session.NavigateAsync(cur);
+        }
+    }
+
+    private async Task OnUrlKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Go();
+    }
+
+    /// <summary>Read the user's typed value from the input on
+    /// every keystroke. We do the read explicitly (rather than via
+    /// <c>@bind</c>) so the address bar's <c>value</c> attribute
+    /// is always re-rendered from the C# field — that lets a
+    /// post-redirect URL update show up immediately after a
+    /// link click, which the bidirectional <c>@bind</c> binding
+    /// missed in some cases.</summary>
+    private void OnUrlInput(ChangeEventArgs e)
+    {
+        _urlInput = e.Value as string ?? "";
+    }
+
+    public void Dispose()
+    {
+        Session.StateChanged -= OnSessionChanged;
+        _selfRef?.Dispose();
+    }
+}

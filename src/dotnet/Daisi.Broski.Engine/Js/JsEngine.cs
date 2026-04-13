@@ -429,7 +429,7 @@ public sealed class JsEngine
             NumberPrototype, BooleanPrototype, FunctionPrototype,
             ErrorPrototype, TypeErrorPrototype, RangeErrorPrototype,
             SyntaxErrorPrototype, ReferenceErrorPrototype,
-            DatePrototype,
+            DatePrototype, RegExpPrototype,
         };
         foreach (var root in roots)
         {
@@ -456,6 +456,16 @@ public sealed class JsEngine
         foreach (var kv in obj.Properties)
         {
             WalkValueForFunctions(kv.Value, visited);
+        }
+        // Accessor-descriptor getters / setters also need the
+        // Function.prototype link so scripts can do
+        // `Object.getOwnPropertyDescriptor(x, 'y').get.call(...)`.
+        foreach (var kv in obj.OwnAccessors())
+        {
+            if (kv.Value.Getter is JsFunction g && g.Prototype is null)
+                g.Prototype = FunctionPrototype;
+            if (kv.Value.Setter is JsFunction s && s.Prototype is null)
+                s.Prototype = FunctionPrototype;
         }
     }
 

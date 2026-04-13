@@ -488,10 +488,25 @@ internal static class BuiltinModernPrototypes
         {
             if (args.Count < 2 || args[0] is not JsObject obj) return JsValue.Undefined;
             var key = JsValue.ToJsString(args[1]);
-            if (!obj.Has(key)) return JsValue.Undefined;
+            if (!obj.HasOwn(key)) return JsValue.Undefined;
             var desc = new JsObject { Prototype = engine.ObjectPrototype };
-            desc.Set("value", obj.Get(key));
-            desc.Set("writable", true);
+            // Accessor properties expose `get` / `set` (and no
+            // `value`/`writable`), matching the spec's partitioning
+            // between data and accessor descriptors. Polyfills rely
+            // on this distinction to detect whether a builtin is
+            // already installed as an accessor — if we always
+            // returned a data descriptor, the polyfill would
+            // reinstall a broken getter over our native one.
+            if (obj.TryGetOwnAccessor(key, out var accDesc))
+            {
+                desc.Set("get", (object?)accDesc.Getter ?? JsValue.Undefined);
+                desc.Set("set", (object?)accDesc.Setter ?? JsValue.Undefined);
+            }
+            else
+            {
+                desc.Set("value", obj.Get(key));
+                desc.Set("writable", true);
+            }
             desc.Set("enumerable", obj.IsEnumerable(key));
             desc.Set("configurable", true);
             return desc;

@@ -138,6 +138,101 @@ internal static class BuiltinBrowserHost
             return evaluator;
         });
 
+        // ReadableStream — the WHATWG Streams API. PlanetScale
+        // and other sites use it for streaming responses.
+        // Install a minimal stub constructor so feature-
+        // detection code doesn't crash. A real implementation
+        // would need async iteration + the controller API.
+        engine.Globals["ReadableStream"] = new JsFunction("ReadableStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.SetNonEnumerable("getReader", new JsFunction("getReader", (tt, aa) =>
+            {
+                var reader = new JsObject { Prototype = engine.ObjectPrototype };
+                reader.SetNonEnumerable("read", new JsFunction("read", (rt, ra) =>
+                {
+                    // Return a resolved promise with {done: true}
+                    var result = new JsObject { Prototype = engine.ObjectPrototype };
+                    result.Set("done", true);
+                    result.Set("value", JsValue.Undefined);
+                    var p = new JsPromise(engine);
+                    p.Resolve(result);
+                    return p;
+                }));
+                reader.SetNonEnumerable("cancel", new JsFunction("cancel", (rt, ra) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                reader.SetNonEnumerable("releaseLock", new JsFunction("releaseLock", (rt, ra) => JsValue.Undefined));
+                return reader;
+            }));
+            stream.SetNonEnumerable("cancel", new JsFunction("cancel", (tt, aa) =>
+            {
+                var p = new JsPromise(engine);
+                p.Resolve(JsValue.Undefined);
+                return p;
+            }));
+            stream.Set("locked", false);
+            // If a source was passed, try calling start() on it
+            // so the controller pattern minimally works.
+            if (a.Count > 0 && a[0] is JsObject source)
+            {
+                var startFn = source.Get("start");
+                if (startFn is JsFunction sf)
+                {
+                    var controller = new JsObject { Prototype = engine.ObjectPrototype };
+                    controller.SetNonEnumerable("enqueue", new JsFunction("enqueue", (ct, ca) => JsValue.Undefined));
+                    controller.SetNonEnumerable("close", new JsFunction("close", (ct, ca) => JsValue.Undefined));
+                    controller.SetNonEnumerable("error", new JsFunction("error", (ct, ca) => JsValue.Undefined));
+                    try
+                    {
+                        engine.Vm.InvokeJsFunction(sf, source, new object?[] { controller });
+                    }
+                    catch { } // Don't crash on errors in the source start callback
+                }
+            }
+            return stream;
+        });
+
+        // WritableStream stub — some sites check for this too.
+        engine.Globals["WritableStream"] = new JsFunction("WritableStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.SetNonEnumerable("getWriter", new JsFunction("getWriter", (tt, aa) =>
+            {
+                var writer = new JsObject { Prototype = engine.ObjectPrototype };
+                writer.SetNonEnumerable("write", new JsFunction("write", (wt, wa) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                writer.SetNonEnumerable("close", new JsFunction("close", (wt, wa) =>
+                {
+                    var p = new JsPromise(engine);
+                    p.Resolve(JsValue.Undefined);
+                    return p;
+                }));
+                writer.SetNonEnumerable("releaseLock", new JsFunction("releaseLock", (wt, wa) => JsValue.Undefined));
+                return writer;
+            }));
+            stream.Set("locked", false);
+            return stream;
+        });
+
+        // TransformStream stub
+        engine.Globals["TransformStream"] = new JsFunction("TransformStream", (t, a) =>
+        {
+            var stream = new JsObject { Prototype = engine.ObjectPrototype };
+            stream.Set("readable", engine.Vm.InvokeJsFunction(
+                (JsFunction)engine.Globals["ReadableStream"]!, JsValue.Undefined, System.Array.Empty<object?>()));
+            stream.Set("writable", engine.Vm.InvokeJsFunction(
+                (JsFunction)engine.Globals["WritableStream"]!, JsValue.Undefined, System.Array.Empty<object?>()));
+            return stream;
+        });
+
         // XMLHttpRequest — the legacy XHR API. SolidJS and
         // other frameworks check for its existence. Install
         // a stub that accepts open/send calls as no-ops.
@@ -641,6 +736,121 @@ internal static class BuiltinBrowserHost
         engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
         engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
         engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
+
+        // Common DOM-API constants + namespaces real sites poke at
+        // before doing any actual layout work. Without these as at
+        // least bare objects, scripts crash with ReferenceError on
+        // module load (seen on airbnb, cloudflare, anthropic).
+        var nodeFilter = new JsObject { Prototype = engine.ObjectPrototype };
+        // Standard NodeFilter constants — bitmask values from the
+        // DOM Traversal spec. Real consumers use these to
+        // configure TreeWalker / NodeIterator.
+        nodeFilter.Set("FILTER_ACCEPT", 1.0);
+        nodeFilter.Set("FILTER_REJECT", 2.0);
+        nodeFilter.Set("FILTER_SKIP", 3.0);
+        nodeFilter.Set("SHOW_ALL", (double)0xFFFFFFFFu);
+        nodeFilter.Set("SHOW_ELEMENT", 1.0);
+        nodeFilter.Set("SHOW_ATTRIBUTE", 2.0);
+        nodeFilter.Set("SHOW_TEXT", 4.0);
+        nodeFilter.Set("SHOW_CDATA_SECTION", 8.0);
+        nodeFilter.Set("SHOW_COMMENT", 128.0);
+        nodeFilter.Set("SHOW_DOCUMENT", 256.0);
+        nodeFilter.Set("SHOW_DOCUMENT_TYPE", 512.0);
+        nodeFilter.Set("SHOW_DOCUMENT_FRAGMENT", 1024.0);
+        engine.Globals["NodeFilter"] = nodeFilter;
+
+        // DOM interface constructors that real-world code uses
+        // either as `instanceof` targets (`x instanceof HTMLElement`)
+        // or as registration anchors (`Object.defineProperty(
+        // HTMLElement.prototype, ...)`). We install bare callable
+        // stubs whose `.prototype` is a fresh JsObject — adequate
+        // for both patterns since we don't yet wire DOM element
+        // wrappers to extend these prototypes (so instanceof
+        // returns false, which is the safer default — sites
+        // typically have a fallback path).
+        InstallDomInterfaceStub(engine, "Node");
+        InstallDomInterfaceStub(engine, "Element");
+        InstallDomInterfaceStub(engine, "HTMLElement");
+        InstallDomInterfaceStub(engine, "HTMLDivElement");
+        InstallDomInterfaceStub(engine, "HTMLAnchorElement");
+        InstallDomInterfaceStub(engine, "HTMLInputElement");
+        InstallDomInterfaceStub(engine, "HTMLButtonElement");
+        InstallDomInterfaceStub(engine, "HTMLImageElement");
+        InstallDomInterfaceStub(engine, "HTMLFormElement");
+        InstallDomInterfaceStub(engine, "HTMLScriptElement");
+        InstallDomInterfaceStub(engine, "HTMLStyleElement");
+        InstallDomInterfaceStub(engine, "HTMLLinkElement");
+        InstallDomInterfaceStub(engine, "HTMLCanvasElement");
+        InstallDomInterfaceStub(engine, "HTMLVideoElement");
+        InstallDomInterfaceStub(engine, "HTMLAudioElement");
+        InstallDomInterfaceStub(engine, "HTMLIFrameElement");
+        InstallDomInterfaceStub(engine, "HTMLTemplateElement");
+        InstallDomInterfaceStub(engine, "HTMLBodyElement");
+        InstallDomInterfaceStub(engine, "HTMLHeadElement");
+        InstallDomInterfaceStub(engine, "HTMLMetaElement");
+        InstallDomInterfaceStub(engine, "ShadowRoot");
+        InstallDomInterfaceStub(engine, "DocumentFragment");
+        InstallDomInterfaceStub(engine, "Text");
+        InstallDomInterfaceStub(engine, "Comment");
+        InstallDomInterfaceStub(engine, "Document");
+        InstallDomInterfaceStub(engine, "EventTarget");
+
+        // CSS namespace — typically used as `CSS.supports(...)` or
+        // `CSS.escape(...)`. We return false / pass-through stubs
+        // so consumers don't crash; real CSSOM support is in a
+        // future slice.
+        var cssObj = new JsObject { Prototype = engine.ObjectPrototype };
+        cssObj.Set("supports", new JsFunction("supports",
+            (thisVal, args) => false));
+        cssObj.Set("escape", new JsFunction("escape", (thisVal, args) =>
+        {
+            // Per CSS.escape spec: backslash-escape any character
+            // outside [-_a-zA-Z0-9]. Sufficient for sites that use
+            // it to build selector strings from arbitrary input.
+            if (args.Count == 0) return "";
+            var s = JsValue.ToJsString(args[0]);
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (var c in s)
+            {
+                if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') || c == '-' || c == '_')
+                {
+                    sb.Append(c);
+                }
+                else
+                {
+                    sb.Append('\\').Append(c);
+                }
+            }
+            return sb.ToString();
+        }));
+        engine.Globals["CSS"] = cssObj;
+    }
+
+    /// <summary>
+    /// Install a bare DOM-interface constructor stub at
+    /// <paramref name="name"/> with a fresh prototype. Real
+    /// instanceof checks against these will return false (no
+    /// DOM element wrapper extends them yet); the value of the
+    /// stub is to keep `typeof HTMLElement === 'function'`,
+    /// `HTMLElement.prototype` accessible, and assignment to
+    /// `HTMLElement.prototype.foo = ...` working — all common
+    /// patterns in polyfills and shadow-DOM helpers.
+    /// </summary>
+    private static void InstallDomInterfaceStub(JsEngine engine, string name)
+    {
+        var ctor = new JsFunction(name, (thisVal, args) =>
+        {
+            // `new HTMLElement()` is illegal in real browsers (the
+            // constructor is "illegal"); we mirror that by raising
+            // a TypeError so callers don't get a half-built object.
+            JsThrow.TypeError($"Illegal constructor: {name}");
+            return null;
+        });
+        var proto = new JsObject { Prototype = engine.ObjectPrototype };
+        proto.SetNonEnumerable("constructor", ctor);
+        ctor.SetNonEnumerable("prototype", proto);
+        engine.Globals[name] = ctor;
     }
 
     /// <summary>
