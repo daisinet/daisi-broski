@@ -85,6 +85,32 @@ public static class LayoutTree
         var (box, fontSize, rootFontSize, declaredHeight) = prepared.Value;
         parent.Children.Add(box);
 
+        var style = resolver.Resolve(element);
+        var position = style.GetPropertyValue("position");
+        bool outOfFlow = position is "absolute" or "fixed";
+
+        if (outOfFlow)
+        {
+            // Out-of-flow positioning. The element is taken
+            // out of normal flow — its position comes from
+            // top / right / bottom / left against its nearest
+            // positioned ancestor (or the viewport for fixed).
+            // Minimum-viable: anchor to (0, 0) of the containing
+            // block, resolve top/left as px offsets. Doesn't
+            // chase the "nearest positioned ancestor" chain
+            // yet; uses the nearest flex/grid parent or the
+            // block parent we were handed, which is right for
+            // hero overlays and decoration sphere patterns
+            // that anchor to a `position: relative` wrapper.
+            ResolveAbsolutePosition(box, parent, style, fontSize, rootFontSize,
+                viewport, position == "fixed");
+            LayChildrenAndResolveHeight(box, element, resolver, viewport,
+                fontSize, rootFontSize, declaredHeight, parent.Width);
+            // Don't advance parent.Height — the out-of-flow
+            // box doesn't push siblings down.
+            return;
+        }
+
         // Position the box at the parent's current cursor —
         // the parent's height (so far) plus this box's top
         // outer edge. The X is parent.X + outer-left edges
@@ -99,6 +125,50 @@ public static class LayoutTree
         // Advance the parent's content height by this box's
         // outer height so the next sibling sits below.
         parent.Height += OuterHeight(box);
+    }
+
+    /// <summary>Position an out-of-flow box using its
+    /// <c>top</c>/<c>left</c>/<c>right</c>/<c>bottom</c>
+    /// offsets. Minimum-viable: treats <paramref name="parent"/>
+    /// as the containing block (ignores the "nearest positioned
+    /// ancestor" chain; adequate for hero overlays /
+    /// decorations wrapped in a <c>position: relative</c>
+    /// parent, which is the common pattern). <c>fixed</c>
+    /// anchors to the viewport instead of the parent.</summary>
+    private static void ResolveAbsolutePosition(
+        LayoutBox box, LayoutBox parent, ComputedStyle style,
+        double fontSize, double rootFontSize, Viewport viewport, bool isFixed)
+    {
+        double cbX = isFixed ? 0 : parent.X;
+        double cbY = isFixed ? 0 : parent.Y;
+        double cbW = isFixed ? viewport.Width : parent.Width;
+        double cbH = isFixed ? viewport.Height : parent.Height;
+
+        var topL = Length.Parse(style.GetPropertyValue("top"));
+        var leftL = Length.Parse(style.GetPropertyValue("left"));
+        var rightL = Length.Parse(style.GetPropertyValue("right"));
+        var bottomL = Length.Parse(style.GetPropertyValue("bottom"));
+
+        double x = cbX;
+        if (!leftL.IsNone && !leftL.IsAuto)
+        {
+            x = cbX + leftL.Resolve(cbW, fontSize, rootFontSize);
+        }
+        else if (!rightL.IsNone && !rightL.IsAuto && box.Width > 0)
+        {
+            x = cbX + cbW - rightL.Resolve(cbW, fontSize, rootFontSize) - box.Width;
+        }
+        double y = cbY;
+        if (!topL.IsNone && !topL.IsAuto)
+        {
+            y = cbY + topL.Resolve(cbH, fontSize, rootFontSize);
+        }
+        else if (!bottomL.IsNone && !bottomL.IsAuto && box.Height > 0)
+        {
+            y = cbY + cbH - bottomL.Resolve(cbH, fontSize, rootFontSize) - box.Height;
+        }
+        box.X = x + box.Margin.Left + box.Border.Left + box.Padding.Left;
+        box.Y = y + box.Margin.Top + box.Border.Top + box.Padding.Top;
     }
 
     /// <summary>Build a layout box for <paramref name="element"/>

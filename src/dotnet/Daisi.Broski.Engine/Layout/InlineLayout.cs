@@ -87,6 +87,22 @@ internal static class InlineLayout
         foreach (var child in element.ChildNodes)
         {
             if (child is not Element childEl) continue;
+
+            // <br> forces a line break — advance the cursor
+            // to the start of a new line. Skipping the
+            // element-box path entirely (no PrepareBox /
+            // positioning / recursion) because br has no
+            // visible content, just a layout effect.
+            // Without this, consecutive br tags stack as
+            // zero-width inlines on the same line and the
+            // text they're meant to separate collides.
+            if (childEl.TagName == "br")
+            {
+                cursorX = 0;
+                cursorY += lineHeight;
+                continue;
+            }
+
             var prepared = LayoutTree.PrepareBox(container, childEl, resolver, viewport);
             if (prepared is null) continue;
             var (box, itemFs, itemRs, itemDeclaredHeight) = prepared.Value;
