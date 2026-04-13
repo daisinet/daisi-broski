@@ -212,8 +212,17 @@ public sealed class PageLoader : IDisposable
                     // PNGs go through the pixel decoder.
                     if (LooksLikeSvg(result.ContentType, pair.src))
                     {
-                        var svg = Daisi.Broski.Engine.Html.HtmlTreeBuilder.Parse(
-                            System.Text.Encoding.UTF8.GetString(result.Body));
+                        var text = System.Text.Encoding.UTF8.GetString(result.Body);
+                        // SVG uses XML self-closing syntax
+                        // (<path d='...' />) that our HTML
+                        // parser doesn't honor — it keeps the
+                        // tag open and nests siblings inside,
+                        // so only the first <path> in a <g>
+                        // ever renders. Rewrite self-closing
+                        // SVG tags into explicit open+close
+                        // pairs before parsing as HTML.
+                        text = ExpandSvgSelfClosing(text);
+                        var svg = Daisi.Broski.Engine.Html.HtmlTreeBuilder.Parse(text);
                         var root = FindSvgRoot(svg.DocumentElement);
                         if (root is not null) return (pair.img, (object?)root);
                         return (pair.img, (object?)null);
@@ -248,6 +257,74 @@ public sealed class PageLoader : IDisposable
         }
         var path = src.AbsolutePath;
         return path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Replace XML self-closing syntax
+    /// (<c>&lt;tag attrs /&gt;</c>) with explicit open/close
+    /// pairs (<c>&lt;tag attrs&gt;&lt;/tag&gt;</c>) so the
+    /// HTML parser's "unclosed tag" nesting behavior doesn't
+    /// swallow subsequent siblings. Only touches tags that
+    /// end with <c>/&gt;</c> and leaves attribute values
+    /// containing <c>/&gt;</c> sequences alone (we don't
+    /// parse inside quoted attribute values).</summary>
+    private static string ExpandSvgSelfClosing(string svgText)
+    {
+        var sb = new System.Text.StringBuilder(svgText.Length + 64);
+        int i = 0;
+        while (i < svgText.Length)
+        {
+            if (svgText[i] != '<' || i + 1 >= svgText.Length || svgText[i + 1] == '/'
+                || svgText[i + 1] == '!' || svgText[i + 1] == '?')
+            {
+                sb.Append(svgText[i]);
+                i++;
+                continue;
+            }
+            // Parse a potential tag: find the matching '>',
+            // skipping content inside quoted attribute values.
+            int start = i;
+            int j = i + 1;
+            // Read tag name.
+            int nameStart = j;
+            while (j < svgText.Length && !char.IsWhiteSpace(svgText[j])
+                   && svgText[j] != '>' && svgText[j] != '/') j++;
+            string tagName = svgText.Substring(nameStart, j - nameStart);
+            // Walk to '>', skipping quoted attr values.
+            while (j < svgText.Length && svgText[j] != '>')
+            {
+                if (svgText[j] == '"' || svgText[j] == '\'')
+                {
+                    char quote = svgText[j];
+                    j++;
+                    while (j < svgText.Length && svgText[j] != quote) j++;
+                    if (j < svgText.Length) j++;
+                    continue;
+                }
+                j++;
+            }
+            if (j >= svgText.Length)
+            {
+                // Unterminated tag — emit rest as-is.
+                sb.Append(svgText, start, svgText.Length - start);
+                return sb.ToString();
+            }
+            // Tag spans svgText[start..j], closing '>' at j.
+            bool selfClosing = j > start + 1 && svgText[j - 1] == '/';
+            if (selfClosing && tagName.Length > 0)
+            {
+                // Emit <tag ...> (without the '/') then </tag>.
+                sb.Append(svgText, start, j - 1 - start);
+                sb.Append("></");
+                sb.Append(tagName);
+                sb.Append('>');
+            }
+            else
+            {
+                sb.Append(svgText, start, j + 1 - start);
+            }
+            i = j + 1;
+        }
+        return sb.ToString();
     }
 
     private static Daisi.Broski.Engine.Dom.Element? FindSvgRoot(
