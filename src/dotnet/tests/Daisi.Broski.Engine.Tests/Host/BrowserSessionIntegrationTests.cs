@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using Daisi.Broski;
 using Daisi.Broski.Engine.Tests.Net;
+using Daisi.Broski.Ipc;
 using Xunit;
 
 namespace Daisi.Broski.Engine.Tests.Host;
@@ -256,5 +257,287 @@ public class BrowserSessionIntegrationTests
 
         Assert.NotNull(resp);
         // PlainText may be empty; that's fine.
+    }
+
+    // ============================================================
+    // Phase-4 live handle table: evaluate / query handles / set
+    // / call method / release across the IPC boundary.
+    // ============================================================
+
+    [Fact]
+    public async Task Evaluate_returns_primitive_over_ipc()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, "<html><body>hi</body></html>");
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        var sum = await session.EvaluateAsync<double>(
+            "1 + 2 + 3 + 4", TestContext.Current.CancellationToken);
+        Assert.Equal(10.0, sum);
+
+        var s = await session.EvaluateAsync<string>(
+            "'hello ' + 'world'", TestContext.Current.CancellationToken);
+        Assert.Equal("hello world", s);
+
+        var b = await session.EvaluateAsync<bool>(
+            "true && 1 === 1", TestContext.Current.CancellationToken);
+        Assert.True(b);
+    }
+
+    [Fact]
+    public async Task Evaluate_returns_handle_for_object_result()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, "<html><body><p id=x>hi</p></body></html>");
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        await using var h = await session.EvaluateHandleAsync(
+            "document.getElementById('x')", TestContext.Current.CancellationToken);
+
+        Assert.NotNull(h);
+        Assert.IsType<ElementHandle>(h);
+        var tag = await ((ElementHandle)h!).GetTagNameAsync(
+            TestContext.Current.CancellationToken);
+        Assert.Equal("p", tag?.ToLowerInvariant());
+    }
+
+    [Fact]
+    public async Task QuerySelector_handle_reads_attributes_and_text()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html><body>
+              <a id="home" href="/index" class="nav">Home</a>
+            </body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        await using var el = await session.QuerySelectorHandleAsync(
+            "a#home", TestContext.Current.CancellationToken);
+
+        Assert.NotNull(el);
+        Assert.Equal("/index", await el!.GetAttributeAsync("href",
+            TestContext.Current.CancellationToken));
+        Assert.Equal("Home", await el.GetTextContentAsync(
+            TestContext.Current.CancellationToken));
+        Assert.Equal("nav", await el.GetClassNameAsync(
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task SetAttribute_mutates_live_dom_across_ipc()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html><body>
+              <button id="go" data-state="idle">Go</button>
+            </body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        await using var btn = await session.QuerySelectorHandleAsync(
+            "#go", TestContext.Current.CancellationToken);
+        Assert.NotNull(btn);
+
+        await btn!.SetAttributeAsync("data-state", "running",
+            TestContext.Current.CancellationToken);
+
+        // Re-read through a fresh query to prove the mutation
+        // survived the IPC round-trip and lives in the actual DOM.
+        await using var btn2 = await session.QuerySelectorHandleAsync(
+            "#go", TestContext.Current.CancellationToken);
+        Assert.Equal("running", await btn2!.GetAttributeAsync("data-state",
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Click_fires_event_listener_inside_sandbox()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        // The page installs a click listener that writes a marker
+        // attribute; after ClickAsync the host reads the marker
+        // through a second query to prove the listener ran.
+        const string html = """
+            <!DOCTYPE html>
+            <html><body>
+              <button id="b">click me</button>
+              <script>
+                document.getElementById('b').addEventListener('click', function () {
+                  this.setAttribute('data-clicked', '1');
+                });
+              </script>
+            </body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        await using var btn = await session.QuerySelectorHandleAsync(
+            "#b", TestContext.Current.CancellationToken);
+        Assert.NotNull(btn);
+
+        await btn!.ClickAsync(TestContext.Current.CancellationToken);
+
+        var marker = await session.EvaluateAsync<string>(
+            "document.getElementById('b').getAttribute('data-clicked')",
+            TestContext.Current.CancellationToken);
+        Assert.Equal("1", marker);
+    }
+
+    [Fact]
+    public async Task CallMethod_invokes_js_function_with_args()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html><body>
+              <script>
+                window.adder = {
+                  add: function (a, b) { return a + b; }
+                };
+              </script>
+            </body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        await using var adder = await session.EvaluateHandleAsync(
+            "window.adder", TestContext.Current.CancellationToken);
+        Assert.NotNull(adder);
+
+        var sum = await adder!.CallMethodAsync<double>(
+            "add",
+            new[] { IpcValue.Of(7.0), IpcValue.Of(35.0) },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(42.0, sum);
+    }
+
+    [Fact]
+    public async Task Release_handles_frees_sandbox_table_entries()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html><body>
+              <p class="item">A</p>
+              <p class="item">B</p>
+              <p class="item">C</p>
+            </body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        var handles = await session.QuerySelectorAllHandlesAsync(
+            "p.item", TestContext.Current.CancellationToken);
+        Assert.Equal(3, handles.Count);
+
+        // Dispose the first handle and prove the other two still work.
+        await handles[0].DisposeAsync();
+        Assert.Equal("B", await handles[1].GetTextContentAsync(
+            TestContext.Current.CancellationToken));
+        Assert.Equal("C", await handles[2].GetTextContentAsync(
+            TestContext.Current.CancellationToken));
+
+        // Operating on the released handle surfaces as a SandboxException.
+        var ex = await Assert.ThrowsAsync<SandboxException>(() =>
+            handles[0].GetTextContentAsync(TestContext.Current.CancellationToken));
+        Assert.Contains("stale_handle", ex.Message);
+
+        await handles[1].DisposeAsync();
+        await handles[2].DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Navigate_invalidates_prior_handles()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        using var server1 = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx,
+                "<html><body><p id=x>first</p></body></html>");
+            return Task.CompletedTask;
+        });
+        using var server2 = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx,
+                "<html><body><p id=x>second</p></body></html>");
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.RunAsync(server1.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        var el = await session.QuerySelectorHandleAsync(
+            "#x", TestContext.Current.CancellationToken);
+        Assert.NotNull(el);
+
+        // Second navigate wipes the handle table.
+        await session.RunAsync(server2.BaseUrl, scriptingEnabled: true,
+            ct: TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<SandboxException>(() =>
+            el!.GetTextContentAsync(TestContext.Current.CancellationToken));
+        Assert.Contains("stale_handle", ex.Message);
     }
 }

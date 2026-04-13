@@ -217,6 +217,155 @@ public sealed class BrowserSession : IAsyncDisposable
             Methods.Skim, request, ct).ConfigureAwait(false);
     }
 
+    // ========================================================
+    // Phase-4 live handle table — host-side entry points.
+    //
+    // Evaluate a script and, for object results, return a
+    // strongly-typed live handle; query the current document for
+    // one or more ElementHandle instances that keep working
+    // across subsequent evaluate / call_method requests. The
+    // underlying IPC ops live in the Raw* helpers below so
+    // JsHandle / ElementHandle can share the transport without
+    // re-implementing envelope plumbing.
+    // ========================================================
+
+    /// <summary>Evaluate <paramref name="script"/> in the sandbox
+    /// against the currently loaded page and return the raw
+    /// <see cref="IpcValue"/> result. Useful when the caller wants
+    /// to inspect the exact kind (primitive vs. handle) before
+    /// deciding how to unbox. Most callers want
+    /// <see cref="EvaluateAsync{T}"/> or
+    /// <see cref="EvaluateHandleAsync"/> instead.</summary>
+    public async Task<IpcValue> EvaluateRawAsync(
+        string script, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(script);
+        var response = await SendWithRespawnAsync<EvaluateRequest, EvaluateResponse>(
+            Methods.Evaluate, new EvaluateRequest { Script = script }, ct)
+            .ConfigureAwait(false);
+        return response.Value;
+    }
+
+    /// <summary>Evaluate <paramref name="script"/> and unbox the
+    /// result to a primitive CLR type (<see cref="string"/>,
+    /// <see cref="double"/>, <see cref="int"/>, <see cref="long"/>,
+    /// <see cref="float"/>, <see cref="bool"/>). Returns the
+    /// default of <typeparamref name="T"/> when the script
+    /// produced <c>undefined</c> / <c>null</c> / an object value —
+    /// use <see cref="EvaluateHandleAsync"/> when you expect an
+    /// object result.</summary>
+    public async Task<T?> EvaluateAsync<T>(
+        string script, CancellationToken ct = default)
+    {
+        var value = await EvaluateRawAsync(script, ct).ConfigureAwait(false);
+        return (T?)JsHandle.UnboxPrimitive(value, typeof(T));
+    }
+
+    /// <summary>Evaluate <paramref name="script"/> and, if the
+    /// result is an object, wrap it in a live
+    /// <see cref="JsHandle"/> the host can subsequently read
+    /// properties from, set properties on, and call methods
+    /// against. Returns <c>null</c> for primitive results;
+    /// returns an <see cref="ElementHandle"/> when the sandbox
+    /// tags the result as <c>"Element"</c>.</summary>
+    public async Task<JsHandle?> EvaluateHandleAsync(
+        string script, CancellationToken ct = default)
+    {
+        var value = await EvaluateRawAsync(script, ct).ConfigureAwait(false);
+        return WrapHandle(value);
+    }
+
+    /// <summary>Run a CSS selector against the current document and
+    /// return one live <see cref="ElementHandle"/> per match. The
+    /// returned handles keep working until explicitly disposed or
+    /// invalidated by the next <see cref="NavigateAsync"/> /
+    /// <see cref="RunAsync"/>.</summary>
+    public async Task<IReadOnlyList<ElementHandle>> QuerySelectorAllHandlesAsync(
+        string selector, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(selector);
+        var response = await SendWithRespawnAsync<QueryHandlesRequest, QueryHandlesResponse>(
+            Methods.QueryHandles, new QueryHandlesRequest { Selector = selector }, ct)
+            .ConfigureAwait(false);
+
+        var list = new List<ElementHandle>(response.Handles.Count);
+        foreach (var v in response.Handles)
+        {
+            if (v.Kind == "handle" && v.HandleId is long id)
+            {
+                list.Add(new ElementHandle(this, id, v.HandleType ?? "Element"));
+            }
+        }
+        return list;
+    }
+
+    /// <summary>Run a CSS selector and return a live handle for
+    /// the first match, or <c>null</c> when nothing matched.</summary>
+    public async Task<ElementHandle?> QuerySelectorHandleAsync(
+        string selector, CancellationToken ct = default)
+    {
+        var all = await QuerySelectorAllHandlesAsync(selector, ct).ConfigureAwait(false);
+        return all.Count == 0 ? null : all[0];
+    }
+
+    /// <summary>Shared factory: an IpcValue tagged as a handle
+    /// becomes either <see cref="ElementHandle"/> (when the
+    /// sandbox tagged it as <c>"Element"</c>) or the generic
+    /// <see cref="JsHandle"/>. Primitives / null / undefined
+    /// return <c>null</c>.</summary>
+    internal JsHandle? WrapHandle(IpcValue v)
+    {
+        if (v.Kind != "handle" || v.HandleId is not long id) return null;
+        var type = v.HandleType ?? "Object";
+        return type == "Element"
+            ? new ElementHandle(this, id, type)
+            : new JsHandle(this, id, type);
+    }
+
+    // --- internal IPC helpers used by JsHandle / ElementHandle ---
+
+    internal Task<IpcValue> RawGetPropertyAsync(
+        long handle, string name, CancellationToken ct = default)
+    {
+        var req = new GetPropertyRequest { Handle = handle, Name = name };
+        return Unwrap<GetPropertyRequest, GetPropertyResponse, IpcValue>(
+            Methods.GetProperty, req, r => r.Value, ct);
+    }
+
+    internal Task RawSetPropertyAsync(
+        long handle, string name, IpcValue value, CancellationToken ct = default)
+    {
+        var req = new SetPropertyRequest { Handle = handle, Name = name, Value = value };
+        return SendWithRespawnAsync<SetPropertyRequest, SetPropertyResponse>(
+            Methods.SetProperty, req, ct);
+    }
+
+    internal Task<IpcValue> RawCallMethodAsync(
+        long handle, string name, IReadOnlyList<IpcValue> args, CancellationToken ct = default)
+    {
+        var req = new CallMethodRequest { Handle = handle, Name = name, Args = args };
+        return Unwrap<CallMethodRequest, CallMethodResponse, IpcValue>(
+            Methods.CallMethod, req, r => r.Value, ct);
+    }
+
+    internal Task<int> RawReleaseHandlesAsync(
+        IReadOnlyList<long> handles, CancellationToken ct = default)
+    {
+        var req = new ReleaseHandlesRequest { Handles = handles };
+        return Unwrap<ReleaseHandlesRequest, ReleaseHandlesResponse, int>(
+            Methods.ReleaseHandles, req, r => r.Released, ct);
+    }
+
+    private async Task<TOut> Unwrap<TRequest, TResponse, TOut>(
+        string method, TRequest request, Func<TResponse, TOut> pick, CancellationToken ct)
+        where TRequest : class
+        where TResponse : class
+    {
+        var response = await SendWithRespawnAsync<TRequest, TResponse>(method, request, ct)
+            .ConfigureAwait(false);
+        return pick(response);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _sandbox.DisposeAsync().ConfigureAwait(false);

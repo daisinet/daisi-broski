@@ -23,6 +23,20 @@ public static class Methods
     public const string Run = "run";
     public const string Skim = "skim";
 
+    // Phase-4 live handle table: lets the host hold references to
+    // live JS / DOM objects in the sandbox and drive interactive
+    // operations (click, set attribute, read property, call method,
+    // evaluate an arbitrary script expression). Handles are opaque
+    // `long` ids minted by the sandbox and released explicitly by
+    // the host — the child holds weak references so a script-side
+    // GC still reclaims abandoned objects.
+    public const string Evaluate = "evaluate";
+    public const string GetProperty = "get_property";
+    public const string SetProperty = "set_property";
+    public const string CallMethod = "call_method";
+    public const string QueryHandles = "query_handles";
+    public const string ReleaseHandles = "release_handles";
+
     // Notifications (sandbox → host)
     public const string NavigationStarted = "navigation_started";
     public const string NavigationCompleted = "navigation_completed";
@@ -288,6 +302,146 @@ public sealed class SerializedLink
 
     [JsonPropertyName("text")]
     public required string Text { get; init; }
+}
+
+// ============================================================
+// Phase-4 live handle table — cross-process references to live
+// JS / DOM objects in the sandbox.
+// ============================================================
+
+/// <summary>Discriminated cross-process shape for any JS value.
+/// <see cref="Kind"/> selects which of the optional fields
+/// carries the payload; all others are null.
+///
+/// <list type="bullet">
+/// <item><c>undefined</c> / <c>null</c> — no payload.</item>
+/// <item><c>bool</c> — <see cref="Boolean"/>.</item>
+/// <item><c>number</c> — <see cref="Number"/> (double; covers the
+///   JS Number primitive including <c>NaN</c> / <c>±Infinity</c>).</item>
+/// <item><c>string</c> — <see cref="String"/>.</item>
+/// <item><c>bigint</c> — <see cref="String"/> (the decimal digit
+///   string; BigInt has no finite-precision .NET primitive we can
+///   transport, and round-tripping via base-10 stays lossless).</item>
+/// <item><c>handle</c> — <see cref="HandleId"/> plus
+///   <see cref="HandleType"/> (<c>"Element"</c>, <c>"Document"</c>,
+///   <c>"Array"</c>, <c>"Function"</c>, <c>"Object"</c>).</item>
+/// </list>
+/// </summary>
+public sealed class IpcValue
+{
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    [JsonPropertyName("bool")]
+    public bool? Boolean { get; init; }
+
+    [JsonPropertyName("num")]
+    public double? Number { get; init; }
+
+    [JsonPropertyName("str")]
+    public string? String { get; init; }
+
+    [JsonPropertyName("handle")]
+    public long? HandleId { get; init; }
+
+    [JsonPropertyName("htype")]
+    public string? HandleType { get; init; }
+
+    public static IpcValue Undefined() => new() { Kind = "undefined" };
+    public static IpcValue Null() => new() { Kind = "null" };
+    public static IpcValue Of(bool b) => new() { Kind = "bool", Boolean = b };
+    public static IpcValue Of(double n) => new() { Kind = "number", Number = n };
+    public static IpcValue Of(string s) => new() { Kind = "string", String = s };
+    public static IpcValue BigInt(string digits) => new() { Kind = "bigint", String = digits };
+    public static IpcValue Handle(long id, string type) =>
+        new() { Kind = "handle", HandleId = id, HandleType = type };
+}
+
+public sealed class EvaluateRequest
+{
+    [JsonPropertyName("script")]
+    public required string Script { get; init; }
+}
+
+public sealed class EvaluateResponse
+{
+    [JsonPropertyName("value")]
+    public required IpcValue Value { get; init; }
+}
+
+public sealed class GetPropertyRequest
+{
+    [JsonPropertyName("handle")]
+    public required long Handle { get; init; }
+
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+}
+
+public sealed class GetPropertyResponse
+{
+    [JsonPropertyName("value")]
+    public required IpcValue Value { get; init; }
+}
+
+public sealed class SetPropertyRequest
+{
+    [JsonPropertyName("handle")]
+    public required long Handle { get; init; }
+
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("value")]
+    public required IpcValue Value { get; init; }
+}
+
+public sealed class SetPropertyResponse
+{
+    [JsonPropertyName("ok")]
+    public required bool Ok { get; init; }
+}
+
+public sealed class CallMethodRequest
+{
+    [JsonPropertyName("handle")]
+    public required long Handle { get; init; }
+
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("args")]
+    public required IReadOnlyList<IpcValue> Args { get; init; }
+}
+
+public sealed class CallMethodResponse
+{
+    [JsonPropertyName("value")]
+    public required IpcValue Value { get; init; }
+}
+
+public sealed class QueryHandlesRequest
+{
+    [JsonPropertyName("selector")]
+    public required string Selector { get; init; }
+}
+
+public sealed class QueryHandlesResponse
+{
+    [JsonPropertyName("handles")]
+    public required IReadOnlyList<IpcValue> Handles { get; init; }
+}
+
+public sealed class ReleaseHandlesRequest
+{
+    [JsonPropertyName("handles")]
+    public required IReadOnlyList<long> Handles { get; init; }
+}
+
+public sealed class ReleaseHandlesResponse
+{
+    [JsonPropertyName("released")]
+    public required int Released { get; init; }
 }
 
 /// <summary>Payload for <see cref="Methods.NavigationCompleted"/>.</summary>

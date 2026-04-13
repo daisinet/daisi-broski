@@ -102,7 +102,7 @@ dotnet run --project src/dotnet/Daisi.Broski.Surfer
 
 Windows-only on the first ship — adding Android / iOS / MacCatalyst heads is a matter of dropping the right `Platforms/*` folders in and extending the `<TargetFrameworks>` list. Runs unpackaged (no MSIX bundle), so any user can launch it without a Microsoft Store install.
 
-**Combined test suite: 1698/1698 passing.** Phase 4 is fully closed — the sandboxed child now runs the full phase-3 engine + the Skimmer; `BrowserSession.RunAsync` + `SkimAsync` expose the new capabilities as typed async methods; the child launches via `CreateProcessW(CREATE_SUSPENDED)` so Job Object assignment is atomic with process birth; mid-operation child crashes trigger a single-retry respawn. Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set, and the new **`Daisi.Broski.Skimmer`** main-content extractor + JSON / Markdown formatters). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1706/1706 passing.** Phase 4 is fully closed — the sandboxed child now runs the full phase-3 engine + the Skimmer; `BrowserSession.RunAsync` + `SkimAsync` expose the new capabilities as typed async methods; the child launches via `CreateProcessW(CREATE_SUSPENDED)` so Job Object assignment is atomic with process birth; mid-operation child crashes trigger a single-retry respawn; and the **live handle table** lets the host hold references to JS / DOM objects inside the sandbox and drive interactive operations (`EvaluateAsync<T>`, `QuerySelectorHandleAsync`, `ElementHandle.ClickAsync` / `SetAttributeAsync`, `JsHandle.CallMethodAsync<T>`) across the IPC boundary. Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set, and the new **`Daisi.Broski.Skimmer`** main-content extractor + JSON / Markdown formatters). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
@@ -208,6 +208,29 @@ foreach (var link in links)
 ```
 
 `BrowserSession.Create()` spawns `Daisi.Broski.Sandbox.exe` under a fresh Win32 Job Object; the session's `DisposeAsync` closes the pipes and the job, which terminates the child through `KILL_ON_JOB_CLOSE`.
+
+**Interactive scripting via live handles:**
+
+```csharp
+await using var session = BrowserSession.Create();
+await session.RunAsync(new Uri("https://example.com"), scriptingEnabled: true);
+
+// Evaluate primitives directly.
+var title = await session.EvaluateAsync<string>("document.title");
+
+// Hold a live reference to a DOM element; mutations go through the
+// real JS call path (listeners fire, observers run).
+await using var btn = await session.QuerySelectorHandleAsync("button#go");
+await btn!.SetAttributeAsync("data-state", "running");
+await btn.ClickAsync();
+
+// Or call any JS function on any reachable object.
+await using var adder = await session.EvaluateHandleAsync("window.adder");
+var sum = await adder!.CallMethodAsync<double>("add",
+    new[] { IpcValue.Of(7.0), IpcValue.Of(35.0) });
+```
+
+Handles are opaque `long` ids minted by the sandbox and released on `DisposeAsync` (or on the next `NavigateAsync` / `RunAsync`, which clears the table wholesale).
 
 ## Run the tests
 
