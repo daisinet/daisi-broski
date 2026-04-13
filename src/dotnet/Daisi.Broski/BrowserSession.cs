@@ -227,9 +227,15 @@ public sealed class BrowserSession : IAsyncDisposable
     /// as the surrounding boxes only.</summary>
     public async Task<ScreenshotResponse> ScreenshotAsync(
         int? width = null, int? height = null,
+        bool wireframe = false,
         CancellationToken ct = default)
     {
-        var request = new ScreenshotRequest { Width = width, Height = height };
+        var request = new ScreenshotRequest
+        {
+            Width = width,
+            Height = height,
+            Wireframe = wireframe,
+        };
         return await SendWithRespawnAsync<ScreenshotRequest, ScreenshotResponse>(
             Methods.Screenshot, request, ct).ConfigureAwait(false);
     }

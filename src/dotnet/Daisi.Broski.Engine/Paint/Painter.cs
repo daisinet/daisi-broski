@@ -29,13 +29,18 @@ public static class Painter
     /// pixel buffer sized to the viewport. The root box's
     /// canvas defaults to white when no explicit body /
     /// html background-color is set, matching what every
-    /// browser does.</summary>
-    public static RasterBuffer Paint(LayoutBox root, Document document, Viewport viewport)
+    /// browser does. When <paramref name="wireframe"/> is
+    /// true, every layout box is outlined in a light gray
+    /// 1px border — useful when text rendering is deferred
+    /// and you want to see the structural layout regardless
+    /// of whether author CSS set a background.</summary>
+    public static RasterBuffer Paint(LayoutBox root, Document document, Viewport viewport,
+        bool wireframe = false)
     {
         ArgumentNullException.ThrowIfNull(root);
         var buffer = new RasterBuffer(viewport.Width, viewport.Height,
             ResolveCanvasBackground(document, viewport));
-        PaintBox(root, document, viewport, buffer);
+        PaintBox(root, document, viewport, buffer, wireframe);
         return buffer;
     }
 
@@ -57,7 +62,9 @@ public static class Painter
         return bodyBg.IsTransparent ? PaintColor.White : bodyBg;
     }
 
-    private static void PaintBox(LayoutBox box, Document document, Viewport viewport, RasterBuffer buffer)
+    private static void PaintBox(
+        LayoutBox box, Document document, Viewport viewport,
+        RasterBuffer buffer, bool wireframe)
     {
         // The root box has no Element (it wraps the
         // viewport). Paint its descendants but skip its own
@@ -67,11 +74,28 @@ public static class Painter
             var style = StyleResolver.Resolve(box.Element, viewport);
             PaintBackground(box, style, buffer);
             PaintBorders(box, style, buffer);
+            if (wireframe) PaintWireframe(box, buffer);
         }
         foreach (var child in box.Children)
         {
-            PaintBox(child, document, viewport, buffer);
+            PaintBox(child, document, viewport, buffer, wireframe);
         }
+    }
+
+    /// <summary>Draw a 1px translucent outline around the
+    /// box's border rect. Lets layout structure show
+    /// through in screenshots even when the page uses text
+    /// for all its content and fonts aren't rendered.</summary>
+    private static void PaintWireframe(LayoutBox box, RasterBuffer buffer)
+    {
+        var rect = box.BorderBoxRect;
+        if (rect.Width < 1 || rect.Height < 1) return;
+        var stroke = new PaintColor(80, 80, 80, 120);
+        buffer.StrokeRect(
+            (int)Math.Round(rect.X), (int)Math.Round(rect.Y),
+            (int)Math.Round(rect.Width), (int)Math.Round(rect.Height),
+            1, 1, 1, 1,
+            stroke, stroke, stroke, stroke);
     }
 
     private static void PaintBackground(LayoutBox box, ComputedStyle style, RasterBuffer buffer)

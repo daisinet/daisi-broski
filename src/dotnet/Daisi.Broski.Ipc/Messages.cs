@@ -459,6 +459,14 @@ public sealed class ScreenshotRequest
 
     [JsonPropertyName("height")]
     public int? Height { get; init; }
+
+    /// <summary>When true, draw a 1px translucent outline
+    /// around every layout box so the structural layout is
+    /// visible even on pages whose content is all text
+    /// (we don't render text yet). Useful as a layout-
+    /// debugging view.</summary>
+    [JsonPropertyName("wireframe")]
+    public bool Wireframe { get; init; }
 }
 
 /// <summary>Response payload for <see cref="Methods.Screenshot"/>.

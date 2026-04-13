@@ -55,6 +55,7 @@ public static class Program
         {
             "fetch" => await FetchCommand(args[1..]),
             "run" => await RunCommand(args[1..]),
+            "screenshot" => await ScreenshotCommand(args[1..]),
             _ => UsageError($"Unknown command '{args[0]}'"),
         };
     }
@@ -798,5 +799,76 @@ public static class Program
         Console.Error.WriteLine($"daisi-broski: {message}");
         Console.Error.WriteLine("Run 'daisi-broski --help' for usage.");
         return 3;
+    }
+
+    /// <summary>
+    /// `daisi-broski screenshot &lt;url&gt; --out &lt;path&gt;
+    /// [--width N] [--height N]` — fetch + render the page,
+    /// write the resulting PNG to disk. Backgrounds + borders
+    /// only (text rendering deferred). Always uses the
+    /// sandbox child.
+    /// </summary>
+    private static async Task<int> ScreenshotCommand(string[] args)
+    {
+        if (args.Length == 0) return UsageError("screenshot requires a URL");
+        string urlArg = args[0];
+        string? outPath = null;
+        int width = 1280;
+        int height = 800;
+        bool wireframe = false;
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--out":
+                case "-o":
+                    if (i + 1 >= args.Length) return UsageError("--out needs a path");
+                    outPath = args[++i];
+                    break;
+                case "--width":
+                    if (i + 1 >= args.Length) return UsageError("--width needs a number");
+                    if (!int.TryParse(args[++i], out width)) return UsageError("bad --width");
+                    break;
+                case "--height":
+                    if (i + 1 >= args.Length) return UsageError("--height needs a number");
+                    if (!int.TryParse(args[++i], out height)) return UsageError("bad --height");
+                    break;
+                case "--wireframe":
+                    wireframe = true;
+                    break;
+                default:
+                    return UsageError($"unknown screenshot flag '{args[i]}'");
+            }
+        }
+
+        if (outPath is null) return UsageError("--out <path> is required");
+        if (!Uri.TryCreate(urlArg, UriKind.Absolute, out var url) ||
+            (url.Scheme != "http" && url.Scheme != "https"))
+        {
+            return UsageError($"'{urlArg}' is not an absolute http(s) URL");
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine("daisi-broski: screenshot is Windows-only until phase 5.");
+            return 2;
+        }
+
+        try
+        {
+            await using var session = BrowserSession.Create();
+            var nav = await session.RunAsync(url, scriptingEnabled: true);
+            Console.Error.WriteLine($"{nav.Status} {nav.FinalUrl} (scripts {nav.ScriptsRan}/{nav.ScriptsTotal})");
+            var shot = await session.ScreenshotAsync(width: width, height: height, wireframe: wireframe);
+            await File.WriteAllBytesAsync(outPath, shot.Png);
+            Console.Out.WriteLine($"wrote {shot.Png.Length} bytes ({shot.Width}x{shot.Height}) → {outPath}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"daisi-broski: screenshot failed: {ex.Message}");
+            return 1;
+        }
     }
 }

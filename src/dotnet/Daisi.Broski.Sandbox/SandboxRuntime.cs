@@ -551,7 +551,7 @@ internal static class SandboxRuntime
         };
         var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(state.Page.Document, viewport);
         var raster = Daisi.Broski.Engine.Paint.Painter.Paint(
-            root, state.Page.Document, viewport);
+            root, state.Page.Document, viewport, wireframe: req.Wireframe);
         var png = Daisi.Broski.Engine.Paint.PngEncoder.Encode(raster);
         return IpcMessage.Response(request.Id, new ScreenshotResponse
         {
