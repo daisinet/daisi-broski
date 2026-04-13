@@ -237,26 +237,38 @@ public static class Painter
 
     private static void PaintBackground(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
     {
-        // Try the longhand first; if absent, scan the
-        // `background` shorthand for a color token. Real
-        // Bootstrap / Tailwind-emitted CSS often uses the
-        // shorthand for `background: linear-gradient(...)` or
-        // `background: rgba(...)` without the longhand
-        // counterpart, so we'd miss those without this
-        // fallback.
+        var rect = box.BorderBoxRect;
+        int rx = (int)Math.Round(rect.X);
+        int ry = (int)Math.Round(rect.Y);
+        int rw = (int)Math.Round(rect.Width);
+        int rh = (int)Math.Round(rect.Height);
+
+        // Try background-image first (linear-gradient,
+        // url(...), etc.) — when present it stacks over the
+        // background-color, but for v1 we treat them as
+        // alternatives: gradient OR solid, never both.
+        var bgImage = style.GetPropertyValue("background-image");
+        var bgShorthand = style.GetPropertyValue("background");
+        var gradientSrc = !string.IsNullOrEmpty(bgImage) ? bgImage : bgShorthand;
+        if (Gradient.IsLinearGradient(gradientSrc))
+        {
+            var gradient = Gradient.TryParseLinear(gradientSrc);
+            if (gradient is not null)
+            {
+                Gradient.Paint(buffer, rx, ry, rw, rh, gradient);
+                return;
+            }
+        }
+
+        // Fall through to flat color: longhand first, then
+        // first color-shaped token in the shorthand.
         var color = CssColor.Parse(style.GetPropertyValue("background-color"));
         if (color.IsTransparent)
         {
-            color = ExtractColorFromShorthand(style.GetPropertyValue("background"));
+            color = ExtractColorFromShorthand(bgShorthand);
         }
         if (color.IsTransparent) return;
-        var rect = box.BorderBoxRect;
-        buffer.FillRect(
-            (int)Math.Round(rect.X),
-            (int)Math.Round(rect.Y),
-            (int)Math.Round(rect.Width),
-            (int)Math.Round(rect.Height),
-            color);
+        buffer.FillRect(rx, ry, rw, rh, color);
     }
 
     /// <summary>Pick the first color-shaped token out of a
