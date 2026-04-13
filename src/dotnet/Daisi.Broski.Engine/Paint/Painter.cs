@@ -73,6 +73,7 @@ public static class Painter
         {
             var style = StyleResolver.Resolve(box.Element, viewport);
             PaintBackground(box, style, buffer);
+            PaintImage(box, document, buffer);
             PaintBorders(box, style, buffer);
             PaintTextContent(box, style, buffer);
             if (wireframe) PaintWireframe(box, buffer);
@@ -297,6 +298,87 @@ public static class Painter
         // Last resort: try the whole string (rgba(...) on
         // its own without a function-name wrapper).
         return CssColor.Parse(value);
+    }
+
+    /// <summary>If the element is an <c>&lt;img&gt;</c> and
+    /// the page loader successfully decoded its src, blit
+    /// the decoded pixels into the box's content area.
+    /// Scales to the box dimensions via nearest-neighbor —
+    /// a real browser would do bilinear or better, but
+    /// nearest is fast and visually fine for screenshot-
+    /// scale images on a non-fonts-aware engine.</summary>
+    private static void PaintImage(LayoutBox box, Document document, RasterBuffer buffer)
+    {
+        if (box.Element is null) return;
+        if (box.Element.TagName != "img") return;
+        if (document.Images is null) return;
+        if (!document.Images.TryGetValue(box.Element, out var raw)) return;
+        if (raw is not RasterBuffer src) return;
+
+        int dstX = (int)Math.Round(box.X);
+        int dstY = (int)Math.Round(box.Y);
+        int dstW = (int)Math.Round(box.Width);
+        int dstH = (int)Math.Round(box.Height);
+        if (dstW <= 0 || dstH <= 0)
+        {
+            // Layout didn't size the image — fall back to
+            // the source's natural dimensions.
+            dstW = src.Width;
+            dstH = src.Height;
+        }
+        BlitNearestNeighbor(src, buffer, dstX, dstY, dstW, dstH);
+    }
+
+    /// <summary>Copy pixels from <paramref name="src"/> into
+    /// <paramref name="dst"/> at <paramref name="dstX"/> /
+    /// <paramref name="dstY"/>, scaled to <paramref name="dstW"/>
+    /// × <paramref name="dstH"/> using nearest-neighbor
+    /// sampling. Pixels outside the destination buffer are
+    /// clipped. Source alpha is honored via simple
+    /// over-blending.</summary>
+    private static void BlitNearestNeighbor(
+        RasterBuffer src, RasterBuffer dst, int dstX, int dstY, int dstW, int dstH)
+    {
+        if (dstW <= 0 || dstH <= 0) return;
+        int x0 = Math.Max(0, dstX);
+        int y0 = Math.Max(0, dstY);
+        int x1 = Math.Min(dst.Width, dstX + dstW);
+        int y1 = Math.Min(dst.Height, dstY + dstH);
+        if (x0 >= x1 || y0 >= y1) return;
+
+        for (int dy = y0; dy < y1; dy++)
+        {
+            int sy = (int)((dy - dstY) * (long)src.Height / dstH);
+            if (sy < 0 || sy >= src.Height) continue;
+            for (int dx = x0; dx < x1; dx++)
+            {
+                int sx = (int)((dx - dstX) * (long)src.Width / dstW);
+                if (sx < 0 || sx >= src.Width) continue;
+                int srcIdx = (sy * src.Width + sx) * 4;
+                int dstIdx = (dy * dst.Width + dx) * 4;
+                byte sR = src.Pixels[srcIdx];
+                byte sG = src.Pixels[srcIdx + 1];
+                byte sB = src.Pixels[srcIdx + 2];
+                byte sA = src.Pixels[srcIdx + 3];
+                if (sA == 0) continue;
+                if (sA == 255)
+                {
+                    dst.Pixels[dstIdx] = sR;
+                    dst.Pixels[dstIdx + 1] = sG;
+                    dst.Pixels[dstIdx + 2] = sB;
+                    dst.Pixels[dstIdx + 3] = 255;
+                }
+                else
+                {
+                    double a = sA / 255.0;
+                    double oneMinus = 1.0 - a;
+                    dst.Pixels[dstIdx] = (byte)(sR * a + dst.Pixels[dstIdx] * oneMinus);
+                    dst.Pixels[dstIdx + 1] = (byte)(sG * a + dst.Pixels[dstIdx + 1] * oneMinus);
+                    dst.Pixels[dstIdx + 2] = (byte)(sB * a + dst.Pixels[dstIdx + 2] * oneMinus);
+                    dst.Pixels[dstIdx + 3] = (byte)Math.Min(255, dst.Pixels[dstIdx + 3] + sA * oneMinus);
+                }
+            }
+        }
     }
 
     private static void PaintBorders(LayoutBox box, ComputedStyle style, RasterBuffer buffer)

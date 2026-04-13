@@ -124,6 +124,14 @@ public static class LayoutTree
         var border = ResolveEdges(style, "border", parent.Width, fontSize, rootFontSize, isBorder: true);
 
         var declaredWidth = Length.Parse(style.GetPropertyValue("width"));
+        // <img> with no CSS width: prefer the width="" HTML
+        // attribute, then the decoded image's natural width.
+        // Falls through to the normal auto-fill path when
+        // none of those apply.
+        if (declaredWidth.IsNone && element.TagName == "img")
+        {
+            declaredWidth = ResolveImageDimension(element, "width", isHeight: false);
+        }
         double width;
         if (declaredWidth.IsNone || declaredWidth.IsAuto)
         {
@@ -139,6 +147,10 @@ public static class LayoutTree
         }
 
         var declaredHeight = Length.Parse(style.GetPropertyValue("height"));
+        if (declaredHeight.IsNone && element.TagName == "img")
+        {
+            declaredHeight = ResolveImageDimension(element, "height", isHeight: true);
+        }
 
         var box = new LayoutBox
         {
@@ -222,6 +234,32 @@ public static class LayoutTree
         {
             box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
         }
+    }
+
+    /// <summary>For an <c>&lt;img&gt;</c> element with no CSS
+    /// width/height, derive the dimension from the HTML
+    /// <c>width</c>/<c>height</c> attribute, then from the
+    /// decoded image's natural size. Returns
+    /// <see cref="Length.None"/> when neither is available
+    /// (the layout falls back to auto-fill in that case).</summary>
+    private static Length ResolveImageDimension(Element element, string attrName, bool isHeight)
+    {
+        var attr = element.GetAttribute(attrName);
+        if (!string.IsNullOrEmpty(attr))
+        {
+            // Plain integers (the legacy HTML attribute form
+            // doesn't carry units) and pixel-suffixed lengths
+            // both round-trip through Length.Parse.
+            var len = Length.Parse(attr);
+            if (!len.IsNone) return len;
+        }
+        var doc = element.OwnerDocument;
+        if (doc?.Images is { } imgMap && imgMap.TryGetValue(element, out var raw)
+            && raw is Daisi.Broski.Engine.Paint.RasterBuffer img)
+        {
+            return Length.Px(isHeight ? img.Height : img.Width);
+        }
+        return Length.None;
     }
 
     /// <summary>Compute a box's outer height — content height

@@ -93,6 +93,29 @@ public sealed class Document : Node
     internal Dictionary<(Element, int, int), object> EnsureStyleCache() =>
         _styleCache ??= new Dictionary<(Element, int, int), object>();
 
+    /// <summary>Decoded raster pixel buffers for every
+    /// <c>&lt;img src&gt;</c> the page loader successfully
+    /// fetched + decoded. Keyed by the <c>&lt;img&gt;</c>
+    /// element so the painter can look up "the picture for
+    /// this element" directly. Untouched <c>&lt;img&gt;</c>
+    /// elements (broken URL, unsupported format) just don't
+    /// have an entry — paint falls back to the placeholder
+    /// rect.</summary>
+    public Dictionary<Element, object>? Images
+    {
+        get => _images;
+        set => _images = value;
+    }
+    private Dictionary<Element, object>? _images;
+
+    public void AttachImage(Element imgElement, object decoded)
+    {
+        ArgumentNullException.ThrowIfNull(imgElement);
+        ArgumentNullException.ThrowIfNull(decoded);
+        _images ??= new Dictionary<Element, object>(ReferenceEqualityComparer.Instance);
+        _images[imgElement] = decoded;
+    }
+
     /// <summary>Stylesheets fetched ahead of time from
     /// <c>&lt;link rel="stylesheet"&gt;</c> by
     /// <c>PageLoader</c>. Inserted into <see cref="StyleSheets"/>

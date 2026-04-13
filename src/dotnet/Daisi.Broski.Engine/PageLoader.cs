@@ -2,6 +2,7 @@ using Daisi.Broski.Engine.Css;
 using Daisi.Broski.Engine.Dom;
 using Daisi.Broski.Engine.Html;
 using Daisi.Broski.Engine.Net;
+using Daisi.Broski.Engine.Paint;
 
 namespace Daisi.Broski.Engine;
 
@@ -74,6 +75,12 @@ public sealed class PageLoader : IDisposable
         // shouldn't abort the page load.
         await FetchExternalStylesheetsAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
 
+        // Phase 6l: fetch + decode <img src> in parallel so
+        // the painter can blit real pixels for hero / logo /
+        // icon images. PNG only for v1; other formats fail
+        // the decode and fall through to the placeholder rect.
+        await FetchImagesAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
+
         return new LoadedPage
         {
             RequestUrl = fetchResult.RequestUrl,
@@ -144,6 +151,55 @@ public sealed class PageLoader : IDisposable
             if (sheet is not null)
             {
                 document.AttachExternalStylesheet(link, sheet);
+            }
+        }
+    }
+
+    /// <summary>Fetch every <c>&lt;img src&gt;</c>, attempt
+    /// PNG decode, attach the resulting RasterBuffer to the
+    /// document. Per-image failures are silent — the painter
+    /// renders the placeholder rect for images we couldn't
+    /// fetch or decode (non-PNG formats, 404, etc.).</summary>
+    private async Task FetchImagesAsync(
+        Document document, Uri baseUrl, CancellationToken ct)
+    {
+        var imgs = new List<(Element img, Uri src)>();
+        foreach (var el in document.DescendantElements())
+        {
+            if (el.TagName != "img") continue;
+            var srcRaw = el.GetAttribute("src");
+            if (string.IsNullOrEmpty(srcRaw)) continue;
+            // Skip data: URIs and other non-http schemes for
+            // now — they'd need their own decoder paths.
+            if (!Uri.TryCreate(baseUrl, srcRaw, out var src)) continue;
+            if (src.Scheme is not ("http" or "https")) continue;
+            imgs.Add((el, src));
+        }
+
+        var tasks = imgs.Select(async pair =>
+        {
+            try
+            {
+                var result = await _fetcher.FetchAsync(pair.src, ct).ConfigureAwait(false);
+                if ((int)result.Status >= 200 && (int)result.Status < 300)
+                {
+                    var decoded = PngDecoder.TryDecode(result.Body);
+                    return (pair.img, decoded);
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+            return (pair.img, (RasterBuffer?)null);
+        }).ToList();
+
+        var images = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var (img, decoded) in images)
+        {
+            if (decoded is not null)
+            {
+                document.AttachImage(img, decoded);
             }
         }
     }
