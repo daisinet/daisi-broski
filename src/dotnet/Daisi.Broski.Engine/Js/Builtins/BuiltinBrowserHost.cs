@@ -304,6 +304,7 @@ internal static class BuiltinBrowserHost
             var s = RequireStorage(thisVal, "Storage.prototype.setItem");
             if (args.Count < 2) return JsValue.Undefined;
             s.Items[JsValue.ToJsString(args[0])] = JsValue.ToJsString(args[1]);
+            s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
@@ -311,14 +312,16 @@ internal static class BuiltinBrowserHost
         {
             var s = RequireStorage(thisVal, "Storage.prototype.removeItem");
             if (args.Count == 0) return JsValue.Undefined;
-            s.Items.Remove(JsValue.ToJsString(args[0]));
+            if (s.Items.Remove(JsValue.ToJsString(args[0]))) s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
         proto.SetNonEnumerable("clear", new JsFunction("clear", (thisVal, args) =>
         {
             var s = RequireStorage(thisVal, "Storage.prototype.clear");
+            if (s.Items.Count == 0) return JsValue.Undefined;
             s.Items.Clear();
+            s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
@@ -336,10 +339,23 @@ internal static class BuiltinBrowserHost
 
         // localStorage and sessionStorage are separate instances
         // so scripts that write to one don't pollute the other,
-        // matching browser behavior even though we don't yet
-        // persist either across engine lifetimes.
-        engine.Globals["localStorage"] = new JsStorage { Prototype = proto };
-        engine.Globals["sessionStorage"] = new JsStorage { Prototype = proto };
+        // matching browser behavior. Per phase-5a, localStorage
+        // is file-backed when the engine carries a non-null
+        // <see cref="IStorageBackend"/>; sessionStorage
+        // is always transient (browser semantics: session storage
+        // does not outlive the hosting engine).
+        var localStorage = new JsStorage { Prototype = proto };
+        var sessionStorage = new JsStorage { Prototype = proto };
+        engine.Globals["localStorage"] = localStorage;
+        engine.Globals["sessionStorage"] = sessionStorage;
+
+        // The manager is wired up even when the engine currently
+        // holds the default NullStorageBackend — the engine lets
+        // the embedder swap in a real backend later via
+        // <see cref="JsEngine.SetStorageBackend"/>, and the
+        // manager handles that transition.
+        engine.StorageManager = new JsStorageManager(
+            localStorage, sessionStorage, engine);
     }
 
     private static JsStorage RequireStorage(object? thisVal, string name)
@@ -1026,10 +1042,27 @@ internal readonly struct JsHistoryEntry
 /// <c>sessionStorage</c>. A flat insertion-order-preserving
 /// dictionary of string → string, with a <c>length</c>
 /// getter intercepted in <see cref="Get"/>.
+///
+/// <para>
+/// Phase 5a: each successful write fires <see cref="Changed"/>
+/// so an embedder-supplied storage backend can persist the
+/// updated snapshot. <see cref="JsStorageManager"/> subscribes
+/// to this hook to route localStorage writes through the
+/// configured <see cref="IStorageBackend"/>;
+/// sessionStorage subscribes to nothing and stays transient.
+/// </para>
 /// </summary>
 public sealed class JsStorage : JsObject
 {
     public Dictionary<string, string> Items { get; } = new();
+
+    /// <summary>Fired after <c>setItem</c> / <c>removeItem</c>
+    /// (when the item existed) / <c>clear</c> (when there was
+    /// something to clear). Read-only mutations — <c>getItem</c>,
+    /// <c>key</c>, <c>length</c> — do not fire this event.</summary>
+    public event Action? Changed;
+
+    internal void NotifyChanged() => Changed?.Invoke();
 
     /// <inheritdoc />
     public override object? Get(string key)

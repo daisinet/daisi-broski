@@ -49,10 +49,29 @@ public static class Broski
             // worth the context-switch overhead in practice;
             // callers that need the work off the calling thread
             // should wrap their LoadAsync invocation themselves.
-            PageScripts.RunAll(page, fetcher);
+            PageScripts.RunAll(page, fetcher, options.StoragePath);
         }
 
         return page;
+    }
+
+    /// <summary>Resolve the default storage directory for the
+    /// current platform. Returns a per-user, application-local
+    /// path: <c>%LOCALAPPDATA%\daisi-broski\storage</c> on
+    /// Windows, <c>~/.local/share/daisi-broski/storage</c>
+    /// elsewhere. Never returns <c>null</c> — the default exists
+    /// so callers who opt into persistence without choosing a
+    /// path get a sensible home.</summary>
+    public static string DefaultStoragePath()
+    {
+        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrEmpty(root))
+        {
+            root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".local", "share");
+        }
+        return Path.Combine(root, "daisi-broski", "storage");
     }
 }
 
@@ -74,4 +93,13 @@ public sealed class BroskiOptions
     /// the defaults — a Chromium-shaped UA, 20 redirects, fresh
     /// cookie jar, 30-second timeout, 50 MB body cap.</summary>
     public HttpFetcherOptions? Fetcher { get; init; }
+
+    /// <summary>When set, <c>localStorage</c> writes are persisted
+    /// as JSON under this directory, one file per origin
+    /// (<c>scheme://host[:port]</c>). When <c>null</c> (default),
+    /// <c>localStorage</c> is transient — the phase-3 semantics.
+    /// <c>sessionStorage</c> is always transient regardless of
+    /// this value. Pass <see cref="Broski.DefaultStoragePath"/>
+    /// for a sensible per-user location.</summary>
+    public string? StoragePath { get; init; }
 }

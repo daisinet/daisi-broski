@@ -7,9 +7,9 @@
 
 ## Current state
 
-**Phases 0, 1, 3a, 3b, 3c, and 4 are complete.** Phase 2 is effectively absorbed into phase 3c. Phase 4 is fully closed as of slice 4d — the full phase-3 engine (script execution, article extraction) runs inside the sandboxed child, the launcher uses atomic `CreateProcessW(CREATE_SUSPENDED)` so the race window to Job Object assignment is zero, `BrowserSession` auto-respawns a fresh child when the previous one dies between operations, and the **live handle table** now lets the host hold references to JS / DOM objects in the sandbox and drive interactive operations (evaluate, query element handles, set property, call method, click) across the IPC boundary. Next major milestone: phase 5 (cross-platform sandboxing + extended Web APIs).
+**Phases 0, 1, 3a, 3b, 3c, and 4 are complete. Phase 5a shipped — file-backed localStorage per origin.** Phase 2 is effectively absorbed into phase 3c. Phase 4 closed with slice 4d (the live handle table). Phase 5 is now in progress: slice 5a lets `localStorage` writes persist as per-origin JSON on disk so a page's session state survives engine / sandbox restarts; `sessionStorage` stays transient per browser semantics. Upcoming phase-5 slices: Blob / File / FileReader / FormData, real XMLHttpRequest, real MutationObserver, WebSocket, IndexedDB, request-interception API, fuzzing harness.
 
-**Combined test suite: 1706/1706 passing.** Real-page ship gate: **every inline script runs cleanly on every modern-framework site tested** — svelte.dev 6/6, react.dev 3/3, **nextjs.org 50/50**, **tailwindcss.com 185/185**, **nodejs.org 118/118**, typescriptlang.org 5/5, vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, MDN, rust-lang.org, and more. ~375 real inline scripts executing across 13 real sites with zero runtime errors. Real-world compatibility on heavyweight bundle sites: stripe.com 44/68, anthropic.com 18/24, figma.com 89/108, linear.app 71/114, cloudflare.com 21/24, twitch.tv 63/67, redis.io 94/113, asana.com 115/122, airtable.com 42/46, dropbox.com 22/23, youtube.com 36/42. **`Daisi.Broski.Skimmer`** ships as a separate CLI on top of the engine — extracts main article content via a Readability-style scoring pass and serializes as JSON or Markdown. **`Daisi.Broski.Surfer`** ships as a Windows MAUI Blazor Hybrid app — interactive reader UI on top of the engine + Skimmer, with Reader / Markdown / JSON / Links views.
+**Combined test suite: 1719/1719 passing.** Real-page ship gate: **every inline script runs cleanly on every modern-framework site tested** — svelte.dev 6/6, react.dev 3/3, **nextjs.org 50/50**, **tailwindcss.com 185/185**, **nodejs.org 118/118**, typescriptlang.org 5/5, vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, MDN, rust-lang.org, and more. ~375 real inline scripts executing across 13 real sites with zero runtime errors. Real-world compatibility on heavyweight bundle sites: stripe.com 44/68, anthropic.com 18/24, figma.com 89/108, linear.app 71/114, cloudflare.com 21/24, twitch.tv 63/67, redis.io 94/113, asana.com 115/122, airtable.com 42/46, dropbox.com 22/23, youtube.com 36/42. **`Daisi.Broski.Skimmer`** ships as a separate CLI on top of the engine — extracts main article content via a Readability-style scoring pass and serializes as JSON or Markdown. **`Daisi.Broski.Surfer`** ships as a Windows MAUI Blazor Hybrid app — interactive reader UI on top of the engine + Skimmer, with Reader / Markdown / JSON / Links views.
 
 What works today from a clean clone:
 
@@ -236,7 +236,7 @@ var links = await session.QuerySelectorAllAsync("a[href]");
 
 ## Phase 5 — Hardening and extended Web APIs
 
-- `localStorage`, `sessionStorage` (file-backed per origin).
+- ✅ **Slice 5a: file-backed localStorage per origin (shipped).** `JsEngine.SetStorageBackend(IStorageBackend)` opts into persistence; the default `NullStorageBackend` keeps phase-3 transient semantics. `FileStorageBackend` writes JSON-per-origin under a caller-chosen root directory (`BroskiOptions.StoragePath`, `SkimmerOptions.StoragePath`, or `Broski.DefaultStoragePath()` for `%LOCALAPPDATA%\daisi-broski\storage`). Origin-change on `AttachDocument` flushes the prior origin's writes to disk and reloads the new origin's state. `sessionStorage` is always transient (browser semantics — session storage doesn't outlive the hosting engine) but tracks origin changes so cross-origin navigation clears it. The sandbox child enables file-backed storage by default, so sandboxed runs persist automatically without host-side wiring.
 - `IndexedDB` minimum viable (a KV store with version upgrades).
 - `WebSocket`.
 - `XMLHttpRequest` (legacy but still used).
@@ -244,9 +244,9 @@ var links = await session.QuerySelectorAllAsync("a[href]");
 - `FormData`, `Blob`, `File`, `FileReader`.
 - Request interception API (host-side) for test scaffolding and ad blocking.
 - Fuzzing harness against the parsers and IPC decoder.
-- Cross-platform sandbox research: Linux (unshare + seccomp-bpf + cgroups v2), macOS (`sandbox_init`).
+- Cross-platform sandbox research: Linux (unshare + seccomp-bpf + cgroups v2), macOS (`sandbox_init`). **Deliberately deferred** — user direction for this slice set is to prioritize Web API surface over cross-platform sandboxing.
 
-**Current status:** not started. The fuzzing and cross-platform sandbox items are prerequisites for running the engine in untrusted server environments; the Web API items are blocked on phase 3.
+**Current status:** slice 5a shipped (1706 → 1719 passing). Remaining slices tackled in roughly the order above — Blob / File / FileReader / FormData next as the foundation types for several others (real XHR, MutationObserver), then the event-driven APIs (WebSocket, XHR), then MutationObserver on the real DOM, then IndexedDB, then request interception, then fuzzing.
 
 ## Phase 6 — Layout, rendering, screenshots
 

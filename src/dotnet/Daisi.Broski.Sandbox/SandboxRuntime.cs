@@ -245,6 +245,14 @@ internal static class SandboxRuntime
         var page = await pageLoader.LoadAsync(uri, ct).ConfigureAwait(false);
 
         var engine = new JsEngine();
+        // Persist localStorage writes to a per-origin JSON file
+        // under the platform's local-application-data directory.
+        // Gives sites running inside the sandboxed child the same
+        // "same-origin reload sees its own state" semantics a real
+        // browser offers, without the host having to thread a
+        // storage path through IPC for every run.
+        engine.SetStorageBackend(new FileStorageBackend(
+            EngineBroski.DefaultStoragePath()));
         engine.AttachDocument(page.Document, page.FinalUrl);
 
         var scriptResult = new PageScriptsResult

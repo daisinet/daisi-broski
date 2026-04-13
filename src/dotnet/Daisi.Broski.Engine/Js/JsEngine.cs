@@ -198,6 +198,34 @@ public sealed class JsEngine
     public JsEventLoop EventLoop { get; }
 
     /// <summary>
+    /// Persistence strategy for <c>localStorage</c>. Defaults to
+    /// <see cref="Js.NullStorageBackend"/> (transient,
+    /// in-memory only). Call <see cref="SetStorageBackend"/> to
+    /// opt into file-backed persistence — the backend is asked to
+    /// <c>Load</c> for every origin the engine attaches to and
+    /// <c>Save</c> after every successful <c>setItem</c> /
+    /// <c>removeItem</c> / <c>clear</c>.
+    /// </summary>
+    public Js.IStorageBackend StorageBackend { get; private set; } =
+        Js.NullStorageBackend.Instance;
+
+    /// <summary>Manager that wires the two <see cref="Js.JsStorage"/>
+    /// instances to the current <see cref="StorageBackend"/>.
+    /// Installed by <c>BuiltinBrowserHost</c> on construction.</summary>
+    internal Js.JsStorageManager? StorageManager { get; set; }
+
+    /// <summary>Swap in a new <see cref="IStorageBackend"/>. If
+    /// the engine has already attached a document, localStorage
+    /// is reloaded from the new backend so the current page
+    /// sees its own persisted state.</summary>
+    public void SetStorageBackend(Js.IStorageBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        StorageBackend = backend;
+        StorageManager?.OnBackendChanged();
+    }
+
+    /// <summary>
     /// Collected <c>console.log</c> / <c>warn</c> / <c>error</c>
     /// output. Tests inspect <see cref="StringBuilder.ToString"/>
     /// on this to verify script-level logging.
@@ -328,6 +356,11 @@ public sealed class JsEngine
         {
             loc.OnPageLoaded(pageUrl);
         }
+
+        // Rehydrate localStorage for the new origin. Writes
+        // pending on the previous origin are persisted first so
+        // a cross-origin navigate doesn't lose them.
+        StorageManager?.OnPageLoaded(pageUrl);
 
         // `window` is the global object in a browser. We
         // expose a minimal shim: reads and writes go through
