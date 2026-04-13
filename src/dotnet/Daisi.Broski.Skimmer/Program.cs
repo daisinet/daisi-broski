@@ -1,5 +1,7 @@
-using Daisi.Broski.Engine;
 using Daisi.Broski.Engine.Net;
+// Alias to disambiguate the `Skimmer` static class from the
+// containing `Daisi.Broski.Skimmer` namespace.
+using SkimmerApi = Daisi.Broski.Skimmer.Skimmer;
 
 namespace Daisi.Broski.Skimmer;
 
@@ -43,6 +45,7 @@ public static class Program
         string? userAgent = null;
         int maxRedirects = 20;
         bool quiet = false;
+        bool scriptingEnabled = true;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -73,6 +76,12 @@ public static class Program
                 case "--quiet":
                     quiet = true;
                     break;
+                case "--no-scripts":
+                    scriptingEnabled = false;
+                    break;
+                case "--scripts":
+                    scriptingEnabled = true;
+                    break;
                 default:
                     if (a.StartsWith('-')) return UsageError($"Unknown option '{a}'");
                     if (urlArg is not null) return UsageError("Multiple positional URLs passed");
@@ -88,7 +97,7 @@ public static class Program
             return UsageError($"'{urlArg}' is not an absolute http(s) URL");
         }
 
-        var options = new HttpFetcherOptions
+        var fetcher = new HttpFetcherOptions
         {
             MaxRedirects = maxRedirects,
             UserAgent = userAgent ?? new HttpFetcherOptions().UserAgent,
@@ -96,17 +105,18 @@ public static class Program
 
         try
         {
-            using var loader = new PageLoader(options);
-            var page = await loader.LoadAsync(url);
+            var article = await SkimmerApi.SkimAsync(url, new SkimmerOptions
+            {
+                ScriptingEnabled = scriptingEnabled,
+                Fetcher = fetcher,
+            });
 
             if (!quiet)
             {
                 Console.Error.WriteLine(
-                    $"{(int)page.Status} {page.Status} {page.FinalUrl} " +
-                    $"({page.Body.Length} bytes, {page.Encoding.WebName})");
+                    $"{article.Url} ({article.WordCount} words" +
+                    (scriptingEnabled ? ", scripts on" : ", scripts off") + ")");
             }
-
-            var article = ContentExtractor.Extract(page.Document, page.FinalUrl);
 
             if (article.ContentRoot is null && string.IsNullOrEmpty(article.PlainText))
             {
@@ -198,6 +208,9 @@ public static class Program
                                       (writes FILE.json + FILE.md).
               --ua STRING             Override the User-Agent header.
               --max-redirects N       Max redirects to follow (default 20).
+              --scripts               Run page scripts before extracting (default).
+              --no-scripts            Skip script execution. Faster + deterministic;
+                                      use when the SSR shell already has the content.
               --quiet                 Suppress fetch summary on stderr.
 
             Examples:

@@ -82,6 +82,22 @@ html, body {
 .format-toggle button:last-child  { border-radius: 0 6px 6px 0; border-right-width: 1px; }
 .format-toggle button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 
+.js-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 8px;
+    padding: 6px 8px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 12px;
+    color: #57606a;
+    cursor: pointer;
+    user-select: none;
+}
+.js-toggle input { margin: 0; cursor: pointer; }
+
 /* ---------- Status / error banners ---------- */
 
 .error {

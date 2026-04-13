@@ -23,6 +23,12 @@
             </button>
         }
     </div>
+
+    <label class="js-toggle" title="Run page scripts before extracting (slower; needed for SPAs)">
+        <input type="checkbox" checked="@Session.ScriptingEnabled"
+               @onchange="OnScriptingToggle" />
+        JS
+    </label>
 </div>
 
 @if (Session.Error is not null)
@@ -229,6 +235,13 @@ else
     }
 
     private async Task GoBack() => await Session.GoBackAsync();
+
+    private void OnScriptingToggle(ChangeEventArgs e)
+    {
+        Session.ScriptingEnabled = e.Value is bool b && b;
+        // Takes effect on the next navigation; no need to refetch
+        // the current page automatically.
+    }
 
     private async Task OnUrlKeyDown(KeyboardEventArgs e)
     {

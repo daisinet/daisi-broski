@@ -1,5 +1,3 @@
-using Daisi.Broski.Engine;
-using Daisi.Broski.Engine.Net;
 using Microsoft.Extensions.Logging;
 
 namespace Daisi.Broski.Surfer;
@@ -20,14 +18,11 @@ public static class MauiProgram
 
         builder.Services.AddMauiBlazorWebView();
 
-        // One PageLoader for the whole app — it owns the HttpFetcher
-        // and its cookie jar, so navigations inside the surfer share
-        // session state the way a real browser would.
-        builder.Services.AddSingleton(_ =>
-            new PageLoader(new HttpFetcherOptions()));
-
-        // Per-app skim history + currently-displayed article. Singleton
-        // so navigating between pages doesn't reset the back stack.
+        // Per-app skim history + currently-displayed article.
+        // Singleton so navigating between pages doesn't reset the
+        // back stack. The session uses Skimmer.SkimAsync internally
+        // so each navigation gets a fresh fetcher (cookie isolation
+        // between visits) — matches a privacy-mode browser.
         builder.Services.AddSingleton<Services.SkimSession>();
 
 #if DEBUG
