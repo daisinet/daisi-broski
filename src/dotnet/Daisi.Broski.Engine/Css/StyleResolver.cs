@@ -69,6 +69,19 @@ public static class StyleResolver
             return ComputedStyle.Empty;
         }
         viewport ??= Viewport.Default;
+
+        // Per-document cache: each element resolves once per
+        // (element, viewport) pair within a layout/render
+        // pass. Without this cache the recursive ancestor
+        // resolves below blow up to O(depth^2) cascade
+        // walks per leaf.
+        var cache = doc.EnsureStyleCache();
+        var key = (element, viewport.Width, viewport.Height);
+        if (cache.TryGetValue(key, out var existing) && existing is ComputedStyle hit)
+        {
+            return hit;
+        }
+
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // 1) Author rules — collect every (declaration,
@@ -91,7 +104,9 @@ public static class StyleResolver
         // nearest ancestor that does and adopt that value.
         ApplyInheritance(element, viewport, values);
 
-        return new ComputedStyle(values);
+        var result = new ComputedStyle(values);
+        cache[key] = result;
+        return result;
     }
 
     private static void CollectMatches(

@@ -352,6 +352,15 @@ internal sealed class LayoutStyleResolver
     private readonly Document _document;
     private readonly Viewport _viewport;
     private readonly Stylesheet _userAgent;
+    private readonly IReadOnlyList<Stylesheet> _sheets;
+    /// <summary>Per-pass memoization of resolved styles.
+    /// One layout build calls Resolve(element) thousands of
+    /// times — once per element, plus recursively for
+    /// inheritance — and each call would otherwise walk
+    /// every rule in every stylesheet. Caching makes the
+    /// total work O(elements × rules) instead of
+    /// O(elements × depth × rules).</summary>
+    private readonly Dictionary<Element, ComputedStyle> _cache = new();
 
     public double RootFontSize { get; }
 
@@ -360,33 +369,24 @@ internal sealed class LayoutStyleResolver
         _document = document;
         _viewport = viewport;
         _userAgent = UserAgentStyles.Stylesheet;
-        // Compute root font-size once per layout pass —
-        // every em / rem resolution refers back to it.
-        RootFontSize = 16;
-    }
-
-    public ComputedStyle Resolve(Element element)
-    {
-        // For now, use the public StyleResolver and rely on
-        // the user-agent stylesheet being injected as the
-        // first source. We achieve that by pre-pending it
-        // via a per-call composite list — cheap because the
-        // UA sheet is parsed once and cached.
-        return ResolveWithUaStylesheet(element);
-    }
-
-    private ComputedStyle ResolveWithUaStylesheet(Element element)
-    {
-        // Compose: UA sheet + document.styleSheets in order.
-        // The cleanest way without changing public API is to
-        // call into a private helper that takes an explicit
-        // sheet list.
+        // Pre-compose the sheet list once. The UA stylesheet
+        // sits first so author rules cascade on top per
+        // origin precedence.
         var sheets = new List<Stylesheet>(_document.StyleSheets.Count + 1)
         {
             _userAgent,
         };
         sheets.AddRange(_document.StyleSheets);
-        return CompositeResolver.Resolve(element, sheets, _viewport);
+        _sheets = sheets;
+        RootFontSize = 16;
+    }
+
+    public ComputedStyle Resolve(Element element)
+    {
+        if (_cache.TryGetValue(element, out var hit)) return hit;
+        var result = CompositeResolver.Resolve(element, _sheets, _viewport, this);
+        _cache[element] = result;
+        return result;
     }
 }
 
@@ -398,7 +398,8 @@ internal sealed class LayoutStyleResolver
 internal static class CompositeResolver
 {
     public static ComputedStyle Resolve(
-        Element element, IReadOnlyList<Stylesheet> sheets, Viewport viewport)
+        Element element, IReadOnlyList<Stylesheet> sheets, Viewport viewport,
+        LayoutStyleResolver? resolver = null)
     {
         // Implementation duplicates StyleResolver.Resolve
         // but reads sheets from the supplied list rather than
@@ -439,7 +440,7 @@ internal static class CompositeResolver
         }
 
         // Inheritance — same set as StyleResolver.
-        ApplyInheritance(element, sheets, viewport, values);
+        ApplyInheritance(element, sheets, viewport, values, resolver);
 
         return new ComputedStyle(values);
     }
@@ -468,18 +469,31 @@ internal static class CompositeResolver
 
     private static void ApplyInheritance(
         Element element, IReadOnlyList<Stylesheet> sheets, Viewport viewport,
-        Dictionary<string, string> into)
+        Dictionary<string, string> into, LayoutStyleResolver? resolver)
     {
-        var ancestorCache = new Dictionary<Element, ComputedStyle>();
+        // Hit the layout-resolver's per-pass cache when one
+        // was supplied so each ancestor resolves at most
+        // once per layout build, not per-call.
+        var ancestorCache = resolver is null
+            ? new Dictionary<Element, ComputedStyle>() : null;
         foreach (var prop in InheritableProps)
         {
             if (into.ContainsKey(prop)) continue;
             for (var anc = element.ParentNode as Element; anc is not null; anc = anc.ParentNode as Element)
             {
-                if (!ancestorCache.TryGetValue(anc, out var ancStyle))
+                ComputedStyle ancStyle;
+                if (resolver is not null)
+                {
+                    ancStyle = resolver.Resolve(anc);
+                }
+                else if (!ancestorCache!.TryGetValue(anc, out var cached))
                 {
                     ancStyle = Resolve(anc, sheets, viewport);
                     ancestorCache[anc] = ancStyle;
+                }
+                else
+                {
+                    ancStyle = cached;
                 }
                 if (ancStyle.TryGet(prop, out var v))
                 {

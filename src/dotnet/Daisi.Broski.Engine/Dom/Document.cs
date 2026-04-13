@@ -66,7 +66,32 @@ public sealed class Document : Node
     /// the next read re-parses every <c>&lt;style&gt;</c> in
     /// the tree. Cheap; the cache is per-document and the
     /// per-style-block parse is itself fast.</summary>
-    public void InvalidateStyleSheets() => _styleSheets = null;
+    public void InvalidateStyleSheets()
+    {
+        _styleSheets = null;
+        _styleCache?.Clear();
+    }
+
+    /// <summary>Per-document memoization of resolved
+    /// computed-style results, keyed by (element, viewport
+    /// width, viewport height). The cascade is expensive —
+    /// each Resolve walks every rule in every stylesheet
+    /// and recursively resolves ancestors for inheritance —
+    /// so without this cache a layout pass re-runs the
+    /// cascade O(depth^2) times per element. Cleared on
+    /// stylesheet invalidation.</summary>
+    public Dictionary<(Element Element, int W, int H), object>? StyleCache
+    {
+        get => _styleCache;
+        set => _styleCache = value;
+    }
+    private Dictionary<(Element, int, int), object>? _styleCache;
+
+    /// <summary>Get-or-create the style cache. Lazy because
+    /// engines that never run the cascade (parse-only
+    /// callers) shouldn't pay the dictionary allocation.</summary>
+    internal Dictionary<(Element, int, int), object> EnsureStyleCache() =>
+        _styleCache ??= new Dictionary<(Element, int, int), object>();
 
     /// <summary>Stylesheets fetched ahead of time from
     /// <c>&lt;link rel="stylesheet"&gt;</c> by
