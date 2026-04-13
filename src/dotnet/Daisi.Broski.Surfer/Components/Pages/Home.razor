@@ -1,0 +1,165 @@
+@page "/"
+@inject SkimSession Session
+@implements IDisposable
+
+<div class="address-bar">
+    <button class="back-btn" @onclick="GoBack" disabled="@(!Session.History.Any())"
+            title="Back to previous page">←</button>
+
+    <input class="url" type="text" @bind="_urlInput" @bind:event="oninput"
+           @onkeydown="OnUrlKeyDown" placeholder="Type a URL (https://example.com)..."
+           disabled="@Session.IsLoading" />
+
+    <button class="go-btn" @onclick="Go" disabled="@(string.IsNullOrWhiteSpace(_urlInput) || Session.IsLoading)">
+        @(Session.IsLoading ? "..." : "Go")
+    </button>
+
+    <div class="format-toggle">
+        @foreach (var f in Formats)
+        {
+            <button class="@(f == _format ? "active" : "")" @onclick="@(() => _format = f)">
+                @f
+            </button>
+        }
+    </div>
+</div>
+
+@if (Session.Error is not null)
+{
+    <div class="error">⚠ @Session.Error</div>
+}
+
+@if (Session.IsLoading)
+{
+    <div class="loading">Skimming @Session.CurrentRequestUrl …</div>
+}
+else if (Session.Current is { } article)
+{
+    <div class="meta-strip">
+        @if (!string.IsNullOrWhiteSpace(article.Title))
+        {
+            <h1 class="page-title">@article.Title</h1>
+        }
+        <div class="meta-line">
+            @if (!string.IsNullOrWhiteSpace(article.Byline))
+            {
+                <span class="byline">By <strong>@article.Byline</strong></span>
+            }
+            @if (!string.IsNullOrWhiteSpace(article.PublishedAt))
+            {
+                <span class="date">· @article.PublishedAt</span>
+            }
+            @if (!string.IsNullOrWhiteSpace(article.SiteName))
+            {
+                <span class="site">· @article.SiteName</span>
+            }
+            <span class="wc">· @article.WordCount words</span>
+        </div>
+    </div>
+
+    @switch (_format)
+    {
+        case "Reader":
+            <div class="content reader">
+                @if (!string.IsNullOrWhiteSpace(article.HeroImage))
+                {
+                    <img class="hero" src="@article.HeroImage" alt="" />
+                }
+                @if (!string.IsNullOrWhiteSpace(article.Description))
+                {
+                    <p class="lead">@article.Description</p>
+                }
+                <pre class="reader-text">@article.PlainText</pre>
+            </div>
+            break;
+        case "Markdown":
+            <div class="content code">
+                <pre>@MarkdownFormatter.Format(article)</pre>
+            </div>
+            break;
+        case "JSON":
+            <div class="content code">
+                <pre>@JsonFormatter.Format(article)</pre>
+            </div>
+            break;
+        case "Links":
+            <div class="content links">
+                <h3>@article.Links.Count outbound link@(article.Links.Count == 1 ? "" : "s")</h3>
+                <ul>
+                    @foreach (var link in article.Links)
+                    {
+                        <li>
+                            <button class="link-nav" @onclick="@(() => Navigate(link.Href))" title="@link.Href">
+                                @link.Text
+                            </button>
+                            <span class="link-href">@link.Href</span>
+                        </li>
+                    }
+                </ul>
+            </div>
+            break;
+    }
+}
+else
+{
+    <div class="empty">
+        <h2>Welcome to <strong>daisi-broski-surfer</strong></h2>
+        <p>Type a URL above and press <kbd>Enter</kbd>. The page is fetched and parsed
+           by the local broski engine, then run through the Skimmer to extract the
+           main content. Switch between Reader / Markdown / JSON / Links views with
+           the buttons on the right.</p>
+        <p>Try one of these:</p>
+        <ul>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://news.ycombinator.com"))'>news.ycombinator.com</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://en.wikipedia.org/wiki/JavaScript"))'>en.wikipedia.org/wiki/JavaScript</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://daisi.ai"))'>daisi.ai</button></li>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://www.linkedin.com/company/daisinet"))'>linkedin.com/company/daisinet</button></li>
+        </ul>
+    </div>
+}
+
+@code {
+    private static readonly string[] Formats = { "Reader", "Markdown", "JSON", "Links" };
+
+    private string _urlInput = "";
+    private string _format = "Reader";
+
+    protected override void OnInitialized()
+    {
+        Session.StateChanged += OnSessionChanged;
+        // If we already had an in-flight URL (e.g. user clicked back),
+        // reflect it in the address bar.
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+    }
+
+    private void OnSessionChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task Go()
+    {
+        await Navigate(_urlInput);
+    }
+
+    private async Task Navigate(string url)
+    {
+        _urlInput = url;
+        await Session.NavigateAsync(url);
+        // Sync the address bar with the post-redirect URL (NavigateAsync
+        // overwrites CurrentRequestUrl with FinalUrl on success).
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+    }
+
+    private async Task GoBack() => await Session.GoBackAsync();
+
+    private async Task OnUrlKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Go();
+    }
+
+    public void Dispose() => Session.StateChanged -= OnSessionChanged;
+}
