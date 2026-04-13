@@ -1,5 +1,6 @@
 @page "/"
 @inject SkimSession Session
+@inject IJSRuntime JS
 @implements IDisposable
 
 <div class="address-bar">
@@ -69,7 +70,9 @@ else if (Session.Current is { } article)
                 {
                     <p class="lead">@article.Description</p>
                 }
-                <pre class="reader-text">@article.PlainText</pre>
+                <div class="reader-body" @ref="_readerBody">
+                    @((MarkupString)HtmlFormatter.Format(article))
+                </div>
             </div>
             break;
         case "Markdown":
@@ -123,19 +126,70 @@ else
 
     private string _urlInput = "";
     private string _format = "Reader";
+    private ElementReference _readerBody;
+    private DotNetObjectReference<Home>? _selfRef;
+    private bool _interceptInstalled;
 
     protected override void OnInitialized()
     {
         Session.StateChanged += OnSessionChanged;
-        // If we already had an in-flight URL (e.g. user clicked back),
-        // reflect it in the address bar.
         if (Session.CurrentRequestUrl is not null)
         {
             _urlInput = Session.CurrentRequestUrl;
         }
+        _selfRef = DotNetObjectReference.Create(this);
     }
 
-    private void OnSessionChanged() => InvokeAsync(StateHasChanged);
+    /// <summary>Install the anchor-click interceptor on the reader
+    /// body container after each render. The interceptor lives in
+    /// JS (registered inline via <c>eval</c> so we don't have to
+    /// ship a separate .js file), captures clicks on links inside
+    /// the <c>MarkupString</c>-rendered HTML, prevents the default
+    /// browser navigation, and posts the URL back to .NET so the
+    /// Surfer's own router handles it.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_interceptInstalled && _format == "Reader" &&
+            Session.Current is not null)
+        {
+            try
+            {
+                // Idempotent installer — sentinel attribute prevents
+                // listener stacking across re-renders.
+                await JS.InvokeVoidAsync("eval",
+                    "window.surferInstall=window.surferInstall||function(el,dn){" +
+                    "if(!el||el.dataset.surferBound)return;" +
+                    "el.dataset.surferBound='1';" +
+                    "el.addEventListener('click',function(e){" +
+                    "var a=e.target;while(a&&a!==el&&a.tagName!=='A')a=a.parentElement;" +
+                    "if(!a||a.tagName!=='A')return;" +
+                    "var href=a.getAttribute('href');" +
+                    "if(!href||href[0]==='#')return;" +
+                    "e.preventDefault();" +
+                    "dn.invokeMethodAsync('NavigateFromReader',href);" +
+                    "},true);};");
+                await JS.InvokeVoidAsync("surferInstall", _readerBody, _selfRef);
+                _interceptInstalled = true;
+            }
+            catch
+            {
+                // BlazorWebView's JS bridge can fail during fast
+                // re-renders — the next pass will retry.
+            }
+        }
+        if (_format != "Reader") _interceptInstalled = false;
+    }
+
+    [JSInvokable]
+    public Task NavigateFromReader(string href) => Navigate(href);
+
+    private void OnSessionChanged()
+    {
+        // Reader body is rebuilt on every navigation — the interceptor
+        // needs to re-attach to the new DOM node.
+        _interceptInstalled = false;
+        InvokeAsync(StateHasChanged);
+    }
 
     private async Task Go()
     {
@@ -161,5 +215,9 @@ else
         if (e.Key == "Enter") await Go();
     }
 
-    public void Dispose() => Session.StateChanged -= OnSessionChanged;
+    public void Dispose()
+    {
+        Session.StateChanged -= OnSessionChanged;
+        _selfRef?.Dispose();
+    }
 }
