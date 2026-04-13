@@ -336,6 +336,70 @@ public class SkimmerTests
     }
 
     [Fact]
+    public void Md_inlines_links_for_anchors_at_block_level()
+    {
+        // Pattern from daisi.ai's CTA strip: a div containing only
+        // <a> elements styled as buttons. Without inline-coalescing
+        // the block dispatch loses the href and emits plain text.
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body><article>
+              <p>Lead paragraph long enough to clear the scoring threshold easily without padding.</p>
+              <div>
+                <a href="/join">Join The Rebellion</a>
+                <a href="/donate">Donate Your GPU</a>
+                <a href="/oss">Open Source</a>
+              </div>
+              <p>Another paragraph for body density.</p>
+            </article></body></html>
+            """);
+        var md = MarkdownFormatter.Format(article);
+        Assert.Contains("[Join The Rebellion](https://example.com/join)", md);
+        Assert.Contains("[Donate Your GPU](https://example.com/donate)", md);
+        Assert.Contains("[Open Source](https://example.com/oss)", md);
+    }
+
+    [Fact]
+    public void Md_skips_empty_emphasis_wrappers()
+    {
+        // Font Awesome icons render as empty <i> elements. Without
+        // the empty-wrapper guard the formatter emits a stray "**"
+        // run that breaks downstream parsers (and looks ugly in
+        // raw output).
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body><article>
+              <p>Lead paragraph long enough to clear the scoring threshold easily without padding.</p>
+              <div>
+                <a href="/x"><i class="fa-solid fa-microchip"></i>Click Me</a>
+              </div>
+              <p>More body content for density.</p>
+            </article></body></html>
+            """);
+        var md = MarkdownFormatter.Format(article);
+        Assert.Contains("[Click Me](https://example.com/x)", md);
+        Assert.DoesNotContain("**Click Me", md);
+        Assert.DoesNotContain("*Click Me", md);
+    }
+
+    [Fact]
+    public void Md_collapses_runaway_whitespace_inside_headings()
+    {
+        // CSS-driven layouts split heading text across lines that
+        // CommonMark would otherwise turn into multiple paragraphs.
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body><article>
+              <h1>
+                THE
+                AI REBELLION
+                HAS BEGUN
+              </h1>
+              <p>Lead paragraph long enough to clear the scoring threshold easily.</p>
+            </article></body></html>
+            """);
+        var md = MarkdownFormatter.Format(article);
+        Assert.Contains("# THE AI REBELLION HAS BEGUN", md);
+    }
+
+    [Fact]
     public void Md_escapes_inline_metacharacters()
     {
         var article = ExtractFromHtml("""

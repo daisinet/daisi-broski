@@ -122,7 +122,7 @@ public static class MarkdownFormatter
                 return;
 
             case "figure":
-                foreach (var child in el.Children) RenderBlock(child, ctx);
+                RenderBlockChildren(el, ctx);
                 return;
 
             case "figcaption":
@@ -141,9 +141,14 @@ public static class MarkdownFormatter
                 ctx.Output.Append("\n\n");
                 return;
 
-            // Wrapper blocks: just walk children. Article / section /
+            // Wrapper blocks: walk children. Article / section /
             // div etc. — we don't need to mark them up but their
-            // children carry the real content.
+            // children carry the real content. We delegate to
+            // RenderBlockChildren so runs of inline children
+            // (text + <a> + <strong> + ...) get coalesced into a
+            // single paragraph instead of each being emitted in
+            // isolation (which loses link wrapping for an <a>
+            // appearing as a direct child of a wrapper div).
             case "article":
             case "section":
             case "main":
@@ -152,7 +157,7 @@ public static class MarkdownFormatter
             case "footer":
             case "details":
             case "summary":
-                foreach (var child in el.Children) RenderBlock(child, ctx);
+                RenderBlockChildren(el, ctx);
                 return;
 
             // Tables: rough conversion. Real CommonMark needs a
@@ -162,17 +167,140 @@ public static class MarkdownFormatter
                 return;
         }
 
-        // Unknown / inline tag at the block level: treat as a paragraph
-        // wrapper.
-        EmitParagraph(el, ctx);
+        // Unknown tag at the block level: if it's an inline element
+        // (a / strong / em / span / ...), wrap it in its own
+        // paragraph through the inline renderer so any href / emphasis
+        // markup survives. Otherwise just walk its children as blocks
+        // to recover whatever readable content is in there.
+        if (IsInlineTag(el.TagName))
+        {
+            EmitInlineParagraph(el, ctx);
+        }
+        else
+        {
+            RenderBlockChildren(el, ctx);
+        }
+    }
+
+    /// <summary>
+    /// Walk an element's children, grouping consecutive inline
+    /// content (Text nodes + inline elements) into single paragraphs
+    /// so links / emphasis / images survive the block dispatch loop.
+    /// Block-level children (<c>p</c>, <c>h1-h6</c>, <c>ul</c>, ...)
+    /// flush the in-flight paragraph and dispatch to RenderBlock.
+    /// </summary>
+    private static void RenderBlockChildren(Element el, RenderContext ctx)
+    {
+        StringBuilder? inlineBuf = null;
+
+        void Flush()
+        {
+            if (inlineBuf is null) return;
+            var text = inlineBuf.ToString().Trim();
+            inlineBuf = null;
+            if (text.Length == 0) return;
+            EmitLinePrefix(ctx);
+            ctx.Output.Append(text).Append("\n\n");
+        }
+
+        foreach (var child in el.ChildNodes)
+        {
+            if (child is Text t)
+            {
+                if (string.IsNullOrWhiteSpace(t.Data)) continue;
+                inlineBuf ??= new StringBuilder();
+                inlineBuf.Append(EscapeInline(t.Data));
+                continue;
+            }
+            if (child is not Element c) continue;
+
+            if (IsInlineTag(c.TagName))
+            {
+                // Append a single space between adjacent inline runs
+                // so consecutive sibling links don't collide
+                // ("[a](u1)[b](u2)" instead of "[a](u1) [b](u2)").
+                if (inlineBuf is not null && inlineBuf.Length > 0 &&
+                    !char.IsWhiteSpace(inlineBuf[^1]))
+                {
+                    inlineBuf.Append(' ');
+                }
+                inlineBuf ??= new StringBuilder();
+                EmitInlineNode(c, ctx, inlineBuf);
+            }
+            else
+            {
+                Flush();
+                RenderBlock(c, ctx);
+            }
+        }
+        Flush();
+    }
+
+    /// <summary>True for tags that produce inline (run-of-text) markup
+    /// in CommonMark. Anything block-level dispatches through
+    /// <see cref="RenderBlock"/>.</summary>
+    private static bool IsInlineTag(string tag) => tag switch
+    {
+        "a" or "strong" or "b" or "em" or "i" or "code" or "span" or
+        "small" or "sub" or "sup" or "mark" or "kbd" or "u" or
+        "img" or "br" or "abbr" or "cite" or "q" or "time" or "var"
+            => true,
+        _ => false,
+    };
+
+    /// <summary>Wrap a single inline element (e.g. an <c>&lt;a&gt;</c>
+    /// appearing at block-level position) in its own paragraph so its
+    /// inline-only markup survives the block dispatch.</summary>
+    private static void EmitInlineParagraph(Element el, RenderContext ctx)
+    {
+        var sb = new StringBuilder();
+        EmitInlineNode(el, ctx, sb);
+        var text = sb.ToString().Trim();
+        if (text.Length == 0) return;
+        EmitLinePrefix(ctx);
+        ctx.Output.Append(text).Append("\n\n");
     }
 
     private static void EmitHeading(Element el, RenderContext ctx, int level)
     {
+        // Build the heading inline first so we can collapse runaway
+        // whitespace from CSS-driven layouts (sites that do
+        // `<h1>FOO\n  BAR\n  BAZ</h1>` and rely on display:flex to
+        // make it look like a single line). Without this, the
+        // markdown heading rendered with raw newlines, which
+        // CommonMark splits into multiple paragraphs.
+        var inline = new StringBuilder();
+        EmitInlineChildren(el, ctx, inline);
+        var text = CollapseRunWhitespace(inline.ToString()).Trim();
+        if (text.Length == 0) return;
+
         EmitLinePrefix(ctx);
-        ctx.Output.Append(new string('#', level)).Append(' ');
-        EmitInlineChildren(el, ctx);
+        ctx.Output.Append(new string('#', level)).Append(' ').Append(text);
         ctx.Output.Append("\n\n");
+    }
+
+    /// <summary>Collapse runs of whitespace (spaces, tabs, newlines)
+    /// to single spaces. Used inside headings + other contexts where
+    /// spec-strict CommonMark wants a single line.</summary>
+    private static string CollapseRunWhitespace(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new StringBuilder(s.Length);
+        bool inWs = false;
+        foreach (var c in s)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!inWs && sb.Length > 0) sb.Append(' ');
+                inWs = true;
+            }
+            else
+            {
+                sb.Append(c);
+                inWs = false;
+            }
+        }
+        return sb.ToString();
     }
 
     private static void EmitParagraph(Element el, RenderContext ctx)
@@ -388,20 +516,35 @@ public static class MarkdownFormatter
         {
             case "strong":
             case "b":
-                sb.Append("**");
-                EmitInlineChildren(e, ctx, sb);
-                sb.Append("**");
+                {
+                    // Collect first; an empty wrapper would emit a
+                    // stray "**" run that breaks downstream parsers.
+                    var inner = new StringBuilder();
+                    EmitInlineChildren(e, ctx, inner);
+                    if (inner.Length == 0) return;
+                    sb.Append("**").Append(inner).Append("**");
+                }
                 return;
 
             case "em":
             case "i":
-                sb.Append('*');
-                EmitInlineChildren(e, ctx, sb);
-                sb.Append('*');
+                {
+                    // Empty <i> elements are typically icon-font
+                    // glyphs (Font Awesome <i class="fa-...">) — skip
+                    // entirely rather than emit stray "*" markers.
+                    var inner = new StringBuilder();
+                    EmitInlineChildren(e, ctx, inner);
+                    if (inner.Length == 0) return;
+                    sb.Append('*').Append(inner).Append('*');
+                }
                 return;
 
             case "code":
-                sb.Append('`').Append(e.TextContent).Append('`');
+                {
+                    var content = e.TextContent;
+                    if (content.Length == 0) return;
+                    sb.Append('`').Append(content).Append('`');
+                }
                 return;
 
             case "a":
