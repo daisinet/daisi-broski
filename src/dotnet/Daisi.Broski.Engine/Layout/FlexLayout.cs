@@ -49,8 +49,12 @@ internal static class FlexLayout
         var direction = ParseDirection(style.GetPropertyValue("flex-direction"));
         var justify = ParseJustify(style.GetPropertyValue("justify-content"));
         var alignItems = ParseAlign(style.GetPropertyValue("align-items"));
+        bool wrap = ParseFlexWrap(style.GetPropertyValue("flex-wrap"));
         double gap = Length.Parse(style.GetPropertyValue("gap"))
             .Resolve(container.Width, fontSize, rootFontSize);
+        double rowGap = Length.Parse(style.GetPropertyValue("row-gap"))
+            .Resolve(container.Height, fontSize, rootFontSize);
+        if (rowGap <= 0) rowGap = gap;
         bool isRow = direction is FlexDirection.Row or FlexDirection.RowReverse;
         bool reverse = direction is FlexDirection.RowReverse or FlexDirection.ColumnReverse;
 
@@ -295,74 +299,123 @@ internal static class FlexLayout
                 }
         }
 
+        // With flex-wrap: wrap, items that would exceed the
+        // container's main size move to a new line. We keep a
+        // running cross-axis offset (startMainCross) that
+        // advances by the tallest item on each line so the
+        // next line sits below. Without wrap the code path
+        // collapses to a single line and matches the prior
+        // behavior.
         double cursor = startMain;
+        double lineCrossOffset = 0;     // y (row) / x (column) top of current line
+        double lineMaxCross = 0;        // max outer cross size in current line
+        int lineStartIndex = 0;
+        double[] itemCrossOffsets = new double[items.Count];
+        int[] itemLineIndex = new int[items.Count];
+        var lineCrossHeights = new List<double> { 0 };
         for (int i = 0; i < items.Count; i++)
         {
             var it = items[i];
+            double itemOuter = OuterMainOf(it.Box, isRow);
+            double itemCross = OuterCrossOf(it.Box, isRow);
+
+            // Wrap check: if this item won't fit on the
+            // current line AND wrap is enabled AND the line
+            // already has at least one item, start a new line.
+            if (wrap && i > lineStartIndex
+                && cursor + itemOuter > startMain + containerMain + 0.5)
+            {
+                // Finalize current line: advance cross offset.
+                lineCrossHeights[^1] = lineMaxCross;
+                lineCrossOffset += lineMaxCross + rowGap;
+                lineMaxCross = 0;
+                cursor = startMain;
+                lineStartIndex = i;
+                lineCrossHeights.Add(0);
+            }
+
             if (autoStart[i]) cursor += perAutoMargin;
             double mainPos = isRow
                 ? container.X + cursor + it.Box.Margin.Left + it.Box.Border.Left + it.Box.Padding.Left
                 : container.Y + cursor + it.Box.Margin.Top + it.Box.Border.Top + it.Box.Padding.Top;
             if (isRow) it.Box.X = mainPos;
             else it.Box.Y = mainPos;
-            cursor += OuterMainOf(it.Box, isRow) + mainBetween;
+            itemCrossOffsets[i] = lineCrossOffset;
+            itemLineIndex[i] = lineCrossHeights.Count - 1;
+            cursor += itemOuter + mainBetween;
             if (autoEnd[i]) cursor += perAutoMargin;
+            if (itemCross > lineMaxCross) lineMaxCross = itemCross;
         }
+        // Last line's max.
+        lineCrossHeights[^1] = lineMaxCross;
 
-        // 5) Position items along the cross axis. For
-        // auto-sized containers with align-items: center or
-        // end, we need the effective cross size (the max
-        // outer-cross of all items) instead of the declared
-        // container cross (which is 0 until step 6). Without
-        // this clamp, a .row with auto height and
-        // align-items:center computes crossOffset =
-        // (0 - itemCross)/2 = -itemCross/2, lifting every
-        // item above the viewport.
-        double effectiveCross = containerCross;
-        if (effectiveCross <= 0)
+        // 5) Position items along the cross axis. With
+        // flex-wrap, each line has its own effective cross
+        // size and origin; single-line flex collapses to the
+        // previous behavior (lineCrossHeights has 1 entry).
+        // For single-line auto-cross containers (common for
+        // Bootstrap .row with height:auto), we clamp to the
+        // max outer-cross of all items so align-items:center
+        // doesn't push items above the viewport.
+        double singleLineEffectiveCross = containerCross;
+        if (lineCrossHeights.Count == 1 && singleLineEffectiveCross <= 0)
         {
-            foreach (var it in items)
-            {
-                double ocr = OuterCrossOf(it.Box, isRow);
-                if (ocr > effectiveCross) effectiveCross = ocr;
-            }
+            singleLineEffectiveCross = lineCrossHeights[0];
         }
-        foreach (var it in items)
+        for (int i = 0; i < items.Count; i++)
         {
+            var it = items[i];
             double itemCross = OuterCrossOf(it.Box, isRow);
+            int lineIdx = itemLineIndex[i];
+            double lineHeight = lineCrossHeights[lineIdx];
+            double lineOrigin = itemCrossOffsets[i];
+            double effCross = wrap ? lineHeight : singleLineEffectiveCross;
             double crossOffset = alignItems switch
             {
-                FlexAlign.Center => (effectiveCross - itemCross) / 2,
-                FlexAlign.End => effectiveCross - itemCross,
+                FlexAlign.Center => (effCross - itemCross) / 2,
+                FlexAlign.End => effCross - itemCross,
                 _ => 0,
             };
             if (isRow)
             {
-                it.Box.Y = container.Y + crossOffset
+                it.Box.Y = container.Y + lineOrigin + crossOffset
                     + it.Box.Margin.Top + it.Box.Border.Top + it.Box.Padding.Top;
             }
             else
             {
-                it.Box.X = container.X + crossOffset
+                it.Box.X = container.X + lineOrigin + crossOffset
                     + it.Box.Margin.Left + it.Box.Border.Left + it.Box.Padding.Left;
             }
         }
 
-        // 6) Container's own auto-height (in row mode) or
-        // auto-width (column) — fits the tallest / widest
-        // item in the cross direction.
-        double maxCross = 0;
-        foreach (var it in items)
+        // 6) Container's own auto-height (row) or auto-width
+        // (column). With wrap, that's the sum of all line
+        // heights plus row-gaps; without wrap, just the max.
+        double totalCross;
+        if (wrap)
         {
-            maxCross = Math.Max(maxCross, OuterCrossOf(it.Box, isRow));
-        }
-        if (isRow)
-        {
-            container.Height = Math.Max(container.Height, maxCross);
+            totalCross = 0;
+            for (int li = 0; li < lineCrossHeights.Count; li++)
+            {
+                totalCross += lineCrossHeights[li];
+                if (li > 0) totalCross += rowGap;
+            }
         }
         else
         {
-            container.Width = Math.Max(container.Width, maxCross);
+            totalCross = 0;
+            foreach (var it in items)
+            {
+                totalCross = Math.Max(totalCross, OuterCrossOf(it.Box, isRow));
+            }
+        }
+        if (isRow)
+        {
+            container.Height = Math.Max(container.Height, totalCross);
+        }
+        else
+        {
+            container.Width = Math.Max(container.Width, totalCross);
         }
 
         // 7) Translate each item's descendants to follow the
@@ -659,6 +712,17 @@ internal static class FlexLayout
         "stretch" => FlexAlign.Stretch,
         "" => FlexAlign.Stretch, // CSS default
         _ => FlexAlign.Start,
+    };
+
+    /// <summary>True when <c>flex-wrap</c> allows items to
+    /// wrap to multiple lines. <c>nowrap</c> (the default)
+    /// means items overflow the container's main axis as a
+    /// single line; <c>wrap</c> / <c>wrap-reverse</c> break
+    /// to new lines when the main size is exceeded.</summary>
+    private static bool ParseFlexWrap(string s) => s?.Trim().ToLowerInvariant() switch
+    {
+        "wrap" or "wrap-reverse" => true,
+        _ => false,
     };
 
     private sealed class FlexItem
