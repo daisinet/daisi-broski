@@ -320,7 +320,7 @@ public static class Painter
             int contentWidth = (int)Math.Round(box.Width);
             if (contentWidth < 1) return;
             bool bold = ParseWeight(style.GetPropertyValue("font-weight")) >= 600;
-            var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize);
+            var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize, bold);
             var align = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
             double yBase = box.Y;
             for (int i = 0; i < linesVector.Count; i++)
@@ -412,16 +412,26 @@ public static class Painter
     /// the rasterizer will actually emit. Hard-breaks words
     /// longer than the line (same behavior as WrapText).</summary>
     private static List<string> WrapTextByMeasure(
-        string text, int maxPixels, Daisi.Broski.Engine.Fonts.TtfReader font, double pixelSize)
+        string text, int maxPixels, Daisi.Broski.Engine.Fonts.TtfReader font, double pixelSize) =>
+        WrapTextByMeasure(text, maxPixels, font, pixelSize, bold: false);
+
+    /// <summary>Word-wrap text at <paramref name="maxPixels"/>
+    /// using the real font's advance widths. When
+    /// <paramref name="bold"/> is true the bold-synthesis
+    /// offset is factored in so wrap decisions match the
+    /// thicker strokes the painter will stamp.</summary>
+    private static List<string> WrapTextByMeasure(
+        string text, int maxPixels, Daisi.Broski.Engine.Fonts.TtfReader font,
+        double pixelSize, bool bold)
     {
         var lines = new List<string>();
         if (maxPixels <= 0) return lines;
         var current = new System.Text.StringBuilder();
         double currentW = 0;
-        double spaceW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, " ", pixelSize);
+        double spaceW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, " ", pixelSize, bold);
         foreach (var word in text.Split(' '))
         {
-            double wordW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, word, pixelSize);
+            double wordW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, word, pixelSize, bold);
             if (current.Length == 0)
             {
                 current.Append(word);

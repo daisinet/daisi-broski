@@ -550,16 +550,43 @@ internal static class FlexLayout
 
         if (isRow)
         {
-            // Use intrinsic text/image width when the item
-            // has laid-out content; fall back to box.Width
-            // (PrepareBox's parent-fill) when nothing else is
-            // available so the item at least spans something.
+            // Use intrinsic text/image width when the item has
+            // laid-out content. Honor webfont metrics +
+            // text-transform + bold-synthesis so the measured
+            // size matches what the painter renders (prevents
+            // buttons with 'text-uppercase' shrinking below
+            // their actual rendered text width).
             int cellW = Daisi.Broski.Engine.Paint.BitmapFont.CellWidth
                 * Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
-            double intrinsic = MeasureIntrinsicMainSize(itemElement, cellW);
+            var doc = itemElement.OwnerDocument;
+            var webFont = doc is not null
+                ? Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
+                    doc, itemStyle.GetPropertyValue("font-family") ?? "",
+                    ParseWeightValue(itemStyle.GetPropertyValue("font-weight")),
+                    itemStyle.GetPropertyValue("font-style") ?? "normal", 'A')
+                : null;
+            var tt = (itemStyle.GetPropertyValue("text-transform") ?? "none")
+                .Trim().ToLowerInvariant();
+            bool bold = ParseWeightValue(itemStyle.GetPropertyValue("font-weight")) >= 600;
+            double intrinsic = MeasureIntrinsicMainSize(
+                itemElement, cellW, webFont, fontSize, tt, bold);
             if (intrinsic > 0) return Math.Min(intrinsic, container.Width);
         }
         return 0;
+    }
+
+    private static int ParseWeightValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 400;
+        var t = value.Trim().ToLowerInvariant();
+        return t switch
+        {
+            "normal" => 400,
+            "bold" => 700,
+            "lighter" => 300,
+            "bolder" => 700,
+            _ => int.TryParse(t, out var n) ? n : 400,
+        };
     }
 
     /// <summary>Best-effort intrinsic width: sum of descendant
@@ -567,7 +594,13 @@ internal static class FlexLayout
     /// descendants. Good enough to keep "navbar with a few
     /// text links" from collapsing; doesn't need the full
     /// min/max-content machinery the spec describes.</summary>
-    private static double MeasureIntrinsicMainSize(Element element, int cellWidth)
+    private static double MeasureIntrinsicMainSize(Element element, int cellWidth) =>
+        MeasureIntrinsicMainSize(element, cellWidth, null, 0, "none", false);
+
+    private static double MeasureIntrinsicMainSize(
+        Element element, int cellWidth,
+        Daisi.Broski.Engine.Fonts.TtfReader? font, double fontSize,
+        string textTransform, bool bold)
     {
         double total = 0;
         foreach (var child in element.ChildNodes)
@@ -576,24 +609,35 @@ internal static class FlexLayout
             {
                 case Daisi.Broski.Engine.Dom.Text t:
                     {
-                        int chars = 0;
+                        var sb = new System.Text.StringBuilder();
                         bool prevWs = true;
                         foreach (var c in t.Data)
                         {
                             bool ws = char.IsWhiteSpace(c);
                             if (ws && prevWs) continue;
-                            chars++;
+                            sb.Append(ws ? ' ' : c);
                             prevWs = ws;
                         }
-                        total += chars * cellWidth;
+                        var txt = sb.ToString();
+                        txt = textTransform switch
+                        {
+                            "uppercase" => txt.ToUpperInvariant(),
+                            "lowercase" => txt.ToLowerInvariant(),
+                            _ => txt,
+                        };
+                        if (font is not null && fontSize > 0)
+                        {
+                            total += Daisi.Broski.Engine.Fonts.GlyphRasterizer
+                                .MeasureText(font, txt, fontSize, bold);
+                        }
+                        else
+                        {
+                            total += txt.Length * cellWidth;
+                        }
                         break;
                     }
                 case Element e:
                     {
-                        // Explicit width on a descendant wins
-                        // over recursing for its text: an img
-                        // with width="120" contributes 120 even
-                        // though the img has no text children.
                         var w = e.GetAttribute("width");
                         if (!string.IsNullOrEmpty(w)
                             && double.TryParse(w,
@@ -605,7 +649,8 @@ internal static class FlexLayout
                         }
                         else
                         {
-                            total += MeasureIntrinsicMainSize(e, cellWidth);
+                            total += MeasureIntrinsicMainSize(
+                                e, cellWidth, font, fontSize, textTransform, bold);
                         }
                         break;
                     }

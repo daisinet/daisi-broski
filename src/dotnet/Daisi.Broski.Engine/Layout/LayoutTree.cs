@@ -341,7 +341,13 @@ public static class LayoutTree
             // stacks on top, clipping the rendered letters.
             if (box.Height < 0.5)
             {
-                double textH = MeasureDirectTextHeight(element, box.Width, fontSize);
+                // Measure with the element's resolved font
+                // (not the bitmap approximation) so boxes
+                // sized to 1 line of text don't round up to 2
+                // lines' worth of vertical space.
+                var elStyle = resolver.Resolve(element);
+                double textH = MeasureDirectTextHeight(
+                    element, box.Width, fontSize, elStyle);
                 if (textH > 0) box.Height = textH;
             }
         }
@@ -378,20 +384,78 @@ public static class LayoutTree
     /// <c>&lt;h1&gt;TITLE&lt;/h1&gt;</c>) reserve the right
     /// amount of height for their content.</summary>
     private static double MeasureDirectTextHeight(
-        Element element, double contentWidth, double fontSize)
+        Element element, double contentWidth, double fontSize,
+        Daisi.Broski.Engine.Css.ComputedStyle? style = null)
     {
-        int charCount = 0;
+        var sb = new System.Text.StringBuilder();
         foreach (var c in element.ChildNodes)
         {
-            if (c is Daisi.Broski.Engine.Dom.Text t) charCount += t.Data.Trim().Length;
+            if (c is Daisi.Broski.Engine.Dom.Text t) sb.Append(t.Data);
         }
-        if (charCount == 0) return 0;
-        int scale = Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
-        int cellW = Daisi.Broski.Engine.Paint.BitmapFont.CellWidth * scale;
-        int maxChars = Math.Max(1, (int)(contentWidth / cellW));
-        int lines = Math.Max(1, (int)Math.Ceiling(charCount / (double)maxChars));
+        var raw = sb.ToString().Trim();
+        if (raw.Length == 0) return 0;
+
+        // Resolve webfont + text-transform + bold so layout's
+        // line-count prediction agrees with how the painter
+        // will actually wrap — otherwise the bitmap estimate
+        // over-counts lines (DM Sans is narrower than our
+        // bitmap cellWidth) and reserves too much vertical
+        // space, leaving big gaps below single-line text.
+        var doc = element.OwnerDocument;
+        Daisi.Broski.Engine.Fonts.TtfReader? webFont = null;
+        string transform = "none";
+        bool bold = false;
+        if (style is not null && doc is not null)
+        {
+            var family = style.GetPropertyValue("font-family") ?? "";
+            int weight = ParseWeightInt(style.GetPropertyValue("font-weight"));
+            var styleKw = style.GetPropertyValue("font-style");
+            if (string.IsNullOrEmpty(styleKw)) styleKw = "normal";
+            webFont = Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
+                doc, family, weight, styleKw, 'A');
+            transform = (style.GetPropertyValue("text-transform") ?? "none")
+                .Trim().ToLowerInvariant();
+            bold = weight >= 600;
+        }
+
+        var text = transform switch
+        {
+            "uppercase" => raw.ToUpperInvariant(),
+            "lowercase" => raw.ToLowerInvariant(),
+            _ => raw,
+        };
+
+        double textWidth;
+        if (webFont is not null)
+        {
+            textWidth = Daisi.Broski.Engine.Fonts.GlyphRasterizer
+                .MeasureText(webFont, text, fontSize, bold);
+        }
+        else
+        {
+            int scale = Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
+            textWidth = text.Length * Daisi.Broski.Engine.Paint.BitmapFont.CellWidth * scale;
+        }
+
+        int lines = textWidth <= contentWidth
+            ? 1
+            : Math.Max(1, (int)Math.Ceiling(textWidth / contentWidth));
         double lineAdvance = fontSize * 1.2;
         return lines * lineAdvance;
+    }
+
+    private static int ParseWeightInt(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 400;
+        var t = value.Trim().ToLowerInvariant();
+        return t switch
+        {
+            "normal" => 400,
+            "bold" => 700,
+            "lighter" => 300,
+            "bolder" => 700,
+            _ => int.TryParse(t, out var n) ? n : 400,
+        };
     }
 
     /// <summary>For an inline <c>&lt;svg&gt;</c> with no CSS
