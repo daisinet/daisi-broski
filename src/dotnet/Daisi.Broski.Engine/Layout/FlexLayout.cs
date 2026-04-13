@@ -96,6 +96,11 @@ internal static class FlexLayout
             items.Add(new FlexItem
             {
                 Box = box,
+                Element = childEl,
+                FontSize = itemFontSize,
+                RootFontSize = itemRootFs,
+                DeclaredHeight = itemDeclaredHeight,
+                OriginalMain = isRow ? box.Width : box.Height,
                 Grow = grow,
                 Shrink = shrink,
                 Basis = basis,
@@ -142,10 +147,30 @@ internal static class FlexLayout
         }
 
         // Apply the resolved main size back onto each box.
+        // Descendants were laid out in step 1 with the box's
+        // stale (parent-fill) width — if the flex algorithm
+        // shrunk or grew the main dimension, the subtree has
+        // to be rebuilt so internal percentage widths, inline
+        // wrapping, and block-flow heights see the real width.
+        // Without this, a flex-grow item that ended up smaller
+        // than its parent ends up with descendants overflowing
+        // its bounds (and a whole "Bootstrap .row wider than
+        // its .container" chain of bugs on real pages).
         foreach (var it in items)
         {
-            if (isRow) it.Box.Width = it.MainSize;
-            else it.Box.Height = it.MainSize;
+            double newMain = it.MainSize;
+            double oldMain = isRow ? it.Box.Width : it.Box.Height;
+            if (isRow) it.Box.Width = newMain;
+            else it.Box.Height = newMain;
+            if (isRow && Math.Abs(newMain - it.OriginalMain) > 0.5)
+            {
+                it.Box.Children.Clear();
+                it.Box.Height = 0;
+                LayoutTree.LayChildrenAndResolveHeight(
+                    it.Box, it.Element, resolver, viewport,
+                    it.FontSize, it.RootFontSize, it.DeclaredHeight,
+                    container.Height);
+            }
         }
 
         // 3) Cross-axis sizing: align-items: stretch enlarges
@@ -531,6 +556,15 @@ internal static class FlexLayout
     private sealed class FlexItem
     {
         public LayoutBox Box = null!;
+        public Element Element = null!;
+        public double FontSize;
+        public double RootFontSize;
+        public Length DeclaredHeight;
+        /// <summary>Main-axis size assigned by PrepareBox before
+        /// flex distribution. Tracked so step 2 can detect when
+        /// the final resolved size differs and re-run the child
+        /// layout with the correct parent width.</summary>
+        public double OriginalMain;
         public double Grow;
         public double Shrink;
         public double Basis;

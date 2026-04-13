@@ -240,12 +240,46 @@ public static class LayoutTree
         {
             // box.Height was being mutated by child layouts
             // as we accumulated them — that's our content
-            // height. If no children at all, keep zero.
+            // height. If no children at all, keep zero
+            // unless the element has direct text children.
+            // Without this, a <p>Hello</p> with no element
+            // children gets box.Height=0 and the next sibling
+            // stacks on top, clipping the rendered letters.
+            if (box.Height < 0.5)
+            {
+                double textH = MeasureDirectTextHeight(element, box.Width, fontSize);
+                if (textH > 0) box.Height = textH;
+            }
         }
         else
         {
             box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
         }
+    }
+
+    /// <summary>Measure the vertical space needed to paint
+    /// the element's direct <see cref="Text"/> children at
+    /// the given <paramref name="fontSize"/>, word-wrapped to
+    /// <paramref name="contentWidth"/>. Mirrors the painter's
+    /// wrap + line-height math so block elements that only
+    /// contain text (a <c>&lt;p&gt;Hello&lt;/p&gt;</c>, a
+    /// <c>&lt;h1&gt;TITLE&lt;/h1&gt;</c>) reserve the right
+    /// amount of height for their content.</summary>
+    private static double MeasureDirectTextHeight(
+        Element element, double contentWidth, double fontSize)
+    {
+        int charCount = 0;
+        foreach (var c in element.ChildNodes)
+        {
+            if (c is Daisi.Broski.Engine.Dom.Text t) charCount += t.Data.Trim().Length;
+        }
+        if (charCount == 0) return 0;
+        int scale = Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
+        int cellW = Daisi.Broski.Engine.Paint.BitmapFont.CellWidth * scale;
+        int maxChars = Math.Max(1, (int)(contentWidth / cellW));
+        int lines = Math.Max(1, (int)Math.Ceiling(charCount / (double)maxChars));
+        double lineAdvance = fontSize * 1.2;
+        return lines * lineAdvance;
     }
 
     /// <summary>For an inline <c>&lt;svg&gt;</c> with no CSS
