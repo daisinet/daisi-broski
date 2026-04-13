@@ -45,6 +45,8 @@ public static class PngDecoder
             int width = 0, height = 0;
             byte bitDepth = 0, colorType = 0;
             byte interlace = 0;
+            byte[]? palette = null;
+            byte[]? palAlpha = null;
             using var idatStream = new MemoryStream();
 
             while (p + 8 <= data.Length)
@@ -60,9 +62,17 @@ public static class PngDecoder
                     height = ReadU32(data, p + 4);
                     bitDepth = data[p + 8];
                     colorType = data[p + 9];
-                    // data[p+10] = compression (must be 0)
-                    // data[p+11] = filter method (must be 0)
                     interlace = data[p + 12];
+                }
+                else if (type == "PLTE")
+                {
+                    palette = new byte[len];
+                    Buffer.BlockCopy(data, p, palette, 0, len);
+                }
+                else if (type == "tRNS")
+                {
+                    palAlpha = new byte[len];
+                    Buffer.BlockCopy(data, p, palAlpha, 0, len);
                 }
                 else if (type == "IDAT")
                 {
@@ -72,20 +82,38 @@ public static class PngDecoder
                 {
                     break;
                 }
-                p += len + 4; // payload + CRC (we trust it; mismatched CRC just means corruption)
+                p += len + 4;
             }
 
             if (width <= 0 || height <= 0) return null;
-            if (bitDepth != 8) return null;
-            if (colorType != 2 && colorType != 6) return null;
             if (interlace != 0) return null;
+            // Supported color types:
+            //   0 — grayscale (bit depth 8 only for v1)
+            //   2 — truecolor RGB (bit depth 8)
+            //   3 — indexed palette (bit depth 1/2/4/8)
+            //   4 — grayscale + alpha (bit depth 8)
+            //   6 — truecolor RGB + alpha (bit depth 8)
+            int channels;
+            switch (colorType)
+            {
+                case 0: channels = 1; break; // gray
+                case 2: channels = 3; break; // RGB
+                case 3: channels = 1; break; // palette index
+                case 4: channels = 2; break; // gray+alpha
+                case 6: channels = 4; break; // RGBA
+                default: return null;
+            }
+            if (colorType != 3 && bitDepth != 8) return null;
+            if (colorType == 3 && bitDepth > 8) return null;
 
-            int channels = colorType == 6 ? 4 : 3;
-            int stride = width * channels;
-            int totalRaw = (stride + 1) * height; // +1 filter byte per row
+            // Palette PNGs can pack multiple pixels per byte
+            // for bit depths 1 / 2 / 4. Compute the raw
+            // scanline size in bits → bytes (rounded up).
+            int bitsPerPixel = colorType == 3 ? bitDepth : channels * 8;
+            int rowBits = width * bitsPerPixel;
+            int stride = (rowBits + 7) / 8;
+            int totalRaw = (stride + 1) * height;
 
-            // Inflate IDAT (zlib-wrapped DEFLATE) into the
-            // raw filtered scanline bytes.
             var raw = new byte[totalRaw];
             idatStream.Position = 0;
             using (var z = new ZLibStream(idatStream, CompressionMode.Decompress, leaveOpen: true))
@@ -100,23 +128,33 @@ public static class PngDecoder
                 if (read < totalRaw) return null;
             }
 
-            return Unfilter(raw, width, height, channels);
+            return Unfilter(raw, width, height, colorType, bitDepth, channels,
+                stride, palette, palAlpha);
         }
         catch
         {
-            // Decoder errors (truncated IDAT, bad zlib, etc.)
-            // surface as null rather than propagating —
-            // a broken image shouldn't abort the render.
             return null;
         }
     }
 
-    /// <summary>Apply PNG row filters in reverse and pack
-    /// into a <see cref="RasterBuffer"/> (RGBA8888). For
-    /// truecolor (RGB) inputs, alpha is set to 255.</summary>
-    private static RasterBuffer Unfilter(byte[] raw, int width, int height, int channels)
+    /// <summary>Apply PNG row filters in reverse and expand
+    /// the scanline into RGBA8888 in the output buffer. The
+    /// filter byte distance is the pixel's byte stride for
+    /// 8-bit formats; for sub-byte palette PNGs (1/2/4 bit
+    /// depths) the spec says filtering uses 1 byte
+    /// regardless.</summary>
+    private static RasterBuffer? Unfilter(
+        byte[] raw, int width, int height,
+        int colorType, int bitDepth, int channels, int stride,
+        byte[]? palette, byte[]? palAlpha)
     {
-        int stride = width * channels;
+        // bpp for the filter's "left" distance — spec §9.2:
+        // "bytes per pixel", rounded up, with sub-byte formats
+        // using 1.
+        int filterBpp = (colorType == 3 || bitDepth < 8)
+            ? 1
+            : channels * (bitDepth / 8);
+
         var prev = new byte[stride];
         var current = new byte[stride];
         var buffer = new RasterBuffer(width, height);
@@ -125,69 +163,128 @@ public static class PngDecoder
         for (int row = 0; row < height; row++)
         {
             byte filter = raw[p++];
-            // Each row starts with the filter byte, then
-            // `stride` bytes of filtered pixel data.
             switch (filter)
             {
-                case 0: // None
+                case 0:
                     Buffer.BlockCopy(raw, p, current, 0, stride);
                     break;
-                case 1: // Sub
+                case 1:
                     for (int i = 0; i < stride; i++)
                     {
-                        byte left = i >= channels ? current[i - channels] : (byte)0;
+                        byte left = i >= filterBpp ? current[i - filterBpp] : (byte)0;
                         current[i] = (byte)(raw[p + i] + left);
                     }
                     break;
-                case 2: // Up
+                case 2:
                     for (int i = 0; i < stride; i++)
                     {
                         current[i] = (byte)(raw[p + i] + prev[i]);
                     }
                     break;
-                case 3: // Average
+                case 3:
                     for (int i = 0; i < stride; i++)
                     {
-                        byte left = i >= channels ? current[i - channels] : (byte)0;
+                        byte left = i >= filterBpp ? current[i - filterBpp] : (byte)0;
                         byte up = prev[i];
                         current[i] = (byte)(raw[p + i] + ((left + up) >> 1));
                     }
                     break;
-                case 4: // Paeth
+                case 4:
                     for (int i = 0; i < stride; i++)
                     {
-                        byte left = i >= channels ? current[i - channels] : (byte)0;
+                        byte left = i >= filterBpp ? current[i - filterBpp] : (byte)0;
                         byte up = prev[i];
-                        byte upLeft = i >= channels ? prev[i - channels] : (byte)0;
+                        byte upLeft = i >= filterBpp ? prev[i - filterBpp] : (byte)0;
                         current[i] = (byte)(raw[p + i] + PaethPredictor(left, up, upLeft));
                     }
                     break;
                 default:
-                    return buffer; // unknown filter — bail
+                    return null;
             }
             p += stride;
 
-            // Pack into RGBA in the output buffer.
             int outOffset = row * width * 4;
-            if (channels == 4)
-            {
-                Buffer.BlockCopy(current, 0, buffer.Pixels, outOffset, stride);
-            }
-            else // RGB → RGBA
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    int src = x * 3;
-                    int dst = outOffset + x * 4;
-                    buffer.Pixels[dst] = current[src];
-                    buffer.Pixels[dst + 1] = current[src + 1];
-                    buffer.Pixels[dst + 2] = current[src + 2];
-                    buffer.Pixels[dst + 3] = 255;
-                }
-            }
+            ExpandToRgba(current, colorType, bitDepth, width, palette, palAlpha,
+                buffer.Pixels, outOffset);
             (prev, current) = (current, prev);
         }
         return buffer;
+    }
+
+    private static void ExpandToRgba(
+        byte[] current, int colorType, int bitDepth, int width,
+        byte[]? palette, byte[]? palAlpha,
+        byte[] dest, int destOffset)
+    {
+        switch (colorType)
+        {
+            case 0: // grayscale
+                for (int x = 0; x < width; x++)
+                {
+                    byte g = current[x];
+                    int d = destOffset + x * 4;
+                    dest[d] = g;
+                    dest[d + 1] = g;
+                    dest[d + 2] = g;
+                    dest[d + 3] = 255;
+                }
+                return;
+            case 2: // RGB
+                for (int x = 0; x < width; x++)
+                {
+                    int s = x * 3;
+                    int d = destOffset + x * 4;
+                    dest[d] = current[s];
+                    dest[d + 1] = current[s + 1];
+                    dest[d + 2] = current[s + 2];
+                    dest[d + 3] = 255;
+                }
+                return;
+            case 3: // palette
+                if (palette is null) return;
+                for (int x = 0; x < width; x++)
+                {
+                    int idx;
+                    if (bitDepth == 8)
+                    {
+                        idx = current[x];
+                    }
+                    else
+                    {
+                        // Sub-byte packed indexes: most-significant
+                        // bit first per spec §7.2.
+                        int bitOffset = x * bitDepth;
+                        int byteIdx = bitOffset >> 3;
+                        int shift = 8 - bitDepth - (bitOffset & 7);
+                        int mask = (1 << bitDepth) - 1;
+                        idx = (current[byteIdx] >> shift) & mask;
+                    }
+                    int pStart = idx * 3;
+                    if (pStart + 2 >= palette.Length) continue;
+                    int d = destOffset + x * 4;
+                    dest[d] = palette[pStart];
+                    dest[d + 1] = palette[pStart + 1];
+                    dest[d + 2] = palette[pStart + 2];
+                    dest[d + 3] = (palAlpha is not null && idx < palAlpha.Length)
+                        ? palAlpha[idx] : (byte)255;
+                }
+                return;
+            case 4: // grayscale + alpha
+                for (int x = 0; x < width; x++)
+                {
+                    int s = x * 2;
+                    byte g = current[s];
+                    int d = destOffset + x * 4;
+                    dest[d] = g;
+                    dest[d + 1] = g;
+                    dest[d + 2] = g;
+                    dest[d + 3] = current[s + 1];
+                }
+                return;
+            case 6: // RGBA
+                Buffer.BlockCopy(current, 0, dest, destOffset, width * 4);
+                return;
+        }
     }
 
     /// <summary>The Paeth predictor from PNG spec §9.4.</summary>

@@ -891,6 +891,8 @@ public static class Program
                 foreach (var fam in page.Document.Fonts.Values) fontFiles += fam.Count;
                 Console.Out.WriteLine($"fonts: {page.Document.Fonts.Count} families, "
                     + $"{fontFiles} files");
+                int bgImageCount = page.Document.BackgroundImages?.Count ?? 0;
+                Console.Out.WriteLine($"bg-images: {bgImageCount} attached");
                 foreach (var (family, files) in page.Document.Fonts)
                 {
                     long bytes = 0;
