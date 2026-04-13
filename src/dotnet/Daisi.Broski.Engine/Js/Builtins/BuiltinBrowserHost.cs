@@ -233,29 +233,11 @@ internal static class BuiltinBrowserHost
             return stream;
         });
 
-        // XMLHttpRequest — the legacy XHR API. SolidJS and
-        // other frameworks check for its existence. Install
-        // a stub that accepts open/send calls as no-ops.
-        engine.Globals["XMLHttpRequest"] = new JsFunction("XMLHttpRequest", (t, a) =>
-        {
-            var xhr = new JsObject { Prototype = engine.ObjectPrototype };
-            xhr.Set("readyState", 0.0);
-            xhr.Set("status", 0.0);
-            xhr.Set("responseText", "");
-            xhr.Set("response", "");
-            xhr.Set("onload", JsValue.Null);
-            xhr.Set("onerror", JsValue.Null);
-            xhr.Set("onreadystatechange", JsValue.Null);
-            xhr.SetNonEnumerable("open", new JsFunction("open", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("send", new JsFunction("send", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("setRequestHeader", new JsFunction("setRequestHeader", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("getResponseHeader", new JsFunction("getResponseHeader", (tt, aa) => JsValue.Null));
-            xhr.SetNonEnumerable("getAllResponseHeaders", new JsFunction("getAllResponseHeaders", (tt, aa) => ""));
-            xhr.SetNonEnumerable("abort", new JsFunction("abort", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("addEventListener", new JsFunction("addEventListener", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("removeEventListener", new JsFunction("removeEventListener", (tt, aa) => JsValue.Undefined));
-            return xhr;
-        });
+        // XMLHttpRequest installs as a real implementation
+        // backed by the engine's FetchHandler — the same path
+        // fetch() uses, so XHR shares the cookie jar, redirect
+        // rules, and test-time stubs. See BuiltinXhr.
+        BuiltinXhr.Install(engine);
 
         InstallStorage(engine);
         InstallNavigator(engine);
