@@ -8,7 +8,8 @@
             title="Back to previous page">←</button>
 
     <input class="url" type="text" @bind="_urlInput" @bind:event="oninput"
-           @onkeydown="OnUrlKeyDown" placeholder="Type a URL (https://example.com)..."
+           @onkeydown="OnUrlKeyDown" @ref="_urlInputRef"
+           placeholder="Type a URL (https://example.com)..."
            disabled="@Session.IsLoading" />
 
     <button class="go-btn" @onclick="Go" disabled="@(string.IsNullOrWhiteSpace(_urlInput) || Session.IsLoading)">
@@ -130,6 +131,7 @@ else
     private string _urlInput = "";
     private string _format = "Reader";
     private ElementReference _readerBody;
+    private ElementReference _urlInputRef;
     private DotNetObjectReference<Home>? _selfRef;
     private bool _interceptInstalled;
 
@@ -158,6 +160,26 @@ else
     /// fetch starts.</summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender)
+        {
+            // Install the address-bar select-on-click handler once.
+            // The handler selects everything inside the URL input on
+            // any click — matches Chrome / Firefox / Edge address-bar
+            // behavior so users can paste over the existing URL with
+            // a single click + paste.
+            try
+            {
+                await JS.InvokeVoidAsync("eval",
+                    "window.surferBindAddressBar=window.surferBindAddressBar||function(el){" +
+                    "if(!el||el.dataset.surferAddrBound)return;" +
+                    "el.dataset.surferAddrBound='1';" +
+                    "el.addEventListener('focus',function(){this.select();});" +
+                    "el.addEventListener('click',function(){this.select();});" +
+                    "};");
+                await JS.InvokeVoidAsync("surferBindAddressBar", _urlInputRef);
+            }
+            catch { /* binder is idempotent JS-side; no retry needed */ }
+        }
         if (firstRender && Session.Current is null && !Session.IsLoading)
         {
             await Navigate(HomeUrl);
@@ -214,6 +236,17 @@ else
         // Reader body is rebuilt on every navigation — the interceptor
         // needs to re-attach to the new DOM node.
         _interceptInstalled = false;
+
+        // Keep the address bar synced with whatever URL the session
+        // is on now. Important for back-nav (which doesn't go
+        // through Home.Navigate, so _urlInput would otherwise stick
+        // to the page the user just left) and for post-redirect
+        // updates after a forward nav.
+        if (Session.CurrentRequestUrl is not null)
+        {
+            _urlInput = Session.CurrentRequestUrl;
+        }
+
         InvokeAsync(StateHasChanged);
     }
 
