@@ -58,6 +58,7 @@ public static class HtmlFormatter
         {
             var resolved = EscapeAttr(link.Href);
             sb.Append("<tr><td><a href=\"").Append(resolved)
+              .Append("\" title=\"").Append(resolved)
               .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">");
             var textSb = new StringBuilder();
             AppendEscapedText(link.Text, textSb);
@@ -295,8 +296,15 @@ public static class HtmlFormatter
                         ctx.Output.Append("</span>");
                         return;
                     }
+                    // title="full url" gives the host UI a free
+                    // hover-tooltip showing the resolved target —
+                    // matches the address-bar preview a real
+                    // browser shows on link hover.
+                    var attr = EscapeAttr(resolved);
                     ctx.Output.Append("<a href=\"")
-                        .Append(EscapeAttr(resolved))
+                        .Append(attr)
+                        .Append("\" title=\"")
+                        .Append(attr)
                         .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">");
                     EmitInlineChildren(el, ctx);
                     ctx.Output.Append("</a>");

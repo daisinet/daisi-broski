@@ -585,8 +585,13 @@ public class SkimmerTests
             </article></body></html>
             """);
         var html = HtmlFormatter.Format(article);
-        Assert.Contains("<a href=\"https://example.com/foo\" target=\"_blank\" rel=\"noopener noreferrer\">foo</a>", html);
-        Assert.Contains("<a href=\"https://other.example/x\" target=\"_blank\" rel=\"noopener noreferrer\">x</a>", html);
+        Assert.Contains("href=\"https://example.com/foo\"", html);
+        Assert.Contains("href=\"https://other.example/x\"", html);
+        Assert.Contains("target=\"_blank\"", html);
+        Assert.Contains("rel=\"noopener noreferrer\"", html);
+        // title attribute mirrors the href so the host UI can show
+        // a hover tooltip with the resolved URL.
+        Assert.Contains("title=\"https://example.com/foo\"", html);
     }
 
     [Fact]
