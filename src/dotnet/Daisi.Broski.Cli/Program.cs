@@ -56,6 +56,7 @@ public static class Program
             "fetch" => await FetchCommand(args[1..]),
             "run" => await RunCommand(args[1..]),
             "screenshot" => await ScreenshotCommand(args[1..]),
+            "probe" => ProbePixels.Run(args[1..]),
             _ => UsageError($"Unknown command '{args[0]}'"),
         };
     }
@@ -915,13 +916,20 @@ public static class Program
                 return 0;
             }
 
-            await using var session = BrowserSession.Create();
-            var nav = await session.RunAsync(url, scriptingEnabled: true);
-            Console.Error.WriteLine($"{nav.Status} {nav.FinalUrl} (scripts {nav.ScriptsRan}/{nav.ScriptsTotal})");
-            var shot = await session.ScreenshotAsync(width: width, height: height, wireframe: wireframe);
-            await File.WriteAllBytesAsync(outPath, shot.Png);
-            Console.Out.WriteLine($"wrote {shot.Png.Length} bytes ({shot.Width}x{shot.Height}) → {outPath}");
-            return 0;
+            // In-process screenshot — avoids the sandbox so
+            // Console.Error from engine code surfaces directly.
+            {
+                var page = await Daisi.Broski.Engine.Broski.LoadAsync(url,
+                    new Daisi.Broski.Engine.BroskiOptions { ScriptingEnabled = true });
+                var vp = new Daisi.Broski.Engine.Css.Viewport { Width = width, Height = height };
+                var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(page.Document, vp);
+                var buf = Daisi.Broski.Engine.Paint.Painter.Paint(
+                    root, page.Document, vp, wireframe);
+                var png = Daisi.Broski.Engine.Paint.PngEncoder.Encode(buf);
+                await File.WriteAllBytesAsync(outPath, png);
+                Console.Out.WriteLine($"wrote {png.Length} bytes ({buf.Width}x{buf.Height}) → {outPath}");
+                return 0;
+            }
         }
         catch (Exception ex)
         {

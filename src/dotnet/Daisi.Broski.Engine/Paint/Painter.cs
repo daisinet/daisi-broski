@@ -41,8 +41,45 @@ public static class Painter
         ArgumentNullException.ThrowIfNull(root);
         var buffer = new RasterBuffer(viewport.Width, viewport.Height,
             ResolveCanvasBackground(document, viewport));
-        PaintBox(root, document, viewport, buffer, wireframe);
+
+        // CSS 2.1 §E paint-order summary — within each
+        // stacking context we paint in this order:
+        //   1. Block-level, non-positioned descendants.
+        //   2. Positioned descendants (absolute / fixed / relative
+        //      with z-index), in tree order.
+        //   3. z-index > 0 descendants, sorted ascending.
+        // We implement pass (1) as a tree walk that skips
+        // positioned boxes, then pass (2) as a second walk that
+        // paints only the positioned subtrees collected in a
+        // list — in order, after all in-flow content. Without
+        // this, a fixed-position header gets painted first and
+        // later in-flow siblings (a hero section with a solid
+        // background) overwrite the header's content.
+        var positioned = new List<LayoutBox>();
+        PaintBox(root, document, viewport, buffer, wireframe, positioned);
+        foreach (var p in positioned)
+        {
+            // Paint the positioned subtree fully — descendants
+            // of a positioned box paint in their own stacking
+            // context, so we walk them normally from here.
+            PaintBox(p, document, viewport, buffer, wireframe, positioned: null);
+        }
         return buffer;
+    }
+
+    /// <summary>True when the box's element is out-of-flow
+    /// (<c>position: absolute</c> or <c>fixed</c>). Those
+    /// paint in a deferred pass after in-flow content so
+    /// fixed headers and absolute overlays sit on top of
+    /// their content siblings rather than underneath — the
+    /// CSS painting-order spec's separation of in-flow vs
+    /// positioned descendants.</summary>
+    private static bool IsOutOfFlow(LayoutBox box, Viewport viewport)
+    {
+        if (box.Element is null) return false;
+        var style = StyleResolver.Resolve(box.Element, viewport);
+        var pos = style.GetPropertyValue("position");
+        return pos is "absolute" or "fixed";
     }
 
     private static PaintColor ResolveCanvasBackground(Document document, Viewport viewport)
@@ -65,8 +102,19 @@ public static class Painter
 
     private static void PaintBox(
         LayoutBox box, Document document, Viewport viewport,
-        RasterBuffer buffer, bool wireframe)
+        RasterBuffer buffer, bool wireframe,
+        List<LayoutBox>? positioned)
     {
+        // If we're in the in-flow pass (positioned != null)
+        // and this box is out-of-flow, defer the whole subtree
+        // to pass 2 so it paints on top of in-flow siblings.
+        // In pass 2 (positioned == null) we paint normally.
+        if (positioned is not null && IsOutOfFlow(box, viewport))
+        {
+            positioned.Add(box);
+            return;
+        }
+
         // The root box has no Element (it wraps the
         // viewport). Paint its descendants but skip its own
         // background — we already filled the canvas.
@@ -112,7 +160,7 @@ public static class Painter
         }
         foreach (var child in box.Children)
         {
-            PaintBox(child, document, viewport, buffer, wireframe);
+            PaintBox(child, document, viewport, buffer, wireframe, positioned);
         }
     }
 
@@ -214,6 +262,7 @@ public static class Painter
         // `font-size: 48px` or similar.
         double fontSize = ResolveFontSizePx(style);
         int lineStep;
+
 
         // Prefer a loaded web-font when the element's
         // font-family resolves to one the document fetched.
@@ -496,6 +545,7 @@ public static class Painter
         int ry = (int)Math.Round(rect.Y);
         int rw = (int)Math.Round(rect.Width);
         int rh = (int)Math.Round(rect.Height);
+
 
         // Try background-image first (linear-gradient,
         // url(...), etc.) — when present it stacks over the
