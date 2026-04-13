@@ -1028,14 +1028,106 @@ public static class Painter
         }
 
         var rect = box.BorderBoxRect;
+        int rx = (int)Math.Round(rect.X);
+        int ry = (int)Math.Round(rect.Y);
+        int rw = (int)Math.Round(rect.Width);
+        int rh = (int)Math.Round(rect.Height);
+        int bTop = (int)Math.Round(box.Border.Top);
+        int bRight = (int)Math.Round(box.Border.Right);
+        int bBottom = (int)Math.Round(box.Border.Bottom);
+        int bLeft = (int)Math.Round(box.Border.Left);
+
+        // With border-radius, render the border by overlaying
+        // the colored rounded rect and then clearing the
+        // interior rounded rect. Avoids visually-incorrect
+        // straight strokes on pill-shaped buttons.
+        var radiiTuple = ParseBorderRadius(style, rw, rh, ResolveFontSizePx(style));
+        var radii = (tl: radiiTuple.TopLeft, tr: radiiTuple.TopRight,
+            br: radiiTuple.BottomRight, bl: radiiTuple.BottomLeft);
+        bool rounded = radii.tl != 0 || radii.tr != 0 || radii.br != 0 || radii.bl != 0;
+        if (rounded && bTop > 0 && bTop == bRight && bRight == bBottom && bBottom == bLeft
+            && topColor.Equals(rightColor) && rightColor.Equals(bottomColor)
+            && bottomColor.Equals(leftColor) && !topColor.IsTransparent)
+        {
+            PaintRoundedBorder(buffer, rx, ry, rw, rh,
+                bTop, topColor, radii);
+            return;
+        }
+
         buffer.StrokeRect(
-            (int)Math.Round(rect.X), (int)Math.Round(rect.Y),
-            (int)Math.Round(rect.Width), (int)Math.Round(rect.Height),
-            (int)Math.Round(box.Border.Top),
-            (int)Math.Round(box.Border.Right),
-            (int)Math.Round(box.Border.Bottom),
-            (int)Math.Round(box.Border.Left),
+            rx, ry, rw, rh,
+            bTop, bRight, bBottom, bLeft,
             topColor, rightColor, bottomColor, leftColor);
+    }
+
+    /// <summary>Paint a uniform-width rounded border by
+    /// stamping an outer ring of the border color between the
+    /// outer rounded rect and an inner (deflated) rounded
+    /// rect of the same corner radii. Per-pixel test against
+    /// both masks — inside outer AND outside inner = paint.</summary>
+    private static void PaintRoundedBorder(
+        RasterBuffer buffer, int rx, int ry, int rw, int rh,
+        int width, PaintColor color, (int tl, int tr, int br, int bl) radii)
+    {
+        if (width <= 0 || color.IsTransparent) return;
+        int innerW = rw - 2 * width;
+        int innerH = rh - 2 * width;
+        if (innerW < 0 || innerH < 0)
+        {
+            buffer.FillRoundedRect(rx, ry, rw, rh, color,
+                radii.tl, radii.tr, radii.br, radii.bl);
+            return;
+        }
+        var innerRadii = (
+            tl: Math.Max(0, radii.tl - width),
+            tr: Math.Max(0, radii.tr - width),
+            br: Math.Max(0, radii.br - width),
+            bl: Math.Max(0, radii.bl - width));
+
+        int x0 = Math.Max(0, rx);
+        int y0 = Math.Max(0, ry);
+        int x1 = Math.Min(buffer.Width, rx + rw);
+        int y1 = Math.Min(buffer.Height, ry + rh);
+        bool opaque = color.IsOpaque;
+        double a = color.A / 255.0;
+        double oneMinus = 1 - a;
+        for (int y = y0; y < y1; y++)
+        {
+            int localY = y - ry;
+            for (int x = x0; x < x1; x++)
+            {
+                int localX = x - rx;
+                // Must be inside outer rounded rect.
+                if (!RasterBuffer.PointInRoundedRect(
+                    localX, localY, rw, rh, radii.tl, radii.tr, radii.br, radii.bl)) continue;
+                // And OUTSIDE the inner rect (ring only).
+                int innerLX = localX - width;
+                int innerLY = localY - width;
+                if (innerLX >= 0 && innerLY >= 0
+                    && innerLX < innerW && innerLY < innerH
+                    && RasterBuffer.PointInRoundedRect(innerLX, innerLY,
+                        innerW, innerH, innerRadii.tl, innerRadii.tr,
+                        innerRadii.br, innerRadii.bl))
+                {
+                    continue;
+                }
+                int idx = (y * buffer.Width + x) * 4;
+                if (opaque)
+                {
+                    buffer.Pixels[idx] = color.R;
+                    buffer.Pixels[idx + 1] = color.G;
+                    buffer.Pixels[idx + 2] = color.B;
+                    buffer.Pixels[idx + 3] = 255;
+                }
+                else
+                {
+                    buffer.Pixels[idx] = (byte)(color.R * a + buffer.Pixels[idx] * oneMinus);
+                    buffer.Pixels[idx + 1] = (byte)(color.G * a + buffer.Pixels[idx + 1] * oneMinus);
+                    buffer.Pixels[idx + 2] = (byte)(color.B * a + buffer.Pixels[idx + 2] * oneMinus);
+                    buffer.Pixels[idx + 3] = (byte)Math.Min(255, buffer.Pixels[idx + 3] + color.A * oneMinus);
+                }
+            }
+        }
     }
 
     /// <summary>Compute the fallback border color from the
