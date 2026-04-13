@@ -205,6 +205,8 @@ public static class Painter
         if (style is null) return;
         var color = CssColor.Parse(style.GetPropertyValue("color"));
         if (color.IsTransparent) color = PaintColor.Black;
+        var text = ApplyTextTransform(style, box.TextRun!);
+        if (text.Length == 0) return;
         double fontSize = ResolveFontSizePx(style);
 
         // Same dispatch as PaintTextContent — prefer web font
@@ -218,14 +220,14 @@ public static class Painter
             int lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
             double baseline = box.Y + lineStep * 0.8;
             Daisi.Broski.Engine.Fonts.GlyphRasterizer.DrawText(
-                buffer, webFont, box.X, baseline, box.TextRun, fontSize, color);
+                buffer, webFont, box.X, baseline, text, fontSize, color);
             return;
         }
 
         int scale = BitmapFont.ScaleFor(fontSize);
         BitmapFont.DrawText(buffer,
             (int)Math.Round(box.X), (int)Math.Round(box.Y),
-            box.TextRun, color, scale);
+            text, color, scale);
     }
 
     /// <summary>Rasterize an inline <c>&lt;svg&gt;</c>
@@ -272,6 +274,7 @@ public static class Painter
             }
         }
         text = NormalizeWhitespace(text);
+        text = ApplyTextTransform(style, text);
         if (text.Length == 0) return;
 
         // Resolve CSS font-size and line-height so the bitmap
@@ -477,6 +480,42 @@ public static class Painter
         // through to this when the cascade didn't set it.
         double normal = fontSize * 1.2;
         return Math.Max(glyphHeight, (int)Math.Round(normal));
+    }
+
+    /// <summary>Apply <c>text-transform</c> to the rendered
+    /// string: <c>uppercase</c>, <c>lowercase</c>, and
+    /// <c>capitalize</c> (first letter of each whitespace-
+    /// delimited word). Any other value (including the
+    /// default <c>none</c>) returns the text unchanged.</summary>
+    private static string ApplyTextTransform(ComputedStyle style, string text)
+    {
+        var t = style.GetPropertyValue("text-transform");
+        if (string.IsNullOrEmpty(t)) return text;
+        switch (t.Trim().ToLowerInvariant())
+        {
+            case "uppercase": return text.ToUpperInvariant();
+            case "lowercase": return text.ToLowerInvariant();
+            case "capitalize":
+                {
+                    var sb = new System.Text.StringBuilder(text.Length);
+                    bool nextCap = true;
+                    foreach (var ch in text)
+                    {
+                        if (char.IsWhiteSpace(ch))
+                        {
+                            sb.Append(ch);
+                            nextCap = true;
+                        }
+                        else
+                        {
+                            sb.Append(nextCap ? char.ToUpperInvariant(ch) : ch);
+                            nextCap = false;
+                        }
+                    }
+                    return sb.ToString();
+                }
+            default: return text;
+        }
     }
 
     /// <summary>Collapse runs of whitespace to a single space
