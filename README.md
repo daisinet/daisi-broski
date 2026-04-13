@@ -56,7 +56,39 @@ The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5
 
 **Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
-**Combined test suite: 1648/1648 passing.** Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+### `daisi-broski-skim` — main-content extraction
+
+A second CLI shipped as `Daisi.Broski.Skimmer` runs the full broski pipeline against a URL, picks the most likely article body via a Mozilla-Readability-style scoring pass (text density, link density, semantic landmarks, noise-class penalties), and emits the result as JSON or Markdown:
+
+```
+$ daisi-broski-skim https://en.wikipedia.org/wiki/JavaScript --format md --quiet
+# JavaScript - Wikipedia
+
+on _en.wikipedia.org_ • [source](https://en.wikipedia.org/wiki/JavaScript)
+
+JavaScript (/ˈdʒɑːvəskrɪpt/), often abbreviated as JS, is a programming language...
+
+## History
+
+### Creation at Netscape
+...
+```
+
+```
+$ daisi-broski-skim https://daisi.ai --format json --quiet | head -8
+{
+  "url": "https://daisi.ai/",
+  "title": "DAISI - Distributed AI Systems Inc",
+  "byline": null,
+  "publishedAt": null,
+  "lang": "en",
+  "siteName": "daisi.ai",
+  "description": "DAISI is the fastest and most reliable distributed AI network on the planet.",
+```
+
+The library API is `ContentExtractor.Extract(document, url) → ArticleContent` plus `JsonFormatter.Format(article)` / `MarkdownFormatter.Format(article)`. Run `daisi-broski-skim --help` for the full CLI.
+
+**Combined test suite: 1669/1669 passing.** Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set, and the new **`Daisi.Broski.Skimmer`** main-content extractor + JSON / Markdown formatters). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
@@ -84,6 +116,7 @@ daisi-broski/
 │   ├── Daisi.Broski/                ✅ Host library: JobObject, SandboxLauncher, BrowserSession
 │   ├── Daisi.Broski.Sandbox/        ✅ Child process: SandboxRuntime, IPC dispatch loop
 │   ├── Daisi.Broski.Cli/            ✅ Command-line driver: daisi-broski fetch
+│   ├── Daisi.Broski.Skimmer/        ✅ daisi-broski-skim: article extractor (JSON / Markdown)
 │   ├── Daisi.Broski.slnx            Solution file
 │   └── tests/
 │       └── Daisi.Broski.Engine.Tests/ ✅ xunit.v3: 180 tests across Engine / Ipc / Sandbox / Cli

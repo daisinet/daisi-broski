@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Daisi.Broski.Skimmer</RootNamespace>
+    <AssemblyName>daisi-broski-skim</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />
+  </ItemGroup>
+</Project>
