@@ -137,9 +137,117 @@ public sealed class JsDomDocument : JsDomNode
                     return w;
                 }
                 return JsValue.Null;
+            case "styleSheets":
+                return BuildStyleSheetsList();
         }
         return base.Get(key);
     }
+
+    /// <summary>Build a fresh JS-side StyleSheetList wrapping
+    /// the document's parsed stylesheets. Each entry exposes
+    /// the spec-shaped surface — <c>cssRules</c>, <c>length</c>,
+    /// indexed access — so script code that walks
+    /// <c>document.styleSheets[i].cssRules</c> sees the parsed
+    /// rule structure.</summary>
+    private JsObject BuildStyleSheetsList()
+    {
+        var sheets = _document.StyleSheets;
+        var list = new JsArray { Prototype = Bridge.Engine.ArrayPrototype };
+        foreach (var sheet in sheets)
+        {
+            list.Elements.Add(BuildSheetWrapper(sheet));
+        }
+        return list;
+    }
+
+    private JsObject BuildSheetWrapper(Daisi.Broski.Engine.Css.Stylesheet sheet)
+    {
+        var obj = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        var rules = new JsArray { Prototype = Bridge.Engine.ArrayPrototype };
+        foreach (var rule in sheet.Rules)
+        {
+            rules.Elements.Add(BuildRuleWrapper(rule));
+        }
+        obj.Set("cssRules", rules);
+        obj.Set("rules", rules);
+        obj.Set("length", (double)rules.Elements.Count);
+        obj.Set("href", (object?)sheet.Href?.ToString() ?? JsValue.Null);
+        obj.Set("type", "text/css");
+        obj.Set("disabled", false);
+        return obj;
+    }
+
+    private JsObject BuildRuleWrapper(Daisi.Broski.Engine.Css.Rule rule)
+    {
+        var obj = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        switch (rule)
+        {
+            case Daisi.Broski.Engine.Css.StyleRule sr:
+                obj.Set("type", 1.0); // CSSRule.STYLE_RULE
+                obj.Set("selectorText", sr.SelectorText);
+                obj.Set("cssText", BuildRuleCssText(sr));
+                obj.Set("style", BuildDeclarationBlock(sr.Declarations));
+                break;
+            case Daisi.Broski.Engine.Css.AtRule ar:
+                // AtRule type codes (CSSRule.MEDIA_RULE etc.)
+                // vary by name; map the common ones, fall
+                // through to 0 for unknowns.
+                obj.Set("type", AtRuleTypeCode(ar.Name));
+                obj.Set("name", ar.Name);
+                obj.Set("conditionText", ar.Prelude);
+                if (ar.Rules.Count > 0)
+                {
+                    var nested = new JsArray { Prototype = Bridge.Engine.ArrayPrototype };
+                    foreach (var r in ar.Rules) nested.Elements.Add(BuildRuleWrapper(r));
+                    obj.Set("cssRules", nested);
+                }
+                if (ar.Declarations.Count > 0)
+                {
+                    obj.Set("style", BuildDeclarationBlock(ar.Declarations));
+                }
+                break;
+        }
+        return obj;
+    }
+
+    private JsObject BuildDeclarationBlock(
+        IReadOnlyList<Daisi.Broski.Engine.Css.Declaration> decls)
+    {
+        // Mirror the JsCssStyleDeclaration shape enough for
+        // CSSOM consumers without coupling to that class —
+        // those are inline-style readers tied to a backing
+        // Element. Stylesheet rule declarations don't have a
+        // backing Element so a plain JsObject suffices.
+        var block = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        foreach (var d in decls) block.Set(d.Property, d.Value);
+        block.Set("length", (double)decls.Count);
+        return block;
+    }
+
+    private static string BuildRuleCssText(Daisi.Broski.Engine.Css.StyleRule sr)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append(sr.SelectorText).Append(" { ");
+        foreach (var d in sr.Declarations)
+        {
+            sb.Append(d.Property).Append(": ").Append(d.Value);
+            if (d.Important) sb.Append(" !important");
+            sb.Append("; ");
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    private static double AtRuleTypeCode(string name) => name switch
+    {
+        "media" => 4.0,
+        "font-face" => 5.0,
+        "page" => 6.0,
+        "keyframes" => 7.0,
+        "namespace" => 10.0,
+        "supports" => 12.0,
+        _ => 0.0,
+    };
 
     /// <inheritdoc />
     public override void Set(string key, object? value)

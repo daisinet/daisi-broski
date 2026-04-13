@@ -1,3 +1,5 @@
+using Daisi.Broski.Engine.Css;
+
 namespace Daisi.Broski.Engine.Dom;
 
 /// <summary>
@@ -43,6 +45,45 @@ public sealed class Document : Node
     /// boolean test.</summary>
     internal bool HasMutationObservers =>
         _mutationDispatcher is { RegistrationCount: > 0 };
+
+    /// <summary>Parsed stylesheets attached to this document.
+    /// Populated lazily by <see cref="StyleSheets"/> on first
+    /// access — walks every <c>&lt;style&gt;</c> descendant
+    /// once and caches the result. Calling
+    /// <see cref="InvalidateStyleSheets"/> after a script-side
+    /// mutation forces a re-parse on the next read.</summary>
+    public IReadOnlyList<Stylesheet> StyleSheets
+    {
+        get
+        {
+            if (_styleSheets is null) RecomputeStyleSheets();
+            return _styleSheets!;
+        }
+    }
+    private IReadOnlyList<Stylesheet>? _styleSheets;
+
+    /// <summary>Drop the cached <see cref="StyleSheets"/> so
+    /// the next read re-parses every <c>&lt;style&gt;</c> in
+    /// the tree. Cheap; the cache is per-document and the
+    /// per-style-block parse is itself fast.</summary>
+    public void InvalidateStyleSheets() => _styleSheets = null;
+
+    private void RecomputeStyleSheets()
+    {
+        var list = new List<Stylesheet>();
+        foreach (var el in DescendantElements())
+        {
+            if (el.TagName == "style")
+            {
+                var css = el.TextContent;
+                if (!string.IsNullOrEmpty(css))
+                {
+                    list.Add(CssParser.Parse(css));
+                }
+            }
+        }
+        _styleSheets = list;
+    }
 
     /// <summary>
     /// The root element of the document (typically <c>&lt;html&gt;</c>).

@@ -257,16 +257,11 @@ var links = await session.QuerySelectorAllAsync("a[href]");
 
 ## Phase 6 — Layout, rendering, screenshots
 
-Optional and heavyweight. Only if there's real demand.
+Heavyweight phase, sliced finely because each piece is independently shippable.
 
-- Box model, block/inline flow.
-- Flexbox.
-- Grid.
-- Text layout (line breaking, bidi).
-- Font loading (the one place we probably have to ship bundled fonts or shell out to the OS).
-- Paint → raster buffer.
-- `Screenshot` IPC command returns a PNG.
-- `getBoundingClientRect` and friends return real values.
+- ✅ **Slice 6a: CSS parser + CSSOM (shipped).** New `Daisi.Broski.Engine.Css` namespace with `CssParser`, `Stylesheet`, `Rule` / `StyleRule` / `AtRule` / `Declaration`. Parses the production patterns real sites ship: selector lists, `!important`, comments inline / between declarations / inside values, `@media` / `@keyframes` / `@font-face` / `@supports` / `@import`, `var()` / `url()` / `data:` URIs (parens + quotes scanned atomically so internal punctuation doesn't terminate the value). Reuses the existing `SelectorParser` for the selector half — when a selector fails to parse the rule still surfaces with `SelectorText` populated and `Selectors == null`. `Document.StyleSheets` lazily collects every `<style>` block in the tree; `document.styleSheets` exposes the spec-shaped JS surface (`length`, indexed access, `cssRules`, `selectorText`, `cssText`, `style`, `conditionText` for at-rules). 26 new tests.
+- Slice 6b: cascade + computed style. Selector specificity sort, `!important` precedence, inheritance, var() resolution, `getComputedStyle` returns a real cascade result instead of just the inline declaration set.
+- Slice 6c onward (still planned): box model, block/inline flow, text layout (line breaking, bidi), font loading (the one place we probably have to ship bundled fonts or shell out to the OS), paint → raster buffer, `Screenshot` IPC command returns a PNG, `getBoundingClientRect` and friends return real values.
 
 At this point daisi-broski is a real browser engine, not just a headless DOM runner. It will also be an order of magnitude more code.
 
