@@ -552,6 +552,29 @@ public sealed class HtmlTreeBuilder
     {
         if (data.Length == 0) return;
 
+        // Defensive: if the open-element stack has been drained
+        // (typically after a stray `</body></html>` in malformed
+        // input — seen on linkedin.com/in/* profile pages),
+        // append text to the document body so we don't crash the
+        // host. Matches what real browsers do — late character
+        // data after </body> is reparented to the body.
+        if (_openElements.Count == 0)
+        {
+            var body = _document.Body;
+            if (body is not null)
+            {
+                if (body.LastChild is Text bt)
+                {
+                    bt.AppendData(data);
+                }
+                else
+                {
+                    body.AppendChild(_document.CreateTextNode(data));
+                }
+            }
+            return;
+        }
+
         var parent = CurrentOpenElement;
         if (parent.LastChild is Text t)
         {
