@@ -7,5 +7,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
     <ProjectReference Include="..\Daisi.Broski.Ipc\Daisi.Broski.Ipc.csproj" />
+    <!-- Phase-4 completion: Skim runs the full Skimmer pipeline
+         inside the sandbox so the host never touches untrusted JS. -->
+    <ProjectReference Include="..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
   </ItemGroup>
 </Project>

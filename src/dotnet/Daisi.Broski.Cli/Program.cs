@@ -73,6 +73,7 @@ public static class Program
         string? userAgent = null;
         int maxRedirects = 20;
         bool quiet = false;
+        bool noSandbox = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -95,6 +96,9 @@ public static class Program
                 case "--quiet":
                     quiet = true;
                     break;
+                case "--no-sandbox":
+                    noSandbox = true;
+                    break;
                 default:
                     if (a.StartsWith('-'))
                         return UsageError($"Unknown option '{a}'");
@@ -110,6 +114,22 @@ public static class Program
             (url.Scheme != "http" && url.Scheme != "https"))
         {
             return UsageError($"'{urlArg}' is not an absolute http(s) URL");
+        }
+
+        // Default to the sandboxed path — the JS engine now runs in
+        // the child process, so `run` gets the same kernel-enforced
+        // memory cap / UI lockdown that `fetch` already has.
+        // --no-sandbox keeps the old in-process path, which is the
+        // one with detailed per-script error reporting.
+        bool useSandbox = !noSandbox && OperatingSystem.IsWindows();
+        if (!noSandbox && !OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine(
+                "daisi-broski: sandbox mode is Windows-only; running in-process.");
+        }
+        if (useSandbox && OperatingSystem.IsWindows())
+        {
+            return await RunInSandbox(url, select, userAgent, maxRedirects, quiet);
         }
 
         var options = new HttpFetcherOptions
@@ -596,6 +616,61 @@ public static class Program
         catch (FileNotFoundException ex)
         {
             // Raised by SandboxLauncher when it can't find the child .exe.
+            Console.Error.WriteLine($"sandbox error: {ex.Message}");
+            return 2;
+        }
+    }
+
+    // -------- sandboxed `run` --------
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task<int> RunInSandbox(
+        Uri url, string? select, string? userAgent, int maxRedirects, bool quiet)
+    {
+        try
+        {
+            await using var session = BrowserSession.Create();
+            var resp = await session.RunAsync(
+                url,
+                scriptingEnabled: true,
+                select: select,
+                includeHtml: false,
+                userAgent: userAgent,
+                maxRedirects: maxRedirects);
+
+            if (!quiet)
+            {
+                Console.Error.WriteLine(
+                    $"{resp.Status} {resp.FinalUrl} " +
+                    $"(scripts {resp.ScriptsRan}/{resp.ScriptsTotal}, " +
+                    $"elements {resp.ElementCount})");
+            }
+
+            if (select is not null)
+            {
+                foreach (var m in resp.Matches)
+                {
+                    Console.Out.WriteLine(NormalizeWhitespace(m.TextContent));
+                }
+                if (!quiet)
+                    Console.Error.WriteLine($"{resp.Matches.Count} match(es)");
+                return 0;
+            }
+
+            Console.Out.WriteLine($"title: {resp.Title ?? "(no title)"}");
+            Console.Out.WriteLine(
+                $"scripts:     {resp.ScriptsTotal} total, " +
+                $"{resp.ScriptsRan} ran, {resp.ScriptsErrored} errored");
+            Console.Out.WriteLine($"elements:    {resp.ElementCount}");
+            return 0;
+        }
+        catch (SandboxException ex)
+        {
+            Console.Error.WriteLine($"sandbox error: {ex.Message}");
+            return 2;
+        }
+        catch (FileNotFoundException ex)
+        {
             Console.Error.WriteLine($"sandbox error: {ex.Message}");
             return 2;
         }

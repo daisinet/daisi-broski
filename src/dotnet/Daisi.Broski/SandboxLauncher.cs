@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Daisi.Broski.Win32;
 
 namespace Daisi.Broski;
 
@@ -23,15 +25,15 @@ namespace Daisi.Broski;
 ///      would prevent the child from ever seeing EOF on close.
 ///   6. Assign the child to the Job Object.
 ///
-/// Race window: steps 4 and 6 are not atomic. There is a window
-/// between process creation and job assignment during which the child
-/// runs without the job's memory cap. Architecture.md §5.8 documents a
-/// stricter variant using native <c>CreateProcess(CREATE_SUSPENDED)</c>
-/// that avoids this window entirely. For phase 1 the window is ~a few
-/// milliseconds, during which the child only parses argv and opens its
-/// inherited pipe handles — it does no network or parse work. If the
-/// threat model ever demands strictness, swap this launcher for one
-/// that goes through native CreateProcess.
+/// Atomic launch: <see cref="Launch"/> uses native
+/// <c>CreateProcessW(CREATE_SUSPENDED)</c> so the child is created
+/// with its main thread frozen, assigned to the Job Object while
+/// still suspended, and only then resumed. The window where the
+/// child could execute outside the job's memory cap is zero —
+/// the first user-mode instruction after resume already has the
+/// cap in effect. Phase-4 completion — the previous
+/// <c>Process.Start</c> + <c>AssignProcessToJobObject</c>
+/// sequence left a ~few-millisecond race window.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public static class SandboxLauncher
@@ -58,7 +60,8 @@ public static class SandboxLauncher
 
         AnonymousPipeServerStream? toChild = null;
         AnonymousPipeServerStream? fromChild = null;
-        Process? process = null;
+        ProcessInformation pi = default;
+        bool processCreated = false;
 
         try
         {
@@ -72,44 +75,98 @@ public static class SandboxLauncher
                 PipeDirection.In, HandleInheritability.Inheritable);
             var fromChildClientHandle = fromChild.GetClientHandleAsString();
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = executablePath,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = false,
-                RedirectStandardOutput = false,
-                RedirectStandardError = true,
-            };
-            startInfo.ArgumentList.Add("--in-handle");
-            startInfo.ArgumentList.Add(toChildClientHandle);
-            startInfo.ArgumentList.Add("--out-handle");
-            startInfo.ArgumentList.Add(fromChildClientHandle);
+            // Build the command line for native CreateProcess. The
+            // first token is the program name (quoted if it contains
+            // spaces — paths into Program Files typically do).
+            string cmdLine =
+                QuoteIfNeeded(executablePath) +
+                " --in-handle " + toChildClientHandle +
+                " --out-handle " + fromChildClientHandle;
 
-            process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException(
-                    "Process.Start returned null for the sandbox executable.");
+            var si = new StartupInfo { cb = (uint)Marshal.SizeOf<StartupInfo>() };
+
+            // CREATE_SUSPENDED: the child's main thread starts
+            // frozen. We assign to the Job Object before resuming
+            // so there's never a moment when the child runs without
+            // the memory cap + UI restrictions. CREATE_NO_WINDOW
+            // suppresses the console window flash on a Windows
+            // desktop host.
+            bool ok = NativeMethods.CreateProcess(
+                lpApplicationName: null,
+                lpCommandLine: cmdLine,
+                lpProcessAttributes: IntPtr.Zero,
+                lpThreadAttributes: IntPtr.Zero,
+                bInheritHandles: true,
+                dwCreationFlags: ProcessCreationFlags.CreateSuspended
+                               | ProcessCreationFlags.CreateNoWindow,
+                lpEnvironment: IntPtr.Zero,
+                lpCurrentDirectory: null,
+                lpStartupInfo: si,
+                lpProcessInformation: out pi);
+            if (!ok)
+            {
+                int err = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException(
+                    $"CreateProcess failed (win32 error {err}) for '{executablePath}'.");
+            }
+            processCreated = true;
 
             // The child inherited the client ends; dispose our local
             // references so the child is the sole owner of its side.
             toChild.DisposeLocalCopyOfClientHandle();
             fromChild.DisposeLocalCopyOfClientHandle();
 
-            // Assign to the job AFTER process creation. See the class
-            // doc comment for the race-window discussion.
-            job.AssignProcess(process.Handle);
+            // Assign to the job BEFORE the first user-mode instruction
+            // runs. This is the point of the atomic launch path.
+            job.AssignProcess(pi.hProcess);
+
+            // Wrap the raw process handle in a managed Process so the
+            // rest of SandboxProcess can use the existing machinery.
+            // Process.GetProcessById re-opens via pid which is safe —
+            // we still need to release pi.hProcess / pi.hThread
+            // because GetProcessById creates its own handle.
+            var process = Process.GetProcessById((int)pi.dwProcessId);
+
+            // Resume the main thread now that all restrictions are
+            // in place.
+            if (NativeMethods.ResumeThread(pi.hThread) == unchecked((uint)-1))
+            {
+                int err = Marshal.GetLastWin32Error();
+                throw new InvalidOperationException(
+                    $"ResumeThread failed (win32 error {err}).");
+            }
+
+            // Close the raw handles CreateProcess returned — the
+            // managed Process owns its own duplicate.
+            NativeMethods.CloseHandle(pi.hThread);
+            NativeMethods.CloseHandle(pi.hProcess);
+            pi = default;
 
             return new SandboxProcess(process, job, toChild, fromChild);
         }
         catch
         {
-            try { process?.Kill(entireProcessTree: true); } catch { }
-            process?.Dispose();
+            if (processCreated && pi.hProcess != IntPtr.Zero)
+            {
+                try { NativeMethods.TerminateProcess(pi.hProcess, 1); } catch { }
+                if (pi.hThread != IntPtr.Zero) NativeMethods.CloseHandle(pi.hThread);
+                NativeMethods.CloseHandle(pi.hProcess);
+            }
             toChild?.Dispose();
             fromChild?.Dispose();
             job.Dispose();
             throw;
         }
+    }
+
+    private static string QuoteIfNeeded(string path)
+    {
+        if (path.Length == 0) return "\"\"";
+        if (path.IndexOfAny([' ', '\t', '"']) < 0) return path;
+        // Simple quoting — the executable path never contains literal
+        // quote characters in practice, so we don't need the full
+        // MSVC escape dance here.
+        return "\"" + path + "\"";
     }
 
     /// <summary>

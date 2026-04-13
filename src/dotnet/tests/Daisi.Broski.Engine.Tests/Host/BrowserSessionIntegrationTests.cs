@@ -114,4 +114,147 @@ public class BrowserSessionIntegrationTests
         // Second dispose must not throw.
         await session.DisposeAsync();
     }
+
+    // ============================================================
+    // Phase-4 completion: Run + Skim across the sandbox boundary.
+    // ============================================================
+
+    [Fact]
+    public async Task Run_executes_scripts_in_the_sandbox_child()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html>
+              <head><title>pre-script</title></head>
+              <body>
+                <p id="x">before</p>
+                <script>document.getElementById('x').textContent = 'after-from-script';</script>
+              </body>
+            </html>
+            """;
+
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+
+        // scriptingEnabled: script runs, #x.textContent = 'after-from-script'.
+        var resp = await session.RunAsync(
+            server.BaseUrl,
+            scriptingEnabled: true,
+            select: "#x",
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(200, resp.Status);
+        Assert.Single(resp.Matches);
+        Assert.Equal("after-from-script", resp.Matches[0].TextContent);
+    }
+
+    [Fact]
+    public async Task Run_with_scripting_disabled_returns_static_dom()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html>
+              <body>
+                <p id="x">before</p>
+                <script>document.getElementById('x').textContent = 'after';</script>
+              </body>
+            </html>
+            """;
+
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+
+        var resp = await session.RunAsync(
+            server.BaseUrl,
+            scriptingEnabled: false,
+            select: "#x",
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Single(resp.Matches);
+        Assert.Equal("before", resp.Matches[0].TextContent);
+    }
+
+    [Fact]
+    public async Task Skim_returns_serialized_article_from_sandbox()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html lang="en">
+              <head>
+                <title>Sandbox Article</title>
+                <meta name="author" content="Jane Doe">
+              </head>
+              <body>
+                <article>
+                  <h1>Sandbox Article</h1>
+                  <p>This article lives in the sandbox for cross-process skim testing.
+                     The paragraph needs to be long enough to clear the extractor's
+                     scoring threshold so the article block wins the content-root contest.</p>
+                  <p>A second paragraph gives the scoring pass extra evidence to pick
+                     the article over any other candidate in the document.</p>
+                </article>
+              </body>
+            </html>
+            """;
+
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+
+        var resp = await session.SkimAsync(
+            server.BaseUrl,
+            scriptingEnabled: false,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal("Sandbox Article", resp.Title);
+        Assert.Equal("Jane Doe", resp.Byline);
+        Assert.Equal("en", resp.Lang);
+        Assert.Contains("article", resp.PlainText);
+        Assert.NotNull(resp.ContentHtml);
+        Assert.Contains("Sandbox Article", resp.ContentHtml!);
+    }
+
+    [Fact]
+    public async Task Skim_returns_empty_article_for_content_free_page()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        // Pages that fail the extractor's threshold (trivial content)
+        // should still return successfully — just with empty fields.
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, "<html><body>hi</body></html>");
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+
+        var resp = await session.SkimAsync(
+            server.BaseUrl,
+            scriptingEnabled: false,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(resp);
+        // PlainText may be empty; that's fine.
+    }
 }

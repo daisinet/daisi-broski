@@ -6,6 +6,19 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <!-- Skimmer CLI optionally drives the sandboxed session so
+         `daisi-broski-skim` gets the same Job-Object isolation as
+         the top-level `daisi-broski` CLI. The Skimmer library itself
+         doesn't need the host-side Daisi.Broski assembly; only the
+         CLI exe consumes BrowserSession. Windows-only.
+         Note: no direct reference to Daisi.Broski.Sandbox — that
+         project already references this one, and a reverse link
+         would be circular. Users who skim through the sandbox
+         should run a solution-level build so the sandbox exe is
+         already on disk; a missing sandbox surfaces as a friendly
+         FileNotFoundException at run time. -->
+    <ProjectReference Include="..\Daisi.Broski\Daisi.Broski.csproj"
+                      Condition="$([MSBuild]::IsOSPlatform('windows'))" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />

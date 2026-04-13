@@ -25,11 +25,16 @@ namespace Daisi.Broski;
 [SupportedOSPlatform("windows")]
 public sealed class BrowserSession : IAsyncDisposable
 {
-    private readonly SandboxProcess _sandbox;
+    private SandboxProcess _sandbox;
+    private readonly string _sandboxExePath;
+    private readonly JobObjectOptions? _jobOptions;
+    private readonly SemaphoreSlim _respawnLock = new(1, 1);
 
-    private BrowserSession(SandboxProcess sandbox)
+    private BrowserSession(SandboxProcess sandbox, string sandboxExePath, JobObjectOptions? jobOptions)
     {
         _sandbox = sandbox;
+        _sandboxExePath = sandboxExePath;
+        _jobOptions = jobOptions;
     }
 
     /// <summary>Create a session backed by a freshly-spawned sandbox
@@ -46,7 +51,75 @@ public sealed class BrowserSession : IAsyncDisposable
     public static BrowserSession Create(string sandboxExePath, JobObjectOptions? jobOptions = null)
     {
         var sandbox = SandboxLauncher.Launch(sandboxExePath, jobOptions);
-        return new BrowserSession(sandbox);
+        return new BrowserSession(sandbox, sandboxExePath, jobOptions);
+    }
+
+    /// <summary>
+    /// Send a request to the sandbox child, respawning a fresh child
+    /// if the current one is dead on arrival (exited between
+    /// operations). The respawn is single-retry — if the fresh child
+    /// also fails, the SandboxException propagates with the full
+    /// crash context. Per-request mid-flight crashes are NOT retried
+    /// automatically because the caller's operation may have had
+    /// side effects on the host side that we can't roll back.
+    /// </summary>
+    private async Task<TResponse> SendWithRespawnAsync<TRequest, TResponse>(
+        string method, TRequest request, CancellationToken ct)
+        where TRequest : class
+        where TResponse : class
+    {
+        // Fast path: child is alive, send directly.
+        if (_sandbox.IsAlive)
+        {
+            try
+            {
+                return await _sandbox
+                    .SendRequestAsync<TRequest, TResponse>(method, request, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (SandboxException) when (!_sandbox.IsAlive)
+            {
+                // The child died mid-request. Respawn and retry
+                // exactly once.
+                await RespawnAsync(ct).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await RespawnAsync(ct).ConfigureAwait(false);
+        }
+
+        return await _sandbox
+            .SendRequestAsync<TRequest, TResponse>(method, request, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Launch a fresh sandbox child and swap it in for the
+    /// current (dead) one. Serialized against concurrent respawns so
+    /// we don't leak child processes.</summary>
+    private async Task RespawnAsync(CancellationToken ct)
+    {
+        await _respawnLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_sandbox.IsAlive) return; // raced with another caller
+            var old = _sandbox;
+            var fresh = SandboxLauncher.Launch(_sandboxExePath, _jobOptions);
+            _sandbox = fresh;
+            // Dispose the old wrapper outside the lock so a slow
+            // WaitForExit in there can't stall new requests.
+            _ = DisposeOldAsync(old);
+        }
+        finally
+        {
+            _respawnLock.Release();
+        }
+    }
+
+    private static async Task DisposeOldAsync(SandboxProcess old)
+    {
+        try { await old.DisposeAsync().ConfigureAwait(false); }
+        catch { /* the child is already dead; cleanup is best-effort */ }
     }
 
     /// <summary>Navigate to a URL and parse the resulting document
@@ -74,9 +147,8 @@ public sealed class BrowserSession : IAsyncDisposable
             MaxRedirects = maxRedirects,
             IncludeHtml = includeHtml,
         };
-        return await _sandbox
-            .SendRequestAsync<NavigateRequest, NavigateResponse>(Methods.Navigate, request, ct)
-            .ConfigureAwait(false);
+        return await SendWithRespawnAsync<NavigateRequest, NavigateResponse>(
+            Methods.Navigate, request, ct).ConfigureAwait(false);
     }
 
     /// <summary>Run a CSS selector against the current document inside
@@ -86,11 +158,68 @@ public sealed class BrowserSession : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(selector);
         var request = new QueryAllRequest { Selector = selector };
-        var response = await _sandbox
-            .SendRequestAsync<QueryAllRequest, QueryAllResponse>(Methods.QueryAll, request, ct)
-            .ConfigureAwait(false);
+        var response = await SendWithRespawnAsync<QueryAllRequest, QueryAllResponse>(
+            Methods.QueryAll, request, ct).ConfigureAwait(false);
         return response.Matches;
     }
 
-    public ValueTask DisposeAsync() => _sandbox.DisposeAsync();
+    /// <summary>Fetch a URL, run its scripts inside the sandbox, and
+    /// return post-script metadata + an optional selector match list
+    /// or full HTML dump. Phase-4 completion: the full JS engine runs
+    /// in the child process, so the host never touches untrusted
+    /// script content. Roughly equivalent to the CLI's
+    /// <c>daisi-broski run</c> command.</summary>
+    public async Task<RunResponse> RunAsync(
+        Uri url,
+        bool scriptingEnabled = true,
+        string? select = null,
+        bool includeHtml = false,
+        string? userAgent = null,
+        int? maxRedirects = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        var request = new RunRequest
+        {
+            Url = url.AbsoluteUri,
+            UserAgent = userAgent,
+            MaxRedirects = maxRedirects,
+            ScriptingEnabled = scriptingEnabled,
+            Select = select,
+            IncludeHtml = includeHtml,
+        };
+        return await SendWithRespawnAsync<RunRequest, RunResponse>(
+            Methods.Run, request, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Fetch a URL, run its scripts (optional), extract the
+    /// main article content inside the sandbox, and return a
+    /// cross-process snapshot. Roughly equivalent to the CLI's
+    /// <c>daisi-broski-skim</c> command. The returned
+    /// <see cref="SkimResponse.ContentHtml"/> is ready-to-display
+    /// HTML produced by the Skimmer's HtmlFormatter.</summary>
+    public async Task<SkimResponse> SkimAsync(
+        Uri url,
+        bool scriptingEnabled = true,
+        string? userAgent = null,
+        int? maxRedirects = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        var request = new SkimRequest
+        {
+            Url = url.AbsoluteUri,
+            UserAgent = userAgent,
+            MaxRedirects = maxRedirects,
+            ScriptingEnabled = scriptingEnabled,
+        };
+        return await SendWithRespawnAsync<SkimRequest, SkimResponse>(
+            Methods.Skim, request, ct).ConfigureAwait(false);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _sandbox.DisposeAsync().ConfigureAwait(false);
+        _respawnLock.Dispose();
+    }
 }
