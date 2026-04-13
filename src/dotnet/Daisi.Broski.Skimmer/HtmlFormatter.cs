@@ -28,12 +28,43 @@ public static class HtmlFormatter
     public static string Format(ArticleContent article)
     {
         ArgumentNullException.ThrowIfNull(article);
-        if (article.ContentRoot is null) return "";
 
         var sb = new StringBuilder();
         var ctx = new RenderContext(article.Url, sb);
-        RenderBlock(article.ContentRoot, ctx);
+
+        // Nav-links table at the top — survives even if the
+        // article body is empty (e.g. extraction failed cleanly
+        // and only metadata is available).
+        AppendNavTable(sb, article);
+
+        if (article.ContentRoot is not null)
+        {
+            RenderBlock(article.ContentRoot, ctx);
+        }
         return sb.ToString();
+    }
+
+    /// <summary>Emit a simple two-column <c>&lt;table class="nav-links"&gt;</c>
+    /// listing the page's nav links. Same allow-list escaping as
+    /// the rest of the formatter; anchors get <c>target="_blank"</c>
+    /// + <c>rel="noopener noreferrer"</c> for safe render inside a
+    /// reader shell.</summary>
+    private static void AppendNavTable(StringBuilder sb, ArticleContent article)
+    {
+        if (article.NavLinks.Count == 0) return;
+        sb.Append("<h2>Navigation</h2>");
+        sb.Append("<table class=\"nav-links\"><thead><tr><th>Link</th><th>URL</th></tr></thead><tbody>");
+        foreach (var link in article.NavLinks)
+        {
+            var resolved = EscapeAttr(link.Href);
+            sb.Append("<tr><td><a href=\"").Append(resolved)
+              .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+            var textSb = new StringBuilder();
+            AppendEscapedText(link.Text, textSb);
+            sb.Append(textSb);
+            sb.Append("</a></td><td><code>").Append(resolved).Append("</code></td></tr>");
+        }
+        sb.Append("</tbody></table>");
     }
 
     private sealed class RenderContext

@@ -74,6 +74,14 @@ public static class ContentExtractor
         string? heroImage = ReadMeta(head, "og:image")
                          ?? ReadMeta(head, "twitter:image");
 
+        // Collect nav links BEFORE the noise-strip pass runs —
+        // that pass removes <nav> elements from the content root,
+        // and when the content root is the body, those nav nodes
+        // are the only ones in the document. Collecting here keeps
+        // them available as a separate sitemap-style list even
+        // though the body text excludes them.
+        var navLinks = CollectNavLinks(document, pageUrl);
+
         var contentRoot = PickContentRoot(document);
         if (contentRoot is not null)
         {
@@ -117,7 +125,99 @@ public static class ContentExtractor
             WordCount = wordCount,
             Images = images,
             Links = links,
+            NavLinks = navLinks,
         };
+    }
+
+    /// <summary>Walk every <c>&lt;nav&gt;</c> element (and
+    /// <c>[role=navigation]</c> container) in the document,
+    /// collecting anchor <c>href</c>s. Deduped by resolved URL,
+    /// in document order, skipping in-page / <c>javascript:</c> /
+    /// <c>mailto:</c> hrefs and empty-text decorative links.</summary>
+    private static List<ExtractedLink> CollectNavLinks(Document document, Uri baseUri)
+    {
+        var result = new List<ExtractedLink>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        var navs = new List<Element>();
+        foreach (var el in document.DescendantElements())
+        {
+            if (el.TagName == "nav") navs.Add(el);
+            else if (el.GetAttribute("role") == "navigation") navs.Add(el);
+        }
+        if (navs.Count == 0) return result;
+
+        foreach (var nav in navs)
+        {
+            foreach (var a in nav.DescendantElements())
+            {
+                if (a.TagName != "a") continue;
+                var href = a.GetAttribute("href");
+                if (string.IsNullOrWhiteSpace(href)) continue;
+                if (href.StartsWith('#') ||
+                    href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) ||
+                    href.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var resolved = ResolveAbsolute(href, baseUri);
+                if (resolved is null) continue;
+                if (!seen.Add(resolved)) continue;
+
+                // Prefer the text content; fall back to aria-label /
+                // title / alt (for icon-only links) so we never emit
+                // a row with a blank label.
+                var text = CollapseInlineWhitespace(a.TextContent);
+                if (text.Length == 0)
+                {
+                    text = a.GetAttribute("aria-label")?.Trim() ?? "";
+                }
+                if (text.Length == 0)
+                {
+                    text = a.GetAttribute("title")?.Trim() ?? "";
+                }
+                if (text.Length == 0)
+                {
+                    // Icon-only link — try the first <img alt>.
+                    foreach (var child in a.DescendantElements())
+                    {
+                        if (child.TagName == "img")
+                        {
+                            text = child.GetAttribute("alt")?.Trim() ?? "";
+                            if (text.Length > 0) break;
+                        }
+                    }
+                }
+                if (text.Length == 0) continue;
+
+                result.Add(new ExtractedLink(resolved, text));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Collapse runs of whitespace (spaces, tabs, newlines)
+    /// to single spaces for inline labels. Used by nav-link
+    /// extraction to keep table rows from wrapping.</summary>
+    private static string CollapseInlineWhitespace(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new System.Text.StringBuilder(s.Length);
+        bool inWs = false;
+        foreach (var c in s)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!inWs && sb.Length > 0) sb.Append(' ');
+                inWs = true;
+            }
+            else
+            {
+                sb.Append(c);
+                inWs = false;
+            }
+        }
+        return sb.ToString().Trim();
     }
 
     // -------------------------------------------------------------------

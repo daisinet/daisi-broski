@@ -399,6 +399,149 @@ public class SkimmerTests
         Assert.Contains("# THE AI REBELLION HAS BEGUN", md);
     }
 
+    // ========================================================
+    // Nav-links extraction
+    // ========================================================
+
+    [Fact]
+    public void Collects_anchors_from_nav_element()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <header>
+                <nav>
+                  <a href="/a">Alpha</a>
+                  <a href="/b">Beta</a>
+                  <a href="/c">Gamma</a>
+                </nav>
+              </header>
+              <article>
+                <p>Body content. Body content. Body content. Body content. Body content.</p>
+              </article>
+            </body></html>
+            """);
+        Assert.Equal(3, article.NavLinks.Count);
+        Assert.Equal("https://example.com/a", article.NavLinks[0].Href);
+        Assert.Equal("Alpha", article.NavLinks[0].Text);
+        Assert.Equal("Beta", article.NavLinks[1].Text);
+        Assert.Equal("Gamma", article.NavLinks[2].Text);
+    }
+
+    [Fact]
+    public void Collects_from_role_navigation_container()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <div role="navigation">
+                <a href="/x">Menu Item</a>
+              </div>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        Assert.Single(article.NavLinks);
+        Assert.Equal("Menu Item", article.NavLinks[0].Text);
+    }
+
+    [Fact]
+    public void Deduplicates_nav_links_by_href()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <nav><a href="/a">Alpha</a></nav>
+              <nav><a href="/a">Alpha (again)</a><a href="/b">Beta</a></nav>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        Assert.Equal(2, article.NavLinks.Count);
+        Assert.Equal("Alpha", article.NavLinks[0].Text); // first wins
+        Assert.Equal("Beta", article.NavLinks[1].Text);
+    }
+
+    [Fact]
+    public void Uses_aria_label_for_icon_only_nav_links()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <nav>
+                <a href="/home" aria-label="Home"><i class="fa-home"></i></a>
+                <a href="/search" title="Search"><i class="fa-search"></i></a>
+                <a href="/profile"><img src="/avatar.png" alt="Profile"></a>
+              </nav>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        Assert.Equal(3, article.NavLinks.Count);
+        Assert.Equal("Home", article.NavLinks[0].Text);
+        Assert.Equal("Search", article.NavLinks[1].Text);
+        Assert.Equal("Profile", article.NavLinks[2].Text);
+    }
+
+    [Fact]
+    public void Nav_links_survive_noise_strip()
+    {
+        // The <nav> inside the picked content root gets stripped
+        // by the noise pass, but the NavLinks array still holds
+        // the entries because they were collected first.
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <main>
+                <nav><a href="/a">Alpha</a><a href="/b">Beta</a></nav>
+                <p>Body content. Body content. Body content. Body content. Body content.</p>
+                <p>More body content. More body content. More body content.</p>
+              </main>
+            </body></html>
+            """);
+        // ContentRoot should NOT include the nav text.
+        Assert.DoesNotContain("Alpha", article.PlainText);
+        // But NavLinks holds the two entries.
+        Assert.Equal(2, article.NavLinks.Count);
+    }
+
+    [Fact]
+    public void Json_serializes_navLinks_array()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <nav><a href="/docs">Docs</a></nav>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        var json = JsonFormatter.Format(article);
+        Assert.Contains("\"navLinks\":", json);
+        Assert.Contains("\"href\": \"https://example.com/docs\"", json);
+        Assert.Contains("\"text\": \"Docs\"", json);
+    }
+
+    [Fact]
+    public void Md_emits_nav_table_before_body()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <nav><a href="/docs">Docs</a><a href="/about">About</a></nav>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        var md = MarkdownFormatter.Format(article);
+        Assert.Contains("## Navigation", md);
+        Assert.Contains("| Link | URL |", md);
+        Assert.Contains("| [Docs](https://example.com/docs) |", md);
+        Assert.Contains("| [About](https://example.com/about) |", md);
+    }
+
+    [Fact]
+    public void Html_emits_nav_links_table_at_top()
+    {
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <nav><a href="/docs">Docs</a></nav>
+              <article><p>Body content. Body content. Body content. Body content. Body content.</p></article>
+            </body></html>
+            """);
+        var html = HtmlFormatter.Format(article);
+        Assert.Contains("<table class=\"nav-links\">", html);
+        Assert.Contains("<a href=\"https://example.com/docs\"", html);
+    }
+
     [Fact]
     public void Picks_card_grid_over_chatty_footer()
     {

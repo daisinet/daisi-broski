@@ -62,7 +62,7 @@ public static class JsonFormatter
         sb.Append("  \"links\": [");
         if (article.Links.Count == 0)
         {
-            sb.Append("]\n");
+            sb.Append("],\n");
         }
         else
         {
@@ -75,6 +75,31 @@ public static class JsonFormatter
                 sb.Append(", \"text\": "); EncodeString(sb, link.Text);
                 sb.Append(" }");
                 if (i < article.Links.Count - 1) sb.Append(',');
+                sb.Append('\n');
+            }
+            sb.Append("  ],\n");
+        }
+
+        // navLinks: [{ "href": "...", "text": "..." }, ...] —
+        // collected from the page's <nav> elements (and
+        // [role=navigation] containers) before the noise strip
+        // removed the header / footer nav from the article body.
+        sb.Append("  \"navLinks\": [");
+        if (article.NavLinks.Count == 0)
+        {
+            sb.Append("]\n");
+        }
+        else
+        {
+            sb.Append('\n');
+            for (int i = 0; i < article.NavLinks.Count; i++)
+            {
+                var link = article.NavLinks[i];
+                sb.Append("    { ");
+                sb.Append("\"href\": "); EncodeString(sb, link.Href);
+                sb.Append(", \"text\": "); EncodeString(sb, link.Text);
+                sb.Append(" }");
+                if (i < article.NavLinks.Count - 1) sb.Append(',');
                 sb.Append('\n');
             }
             sb.Append("  ]\n");

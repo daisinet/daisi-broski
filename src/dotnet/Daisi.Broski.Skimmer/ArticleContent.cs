@@ -82,6 +82,15 @@ public sealed class ArticleContent
     /// links are dropped.</summary>
     public IReadOnlyList<ExtractedLink> Links { get; init; } =
         Array.Empty<ExtractedLink>();
+
+    /// <summary>Navigation links pulled from every <c>&lt;nav&gt;</c>
+    /// element in the document (and from <c>[role=navigation]</c>
+    /// containers). Deduped by resolved href; empty-text decorative
+    /// links are dropped. These survive the noise-strip that removes
+    /// the nav from the article body — useful for sitemap / related-
+    /// page navigation from a reader UI.</summary>
+    public IReadOnlyList<ExtractedLink> NavLinks { get; init; } =
+        Array.Empty<ExtractedLink>();
 }
 
 public readonly record struct ExtractedImage(string Src, string Alt);

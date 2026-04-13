@@ -63,6 +63,12 @@ public static class MarkdownFormatter
             sb.Append("> ").Append(article.Description).Append("\n\n");
         }
 
+        // Navigation summary — a small two-column markdown table
+        // listing every link discovered inside the page's <nav>
+        // elements. Appears before the article body so readers can
+        // jump around without having to scroll past the content.
+        AppendNavTable(sb, article);
+
         if (article.ContentRoot is not null)
         {
             var ctx = new RenderContext(article.Url);
@@ -71,6 +77,36 @@ public static class MarkdownFormatter
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>Emit a basic two-column CommonMark pipe-table of
+    /// the page's nav links (empty if none). One row per link with
+    /// the label in the left column and the resolved URL as an
+    /// autolink in the right. Chosen over a bulleted list because
+    /// the user asked specifically for a "table with links".</summary>
+    private static void AppendNavTable(StringBuilder sb, ArticleContent article)
+    {
+        if (article.NavLinks.Count == 0) return;
+        sb.Append("## Navigation\n\n");
+        sb.Append("| Link | URL |\n");
+        sb.Append("| --- | --- |\n");
+        foreach (var link in article.NavLinks)
+        {
+            var label = EscapeTableCell(link.Text);
+            var href = EscapeTableCell(link.Href);
+            sb.Append("| [").Append(label).Append("](").Append(href)
+              .Append(") | <").Append(href).Append("> |\n");
+        }
+        sb.Append('\n');
+    }
+
+    /// <summary>Escape pipe-breaking characters inside a markdown
+    /// table cell. The spec-strict answer is to escape <c>|</c>
+    /// and line breaks; everything else survives rendering.</summary>
+    private static string EscapeTableCell(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("|", "\\|").Replace("\n", " ").Replace("\r", "");
     }
 
     // -------------------------------------------------------------------
