@@ -1,3 +1,4 @@
+using Daisi.Broski.Engine.Css;
 using Daisi.Broski.Engine.Dom;
 
 namespace Daisi.Broski.Engine.Layout;
@@ -21,8 +22,25 @@ public sealed class LayoutBox
 {
     /// <summary>The DOM element this box was generated from.
     /// Null for the synthetic root box that wraps the
-    /// viewport.</summary>
+    /// viewport, and for text-run boxes emitted by
+    /// <see cref="InlineLayout"/> to position stretches of
+    /// text that sit between inline element siblings.</summary>
     public Element? Element { get; init; }
+
+    /// <summary>When set, this box represents a run of
+    /// anonymous text (a Text node inside a mixed-content
+    /// parent). The painter draws <see cref="TextRun"/> at
+    /// <see cref="X"/>/<see cref="Y"/> using the inherited
+    /// font metrics. Text runs have no children and are not
+    /// recursed into during paint.</summary>
+    public string? TextRun { get; init; }
+
+    /// <summary>Style inherited from the parent element for
+    /// a text-run box. Null for element-backed boxes (they
+    /// resolve style from <see cref="Element"/>). Captures
+    /// color / font-* so the painter doesn't need to walk
+    /// back up the tree to find the containing element.</summary>
+    public ComputedStyle? InheritedStyle { get; init; }
 
     /// <summary>How the box participates in flow: block (the
     /// only supported mode in 6c), inline (treated as block

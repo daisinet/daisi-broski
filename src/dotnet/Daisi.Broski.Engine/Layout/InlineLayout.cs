@@ -84,8 +84,43 @@ internal static class InlineLayout
         double cursorY = 0;
         double lineHeight = containerLineH;
 
+        var containerStyle = resolver.Resolve(element);
         foreach (var child in element.ChildNodes)
         {
+            // Anonymous text run — a Text node mixed in with
+            // inline elements. Emit a synthetic layout box at
+            // the cursor so the painter draws the text at its
+            // real position instead of painting every direct
+            // Text sibling stacked at the parent's origin.
+            if (child is Daisi.Broski.Engine.Dom.Text tn)
+            {
+                var normalized = NormalizeTextFragment(tn.Data);
+                if (normalized.Length == 0) continue;
+                double runWidth = MeasureTextFragment(normalized, containerCellW);
+                // Simple wrap: if the run doesn't fit on the
+                // current line, break before it. Word-level
+                // wrap within a single run would be the next
+                // slice; for now we commit the whole fragment
+                // as one item.
+                if (cursorX > 0 && cursorX + runWidth > availWidth)
+                {
+                    cursorX = 0;
+                    cursorY += lineHeight;
+                }
+                var textBox = new LayoutBox
+                {
+                    TextRun = normalized,
+                    InheritedStyle = containerStyle,
+                    Display = BoxDisplay.Inline,
+                    Width = Math.Min(runWidth, availWidth),
+                    Height = containerLineH,
+                };
+                container.Children.Add(textBox);
+                textBox.X = container.X + cursorX;
+                textBox.Y = container.Y + cursorY;
+                cursorX += runWidth;
+                continue;
+            }
             if (child is not Element childEl) continue;
 
             // <br> forces a line break — advance the cursor
@@ -206,6 +241,34 @@ internal static class InlineLayout
             container.Height = Math.Max(container.Height, cursorY + lineHeight);
         }
     }
+
+    private static string NormalizeTextFragment(string data)
+    {
+        // Collapse runs of whitespace to a single space, per
+        // CSS `white-space: normal`. Empty-after-collapse
+        // fragments are dropped so they don't leave a bare
+        // space between two inline elements that were already
+        // positioned flush.
+        var sb = new System.Text.StringBuilder(data.Length);
+        bool lastWs = true;
+        foreach (var c in data)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!lastWs) sb.Append(' ');
+                lastWs = true;
+            }
+            else
+            {
+                sb.Append(c);
+                lastWs = false;
+            }
+        }
+        return sb.ToString().Trim();
+    }
+
+    private static double MeasureTextFragment(string text, int cellWidth) =>
+        text.Length * cellWidth;
 
     /// <summary>Resolve the computed <c>line-height</c> for
     /// an element: unit-less multipliers of font-size,
