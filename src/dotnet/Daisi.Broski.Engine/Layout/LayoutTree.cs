@@ -80,23 +80,49 @@ public static class LayoutTree
         LayoutBox parent, Element element,
         LayoutStyleResolver resolver, Viewport viewport)
     {
+        var prepared = PrepareBox(parent, element, resolver, viewport);
+        if (prepared is null) return;
+        var (box, fontSize, rootFontSize, declaredHeight) = prepared.Value;
+        parent.Children.Add(box);
+
+        // Position the box at the parent's current cursor —
+        // the parent's height (so far) plus this box's top
+        // outer edge. The X is parent.X + outer-left edges
+        // so the content area sits inside padding/border.
+        box.X = parent.X + box.Margin.Left + box.Border.Left + box.Padding.Left;
+        box.Y = parent.Y + parent.Height
+            + box.Margin.Top + box.Border.Top + box.Padding.Top;
+
+        LayChildrenAndResolveHeight(box, element, resolver, viewport,
+            fontSize, rootFontSize, declaredHeight, parent.Width);
+
+        // Advance the parent's content height by this box's
+        // outer height so the next sibling sits below.
+        parent.Height += OuterHeight(box);
+    }
+
+    /// <summary>Build a layout box for <paramref name="element"/>
+    /// without positioning it. Used by both the normal block-flow
+    /// path (<see cref="BuildAndLay"/>) and by
+    /// <see cref="FlexLayout"/>, which needs to construct items
+    /// before computing their main-axis positions. Returns
+    /// <c>null</c> when the element has <c>display: none</c>.</summary>
+    internal static (LayoutBox Box, double FontSize, double RootFontSize, Length DeclaredHeight)?
+        PrepareBox(
+            LayoutBox parent, Element element,
+            LayoutStyleResolver resolver, Viewport viewport)
+    {
         var style = resolver.Resolve(element);
         var display = ParseDisplay(style.GetPropertyValue("display"), element);
-        if (display == BoxDisplay.None) return;
+        if (display == BoxDisplay.None) return null;
 
         var fontSize = ResolveFontSize(style, parent);
         var rootFontSize = resolver.RootFontSize;
 
-        // Edge resolution honors per-side longhands first,
-        // then falls back to the shorthand (margin / padding)
-        // when the longhand is unset.
         var margin = ResolveEdges(style, "margin", parent.Width, fontSize, rootFontSize);
         var padding = ResolveEdges(style, "padding", parent.Width, fontSize, rootFontSize);
         var border = ResolveEdges(style, "border", parent.Width, fontSize, rootFontSize, isBorder: true);
 
-        // Width: auto fills the parent's available content
-        // width minus this box's left / right outer edges;
-        // explicit values resolve as length or percentage.
         var declaredWidth = Length.Parse(style.GetPropertyValue("width"));
         double width;
         if (declaredWidth.IsNone || declaredWidth.IsAuto)
@@ -112,6 +138,8 @@ public static class LayoutTree
             width = declaredWidth.Resolve(parent.Width, fontSize, rootFontSize);
         }
 
+        var declaredHeight = Length.Parse(style.GetPropertyValue("height"));
+
         var box = new LayoutBox
         {
             Element = element,
@@ -121,18 +149,38 @@ public static class LayoutTree
             Padding = padding,
             Border = border,
         };
-        parent.Children.Add(box);
+        return (box, fontSize, rootFontSize, declaredHeight);
+    }
 
-        // Position the box at the parent's current cursor —
-        // the parent's height (so far) plus this box's top
-        // outer edge. The X is parent.X + outer-left edges
-        // so the content area sits inside padding/border.
-        box.X = parent.X + margin.Left + border.Left + padding.Left;
-        box.Y = parent.Y + parent.Height
-            + margin.Top + border.Top + padding.Top;
+    /// <summary>Lay the box's children (block-flow or flex) and
+    /// resolve the box's height from the declared value or from
+    /// the accumulated content height.</summary>
+    internal static void LayChildrenAndResolveHeight(
+        LayoutBox box, Element element,
+        LayoutStyleResolver resolver, Viewport viewport,
+        double fontSize, double rootFontSize,
+        Length declaredHeight, double containingHeight)
+    {
+        // For flex containers, resolve the declared height
+        // BEFORE laying out children — the flex algorithm
+        // needs the container's cross size to drive
+        // align-items / stretch / cross-axis positioning.
+        // Block flow doesn't care about the container's
+        // height during child layout (it's purely
+        // accumulated from below), so we keep the post-
+        // children resolution there.
+        if (box.Display == BoxDisplay.Flex)
+        {
+            if (!declaredHeight.IsNone && !declaredHeight.IsAuto)
+            {
+                box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
+            }
+            var style = resolver.Resolve(element);
+            FlexLayout.LayoutChildren(box, element, style, resolver, viewport,
+                fontSize, rootFontSize);
+            return;
+        }
 
-        // Lay out children first so the auto-height case
-        // can sum their heights.
         foreach (var child in element.ChildNodes)
         {
             if (child is Element childEl)
@@ -141,10 +189,6 @@ public static class LayoutTree
             }
         }
 
-        // Height: auto sums the children's outer heights,
-        // explicit values resolve as length or percentage of
-        // the parent.
-        var declaredHeight = Length.Parse(style.GetPropertyValue("height"));
         if (declaredHeight.IsNone || declaredHeight.IsAuto)
         {
             // box.Height was being mutated by child layouts
@@ -153,17 +197,27 @@ public static class LayoutTree
         }
         else
         {
-            box.Height = declaredHeight.Resolve(parent.Height, fontSize, rootFontSize);
+            box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
         }
-
-        // Advance the parent's content height by this box's
-        // outer height so the next sibling sits below.
-        var outerHeight = box.Height
-            + margin.Top + margin.Bottom
-            + padding.Top + padding.Bottom
-            + border.Top + border.Bottom;
-        parent.Height += outerHeight;
     }
+
+    /// <summary>Compute a box's outer height — content height
+    /// plus the four edge sides. Shared by both the block-flow
+    /// path and FlexLayout (column direction).</summary>
+    internal static double OuterHeight(LayoutBox box) =>
+        box.Height
+        + box.Margin.Top + box.Margin.Bottom
+        + box.Padding.Top + box.Padding.Bottom
+        + box.Border.Top + box.Border.Bottom;
+
+    /// <summary>Compute a box's outer width — content width
+    /// plus the four edge sides on the horizontal axis.
+    /// Shared by FlexLayout (row direction).</summary>
+    internal static double OuterWidth(LayoutBox box) =>
+        box.Width
+        + box.Margin.Left + box.Margin.Right
+        + box.Padding.Left + box.Padding.Right
+        + box.Border.Left + box.Border.Right;
 
     private static BoxDisplay ParseDisplay(string value, Element element)
     {
@@ -188,7 +242,8 @@ public static class LayoutTree
         return value switch
         {
             "none" => BoxDisplay.None,
-            "block" or "list-item" or "flex" or "grid"
+            "flex" => BoxDisplay.Flex,
+            "block" or "list-item" or "grid"
                 or "table" or "table-row" or "table-cell"
                 => BoxDisplay.Block,
             "inline" => BoxDisplay.Inline,

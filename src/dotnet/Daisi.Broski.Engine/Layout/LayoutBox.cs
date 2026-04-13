@@ -106,11 +106,16 @@ public enum BoxDisplay
     /// default, stacks vertically with siblings.</summary>
     Block,
     /// <summary>Inline-level box — phase 6c treats these as
-    /// block for layout. Phase 6d will split them into line
-    /// boxes inside the parent block formatting context.</summary>
+    /// block for layout. Inline flow + line boxes is a
+    /// later slice (text wrapping is gated on font metrics
+    /// the BCL doesn't expose).</summary>
     Inline,
     /// <summary>Inline-block — shrink-wraps content like
     /// inline but participates in block flow as a single
-    /// box. Phase 6c also treats this as block.</summary>
+    /// box. Phase 6c treats this as block.</summary>
     InlineBlock,
+    /// <summary>Flex container — its children are flex items
+    /// laid out along the main axis (row by default) per
+    /// CSS Flexible Box Layout (slice 6d).</summary>
+    Flex,
 }
