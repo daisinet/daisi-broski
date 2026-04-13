@@ -42,6 +42,7 @@ internal static class Builtins
         BuiltinBlob.Install(engine);
         BuiltinFormData.Install(engine);
         BuiltinFileReader.Install(engine);
+        BuiltinWebSocket.Install(engine);
         BuiltinProxy.Install(engine);
         BuiltinReflect.Install(engine);
         BuiltinAbort.Install(engine);

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Daisi.Broski.Engine.Js;
 
 /// <summary>
@@ -29,6 +31,14 @@ public sealed class JsEventLoop
     private readonly JsEngine _engine;
     private readonly Queue<Action> _tasks = new();
     private readonly Queue<Action> _microtasks = new();
+
+    /// <summary>Thread-safe inbox for callbacks posted from
+    /// background threads (WebSocket receive loops, future
+    /// async I/O). The main loop drains this into the regular
+    /// task queue at the start of every iteration so cross-
+    /// thread work runs on the engine thread, preserving the
+    /// single-threaded execution model the VM assumes.</summary>
+    private readonly ConcurrentQueue<Action> _crossThread = new();
 
     // Sorted by due-time. Each bucket is a list because
     // multiple timers can share the same exact due-time ms.
@@ -68,7 +78,8 @@ public sealed class JsEventLoop
 
     /// <summary>True if no more work is pending.</summary>
     public bool IsIdle =>
-        _tasks.Count == 0 && _microtasks.Count == 0 && _timers.Count == 0;
+        _tasks.Count == 0 && _microtasks.Count == 0 && _timers.Count == 0
+        && _crossThread.IsEmpty;
 
     // -------------------------------------------------------------------
     // Scheduling
@@ -77,6 +88,16 @@ public sealed class JsEventLoop
     public void QueueTask(Action task) => _tasks.Enqueue(task);
 
     public void QueueMicrotask(Action task) => _microtasks.Enqueue(task);
+
+    /// <summary>Post an action from a background thread for
+    /// execution on the engine thread. Safe to call from any
+    /// thread; the action runs the next time
+    /// <see cref="Drain"/> processes its inbox. Use this for
+    /// async I/O completions (WebSocket receive, future
+    /// background work) — the regular <see cref="QueueTask"/>
+    /// / <see cref="QueueMicrotask"/> queues are not
+    /// thread-safe.</summary>
+    public void PostFromBackground(Action task) => _crossThread.Enqueue(task);
 
     /// <summary>
     /// Schedule a JS function to run after a delay. Returns the
@@ -151,6 +172,14 @@ public sealed class JsEventLoop
         int iterations = 0;
         while (iterations++ < maxIterations)
         {
+            // Drain cross-thread posts onto the regular task queue
+            // first so background work (WebSocket receives) shows
+            // up immediately on the engine thread.
+            while (_crossThread.TryDequeue(out var crossThreadAction))
+            {
+                _tasks.Enqueue(crossThreadAction);
+            }
+
             // Microtasks drain completely before the next task.
             RunMicrotasks();
 

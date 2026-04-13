@@ -180,6 +180,14 @@ public sealed class JsEngine
     /// </summary>
     public FetchHandler? FetchHandler { get; set; }
 
+    /// <summary>Pluggable factory for <c>WebSocket</c>
+    /// transports. The default (when this is <c>null</c>) hits
+    /// <c>System.Net.WebSockets.ClientWebSocket</c>; tests
+    /// install a stub factory that returns an in-memory
+    /// channel. Receives one (url, protocols) call per
+    /// <c>new WebSocket(...)</c> invocation.</summary>
+    public Func<string, IReadOnlyList<string>, IWebSocketChannel>? WebSocketHandler { get; set; }
+
     /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
