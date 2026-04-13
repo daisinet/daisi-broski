@@ -759,6 +759,42 @@ internal static class BuiltinBrowserHost
         nodeFilter.Set("SHOW_DOCUMENT_FRAGMENT", 1024.0);
         engine.Globals["NodeFilter"] = nodeFilter;
 
+        // DOM interface constructors that real-world code uses
+        // either as `instanceof` targets (`x instanceof HTMLElement`)
+        // or as registration anchors (`Object.defineProperty(
+        // HTMLElement.prototype, ...)`). We install bare callable
+        // stubs whose `.prototype` is a fresh JsObject — adequate
+        // for both patterns since we don't yet wire DOM element
+        // wrappers to extend these prototypes (so instanceof
+        // returns false, which is the safer default — sites
+        // typically have a fallback path).
+        InstallDomInterfaceStub(engine, "Node");
+        InstallDomInterfaceStub(engine, "Element");
+        InstallDomInterfaceStub(engine, "HTMLElement");
+        InstallDomInterfaceStub(engine, "HTMLDivElement");
+        InstallDomInterfaceStub(engine, "HTMLAnchorElement");
+        InstallDomInterfaceStub(engine, "HTMLInputElement");
+        InstallDomInterfaceStub(engine, "HTMLButtonElement");
+        InstallDomInterfaceStub(engine, "HTMLImageElement");
+        InstallDomInterfaceStub(engine, "HTMLFormElement");
+        InstallDomInterfaceStub(engine, "HTMLScriptElement");
+        InstallDomInterfaceStub(engine, "HTMLStyleElement");
+        InstallDomInterfaceStub(engine, "HTMLLinkElement");
+        InstallDomInterfaceStub(engine, "HTMLCanvasElement");
+        InstallDomInterfaceStub(engine, "HTMLVideoElement");
+        InstallDomInterfaceStub(engine, "HTMLAudioElement");
+        InstallDomInterfaceStub(engine, "HTMLIFrameElement");
+        InstallDomInterfaceStub(engine, "HTMLTemplateElement");
+        InstallDomInterfaceStub(engine, "HTMLBodyElement");
+        InstallDomInterfaceStub(engine, "HTMLHeadElement");
+        InstallDomInterfaceStub(engine, "HTMLMetaElement");
+        InstallDomInterfaceStub(engine, "ShadowRoot");
+        InstallDomInterfaceStub(engine, "DocumentFragment");
+        InstallDomInterfaceStub(engine, "Text");
+        InstallDomInterfaceStub(engine, "Comment");
+        InstallDomInterfaceStub(engine, "Document");
+        InstallDomInterfaceStub(engine, "EventTarget");
+
         // CSS namespace — typically used as `CSS.supports(...)` or
         // `CSS.escape(...)`. We return false / pass-through stubs
         // so consumers don't crash; real CSSOM support is in a
@@ -789,6 +825,32 @@ internal static class BuiltinBrowserHost
             return sb.ToString();
         }));
         engine.Globals["CSS"] = cssObj;
+    }
+
+    /// <summary>
+    /// Install a bare DOM-interface constructor stub at
+    /// <paramref name="name"/> with a fresh prototype. Real
+    /// instanceof checks against these will return false (no
+    /// DOM element wrapper extends them yet); the value of the
+    /// stub is to keep `typeof HTMLElement === 'function'`,
+    /// `HTMLElement.prototype` accessible, and assignment to
+    /// `HTMLElement.prototype.foo = ...` working — all common
+    /// patterns in polyfills and shadow-DOM helpers.
+    /// </summary>
+    private static void InstallDomInterfaceStub(JsEngine engine, string name)
+    {
+        var ctor = new JsFunction(name, (thisVal, args) =>
+        {
+            // `new HTMLElement()` is illegal in real browsers (the
+            // constructor is "illegal"); we mirror that by raising
+            // a TypeError so callers don't get a half-built object.
+            JsThrow.TypeError($"Illegal constructor: {name}");
+            return null;
+        });
+        var proto = new JsObject { Prototype = engine.ObjectPrototype };
+        proto.SetNonEnumerable("constructor", ctor);
+        ctor.SetNonEnumerable("prototype", proto);
+        engine.Globals[name] = ctor;
     }
 
     /// <summary>

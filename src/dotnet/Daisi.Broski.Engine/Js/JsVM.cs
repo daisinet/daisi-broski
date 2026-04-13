@@ -835,7 +835,15 @@ public sealed class JsVM
         // The check uses a per-VM re-entry counter because the
         // JS frame stack doesn't grow when accessor getters /
         // setters re-enter via native→JS bridges.
-        if (_reentryDepth > 100)
+        // Each re-entry costs a chunk of CLR stack
+        // (RunLoop + InvokeJsFunction + DoCall + InvokeFunction
+        // + the nested user code's own frames). At the default
+        // 1 MB Windows CLR stack, ~25 levels reliably fits with
+        // headroom for native interop + the remaining VM call
+        // chain. Real-world accessor chains rarely exceed 5–10;
+        // anything above 25 is almost certainly a bug
+        // (mutually-recursive accessors, cycle in a getter).
+        if (_reentryDepth > 25)
         {
             JsThrow.RangeError("Maximum call stack size exceeded");
         }
