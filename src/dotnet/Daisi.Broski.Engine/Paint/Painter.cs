@@ -1,6 +1,7 @@
 using Daisi.Broski.Engine.Css;
 using Daisi.Broski.Engine.Dom;
 using Daisi.Broski.Engine.Layout;
+using Daisi.Broski.Engine.Paint.Svg;
 
 namespace Daisi.Broski.Engine.Paint;
 
@@ -77,11 +78,37 @@ public static class Painter
             PaintBorders(box, style, buffer);
             PaintTextContent(box, style, buffer);
             if (wireframe) PaintWireframe(box, buffer);
+
+            // Inline <svg> owns its subtree — rasterize its
+            // child shapes directly and skip the normal
+            // descendant walk (SVG children don't have their
+            // own layout boxes in this engine).
+            if (box.Element.TagName == "svg")
+            {
+                PaintSvg(box, buffer);
+                return;
+            }
         }
         foreach (var child in box.Children)
         {
             PaintBox(child, document, viewport, buffer, wireframe);
         }
+    }
+
+    /// <summary>Rasterize an inline <c>&lt;svg&gt;</c>
+    /// element into the paint buffer. The target rect is the
+    /// SVG box's content area; <see cref="SvgRenderer"/> maps
+    /// the viewBox (or natural coords) onto it and fills each
+    /// child shape.</summary>
+    private static void PaintSvg(LayoutBox box, RasterBuffer buffer)
+    {
+        if (box.Element is null) return;
+        int x = (int)Math.Round(box.X);
+        int y = (int)Math.Round(box.Y);
+        int w = (int)Math.Round(box.Width);
+        int h = (int)Math.Round(box.Height);
+        if (w <= 0 || h <= 0) return;
+        SvgRenderer.Render(box.Element, x, y, w, h, buffer);
     }
 
     /// <summary>If this element directly contains text node

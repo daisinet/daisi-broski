@@ -132,6 +132,14 @@ public static class LayoutTree
         {
             declaredWidth = ResolveImageDimension(element, "width", isHeight: false);
         }
+        // <svg> sizes off its width="" attribute, and absent
+        // that, off the viewBox width. Without a dimension the
+        // inline-block would auto-fill the parent — way too
+        // big for icons, which is the common case.
+        if (declaredWidth.IsNone && element.TagName == "svg")
+        {
+            declaredWidth = ResolveSvgDimension(element, isHeight: false);
+        }
         double width;
         if (declaredWidth.IsNone || declaredWidth.IsAuto)
         {
@@ -150,6 +158,10 @@ public static class LayoutTree
         if (declaredHeight.IsNone && element.TagName == "img")
         {
             declaredHeight = ResolveImageDimension(element, "height", isHeight: true);
+        }
+        if (declaredHeight.IsNone && element.TagName == "svg")
+        {
+            declaredHeight = ResolveSvgDimension(element, isHeight: true);
         }
 
         var box = new LayoutBox
@@ -234,6 +246,38 @@ public static class LayoutTree
         {
             box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
         }
+    }
+
+    /// <summary>For an inline <c>&lt;svg&gt;</c> with no CSS
+    /// sizing, derive width / height from the element's
+    /// <c>width</c>/<c>height</c> attributes, then from the
+    /// viewBox dimensions. Icons almost always specify one or
+    /// the other; without a fallback an SVG would auto-fill
+    /// the containing block (looks enormous in context).</summary>
+    private static Length ResolveSvgDimension(Element element, bool isHeight)
+    {
+        var attrName = isHeight ? "height" : "width";
+        var attr = element.GetAttribute(attrName);
+        if (!string.IsNullOrEmpty(attr))
+        {
+            var len = Length.Parse(attr);
+            if (!len.IsNone) return len;
+        }
+        var viewBox = element.GetAttribute("viewBox") ?? element.GetAttribute("viewbox");
+        if (!string.IsNullOrEmpty(viewBox))
+        {
+            var parts = viewBox.Split(new[] { ' ', ',' },
+                StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 4 && double.TryParse(
+                parts[isHeight ? 3 : 2],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var v) && v > 0)
+            {
+                return Length.Px(v);
+            }
+        }
+        return Length.None;
     }
 
     /// <summary>For an <c>&lt;img&gt;</c> element with no CSS
