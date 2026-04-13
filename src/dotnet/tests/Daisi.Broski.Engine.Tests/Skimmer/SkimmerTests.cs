@@ -399,6 +399,35 @@ public class SkimmerTests
         Assert.Contains("# THE AI REBELLION HAS BEGUN", md);
     }
 
+    [Fact]
+    public void Picks_card_grid_over_chatty_footer()
+    {
+        // Docs-index pattern (daisi.ai/learn): 7 cards each
+        // wrapped in an <a class="...-card">. Without the
+        // card-grid heuristic, link density = 100% gets the
+        // candidate rejected and the formatter picks the footer.
+        var article = ExtractFromHtml("""
+            <!doctype html><html><body>
+              <main>
+                <div class="row">
+                  <div class="col"><a class="docs-card" href="/a"><h4>Alpha</h4><p>About alpha topic in detail with extra prose to clear length.</p></a></div>
+                  <div class="col"><a class="docs-card" href="/b"><h4>Beta</h4><p>About beta topic in detail with extra prose to clear length.</p></a></div>
+                  <div class="col"><a class="docs-card" href="/c"><h4>Gamma</h4><p>About gamma topic in detail with extra prose to clear length.</p></a></div>
+                  <div class="col"><a class="docs-card" href="/d"><h4>Delta</h4><p>About delta topic in detail with extra prose to clear length.</p></a></div>
+                </div>
+              </main>
+              <footer>
+                <p>Footer text. Footer text. Footer text. Footer text. Footer text.
+                   Footer text. Footer text. Footer text. Footer text. Footer text.</p>
+              </footer>
+            </body></html>
+            """);
+        Assert.Contains("Alpha", article.PlainText);
+        Assert.Contains("Beta", article.PlainText);
+        Assert.Contains("Gamma", article.PlainText);
+        Assert.Contains("Delta", article.PlainText);
+    }
+
     // ========================================================
     // HTML formatter
     // ========================================================

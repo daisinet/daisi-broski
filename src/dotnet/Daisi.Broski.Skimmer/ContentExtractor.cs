@@ -236,6 +236,8 @@ public static class ContentExtractor
         int textLen = 0;
         int linkTextLen = 0;
         int paragraphCount = 0;
+        int headingCount = 0;
+        int cardLikeChildCount = 0;
 
         foreach (var node in el.DescendantsAndSelf())
         {
@@ -248,19 +250,49 @@ public static class ContentExtractor
             else if (node is Element e)
             {
                 if (e.TagName == "p") paragraphCount++;
+                if (e.TagName is "h1" or "h2" or "h3" or "h4" or "h5" or "h6")
+                    headingCount++;
+                // "Card-like" descendants: an <a> styled as a card,
+                // or any element whose class explicitly tags it as
+                // a card / tile. Detected anywhere in the subtree
+                // (not just direct children) because Bootstrap-style
+                // grids wrap each card in an extra col-md-* div.
+                if (HasCardLikeClass(e.ClassName) ||
+                    (e.TagName == "a" && HasCardLikeClass(e.ClassName)))
+                {
+                    cardLikeChildCount++;
+                }
             }
         }
 
         // Trivially short = no chance.
         if (textLen < 100) return double.NegativeInfinity;
 
-        // Link-density penalty: a nav-heavy block has high text length
-        // but most of it is anchor text. Real article bodies are
-        // typically <30% link text.
         double linkDensity = textLen == 0 ? 0 : (double)linkTextLen / textLen;
-        if (linkDensity > 0.5) return double.NegativeInfinity;
+        bool isCardGrid = cardLikeChildCount >= 3 && headingCount >= 3;
 
-        double score = textLen * (1.0 - linkDensity) + 30.0 * paragraphCount;
+        // Link-density penalty: a nav-heavy block has high text
+        // length but most of it is anchor text. Real article bodies
+        // are typically <30% link text. Card-grid index pages
+        // (docs landings, store fronts) get a relaxed cap because
+        // the cards ARE the content even though every card is an
+        // anchor. Anything above 95% is still rejected as nav noise.
+        double maxLinkDensity = isCardGrid ? 0.95 : 0.5;
+        if (linkDensity > maxLinkDensity) return double.NegativeInfinity;
+
+        // Score: text density × non-link weight, plus structural
+        // bonuses for paragraphs, headings, and detected card grids.
+        double score = textLen * (1.0 - linkDensity)
+            + 30.0 * paragraphCount
+            + 20.0 * headingCount;
+
+        // Card-grid bonus: an index page where each item is a small
+        // <a class="card"> shouldn't lose to a chatty footer just
+        // because the footer happens to have more raw text.
+        if (isCardGrid)
+        {
+            score += 500.0 * cardLikeChildCount;
+        }
 
         // Semantic-tag bonus.
         if (el.TagName is "article" or "main") score *= 1.5;
@@ -281,6 +313,30 @@ public static class ContentExtractor
         }
 
         return score;
+    }
+
+    /// <summary>True if the class name contains a token that
+    /// suggests a "card" grid item — Bootstrap's <c>card</c>,
+    /// frameworks' <c>tile</c>, custom <c>*-card</c> /
+    /// <c>*-tile</c> patterns. Used to detect card-grid layouts so
+    /// the link-density rejection doesn't drop docs index pages on
+    /// the floor.</summary>
+    private static bool HasCardLikeClass(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var token in s.Split(
+                     [' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (token.Equals("card", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("tile", StringComparison.OrdinalIgnoreCase) ||
+                token.EndsWith("-card", StringComparison.OrdinalIgnoreCase) ||
+                token.EndsWith("-tile", StringComparison.OrdinalIgnoreCase) ||
+                token.Contains("card-", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool HasNoiseToken(string s)
