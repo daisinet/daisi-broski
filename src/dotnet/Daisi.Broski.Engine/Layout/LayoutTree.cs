@@ -520,11 +520,32 @@ public static class LayoutTree
         if (top.IsNone || right.IsNone || bottom.IsNone || left.IsNone)
         {
             var shorthand = style.GetPropertyValue(family);
-            var parts = ShorthandSides.Parse(shorthand);
-            if (top.IsNone) top = parts.Top;
-            if (right.IsNone) right = parts.Right;
-            if (bottom.IsNone) bottom = parts.Bottom;
-            if (left.IsNone) left = parts.Left;
+            Length? shortW;
+            if (isBorder)
+            {
+                // `border: 1px solid red` has width + style +
+                // color tokens, only one of which is a Length.
+                // Extract the first length-parseable token and
+                // apply it uniformly — border-top/right/bottom/
+                // left-width all share the same width in the
+                // shorthand.
+                shortW = ExtractBorderShorthandWidth(shorthand);
+                if (shortW is Length w)
+                {
+                    if (top.IsNone) top = w;
+                    if (right.IsNone) right = w;
+                    if (bottom.IsNone) bottom = w;
+                    if (left.IsNone) left = w;
+                }
+            }
+            else
+            {
+                var parts = ShorthandSides.Parse(shorthand);
+                if (top.IsNone) top = parts.Top;
+                if (right.IsNone) right = parts.Right;
+                if (bottom.IsNone) bottom = parts.Bottom;
+                if (left.IsNone) left = parts.Left;
+            }
         }
 
         return new BoxEdges(
@@ -532,6 +553,52 @@ public static class LayoutTree
             ResolveEdge(right, containingWidth, fontSize, rootFontSize),
             ResolveEdge(bottom, containingWidth, fontSize, rootFontSize),
             ResolveEdge(left, containingWidth, fontSize, rootFontSize));
+    }
+
+    /// <summary>Pull the first length-parseable token out of
+    /// a <c>border</c> shorthand. <c>border: 1px solid red</c>
+    /// has three tokens of mixed types (width / style /
+    /// color); we skip the style + color and return the
+    /// width. Returns null when no length is found (so
+    /// <c>border: solid red</c> without a width keeps the
+    /// cascade-default zero and doesn't paint a border).</summary>
+    private static Length? ExtractBorderShorthandWidth(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        foreach (var token in SplitOnTopLevelSpaces(value))
+        {
+            // Keyword widths: thin / medium / thick per spec.
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "thin": return Length.Px(1);
+                case "medium": return Length.Px(3);
+                case "thick": return Length.Px(5);
+                case "none" or "hidden": return Length.Px(0);
+            }
+            var l = Length.Parse(token);
+            if (!l.IsNone && !l.IsAuto) return l;
+        }
+        return null;
+    }
+
+    private static List<string> SplitOnTopLevelSpaces(string value)
+    {
+        var parts = new List<string>();
+        int depth = 0;
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in value)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            if (char.IsWhiteSpace(c) && depth == 0)
+            {
+                if (sb.Length > 0) { parts.Add(sb.ToString()); sb.Clear(); }
+                continue;
+            }
+            sb.Append(c);
+        }
+        if (sb.Length > 0) parts.Add(sb.ToString());
+        return parts;
     }
 
     private static double ResolveEdge(Length len, double containingWidth, double fontSize, double rootFontSize)

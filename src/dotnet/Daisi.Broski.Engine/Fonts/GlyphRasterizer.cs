@@ -62,7 +62,12 @@ public static class GlyphRasterizer
         if (font.UnitsPerEm <= 0) return;
         double scale = pixelSize / font.UnitsPerEm;
         double cursorX = startX;
-        double boldOffset = synthesizeBold ? Math.Max(0.5, pixelSize / 24.0) : 0;
+        // Bold offset proportional to em — about 1/14th gives
+        // a stroke that reads bold without blurring. Stamp
+        // three times (-offset, 0, +offset) so the visual
+        // stroke thickens symmetrically rather than only
+        // growing rightward.
+        double boldOffset = synthesizeBold ? Math.Max(0.8, pixelSize / 14.0) : 0;
         foreach (var ch in text)
         {
             int gid = font.GlyphIndex(ch);
@@ -72,11 +77,9 @@ public static class GlyphRasterizer
                 FillGlyph(buffer, outlines, cursorX, baselineY, scale, color);
                 if (synthesizeBold)
                 {
-                    // Second pass offset by a fraction of em —
-                    // stamps the same outline so strokes
-                    // visually thicken. Skipping vertical
-                    // offset keeps descenders aligned.
                     FillGlyph(buffer, outlines, cursorX + boldOffset, baselineY,
+                        scale, color);
+                    FillGlyph(buffer, outlines, cursorX - boldOffset * 0.5, baselineY,
                         scale, color);
                 }
             }
@@ -91,7 +94,7 @@ public static class GlyphRasterizer
         TtfReader font, string text, double pixelSize, bool synthesizeBold)
     {
         double w = MeasureText(font, text, pixelSize);
-        if (synthesizeBold) w += Math.Max(0.5, pixelSize / 24.0);
+        if (synthesizeBold) w += Math.Max(0.8, pixelSize / 14.0);
         return w;
     }
 

@@ -1150,12 +1150,13 @@ public static class Painter
             }
         }
         // Try the `border` shorthand — last-resort scan for
-        // a color-shaped token.
+        // a color-shaped token. Tokenize respecting parens
+        // so rgba(...) stays as one token (naive Split(' ')
+        // would shred it into fragments).
         var border = style.GetPropertyValue("border");
         if (!string.IsNullOrEmpty(border))
         {
-            foreach (var token in border.Split(' ',
-                StringSplitOptions.RemoveEmptyEntries))
+            foreach (var token in SplitTopLevelSpaces(border))
             {
                 var c = CssColor.Parse(token);
                 if (!c.IsTransparent) return c;
@@ -1164,5 +1165,25 @@ public static class Painter
         // Final fallback: currentColor (the `color`
         // property).
         return CssColor.Parse(style.GetPropertyValue("color"));
+    }
+
+    private static List<string> SplitTopLevelSpaces(string value)
+    {
+        var parts = new List<string>();
+        int depth = 0;
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in value)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            if (char.IsWhiteSpace(c) && depth == 0)
+            {
+                if (sb.Length > 0) { parts.Add(sb.ToString()); sb.Clear(); }
+                continue;
+            }
+            sb.Append(c);
+        }
+        if (sb.Length > 0) parts.Add(sb.ToString());
+        return parts;
     }
 }
