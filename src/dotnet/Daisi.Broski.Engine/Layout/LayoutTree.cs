@@ -192,11 +192,23 @@ public static class LayoutTree
             return;
         }
 
-        foreach (var child in element.ChildNodes)
+        // Inline-flow dispatch: when every element child is
+        // inline-display, lay them out side-by-side with
+        // line wrapping. Otherwise the default block-flow
+        // loop stacks each child as a full-width block.
+        if (InlineLayout.ShouldUseInlineFlow(element, resolver))
         {
-            if (child is Element childEl)
+            InlineLayout.LayoutChildren(box, element, resolver, viewport,
+                fontSize, rootFontSize);
+        }
+        else
+        {
+            foreach (var child in element.ChildNodes)
             {
-                BuildAndLay(box, childEl, resolver, viewport);
+                if (child is Element childEl)
+                {
+                    BuildAndLay(box, childEl, resolver, viewport);
+                }
             }
         }
 
