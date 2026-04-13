@@ -74,12 +74,148 @@ public static class Painter
             var style = StyleResolver.Resolve(box.Element, viewport);
             PaintBackground(box, style, buffer);
             PaintBorders(box, style, buffer);
+            PaintTextContent(box, style, buffer);
             if (wireframe) PaintWireframe(box, buffer);
         }
         foreach (var child in box.Children)
         {
             PaintBox(child, document, viewport, buffer, wireframe);
         }
+    }
+
+    /// <summary>If this element directly contains text node
+    /// children (no element children — leaf-ish content), word-
+    /// wrap and render them via <see cref="BitmapFont"/>. We
+    /// only render direct text content to avoid double-painting
+    /// nested elements; an inline-flow algorithm that splits
+    /// text around inline children would be a much bigger
+    /// slice.</summary>
+    private static void PaintTextContent(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
+    {
+        if (box.Element is null) return;
+        var color = CssColor.Parse(style.GetPropertyValue("color"));
+        if (color.IsTransparent) color = PaintColor.Black;
+
+        // Concatenate direct Text children only — ignores
+        // child elements (their text is painted when we
+        // recurse into them). Newlines collapse to spaces
+        // since white-space defaults to `normal`.
+        string text = "";
+        foreach (var child in box.Element.ChildNodes)
+        {
+            if (child is Daisi.Broski.Engine.Dom.Text t)
+            {
+                text += t.Data;
+            }
+        }
+        text = NormalizeWhitespace(text);
+        if (text.Length == 0) return;
+
+        // Word-wrap to the box content width. Each line is
+        // BitmapFont.LineHeight tall. Lines that don't fit
+        // vertically are dropped (we don't grow the box at
+        // paint time).
+        int contentWidth = (int)Math.Round(box.Width);
+        if (contentWidth < BitmapFont.CellWidth) return;
+        int maxCharsPerLine = contentWidth / BitmapFont.CellWidth;
+        if (maxCharsPerLine <= 0) return;
+
+        var lines = WrapText(text, maxCharsPerLine);
+        int x = (int)Math.Round(box.X);
+        int yBase = (int)Math.Round(box.Y);
+        int maxY = (int)Math.Round(box.Y + box.Height);
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            int y = yBase + i * BitmapFont.LineHeight;
+            if (y + BitmapFont.GlyphHeight > maxY && box.Height > 0) break;
+            BitmapFont.DrawText(buffer, x, y, lines[i], color);
+        }
+    }
+
+    /// <summary>Collapse runs of whitespace to a single space
+    /// and trim. Matches CSS <c>white-space: normal</c>
+    /// behavior — the default for every element type that
+    /// contains text.</summary>
+    private static string NormalizeWhitespace(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        bool lastWasSpace = true;
+        foreach (var c in text)
+        {
+            if (char.IsWhiteSpace(c))
+            {
+                if (!lastWasSpace) sb.Append(' ');
+                lastWasSpace = true;
+            }
+            else
+            {
+                sb.Append(c);
+                lastWasSpace = false;
+            }
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Greedy word-wrap: walk the text accumulating
+    /// words separated by spaces, break to a new line when
+    /// adding the next word would exceed
+    /// <paramref name="maxChars"/>. Words longer than the
+    /// line are split mid-character (better than truncation
+    /// when a single URL is wider than the box).</summary>
+    private static List<string> WrapText(string text, int maxChars)
+    {
+        var lines = new List<string>();
+        if (maxChars <= 0) return lines;
+        var current = new System.Text.StringBuilder();
+        foreach (var word in text.Split(' '))
+        {
+            if (current.Length == 0)
+            {
+                if (word.Length <= maxChars)
+                {
+                    current.Append(word);
+                }
+                else
+                {
+                    // Hard-break the over-long word.
+                    int p = 0;
+                    while (p + maxChars < word.Length)
+                    {
+                        lines.Add(word.Substring(p, maxChars));
+                        p += maxChars;
+                    }
+                    current.Append(word.AsSpan(p));
+                }
+                continue;
+            }
+            // Adding a space + word — does it fit?
+            if (current.Length + 1 + word.Length <= maxChars)
+            {
+                current.Append(' ').Append(word);
+            }
+            else
+            {
+                lines.Add(current.ToString());
+                current.Clear();
+                if (word.Length <= maxChars)
+                {
+                    current.Append(word);
+                }
+                else
+                {
+                    int p = 0;
+                    while (p + maxChars < word.Length)
+                    {
+                        lines.Add(word.Substring(p, maxChars));
+                        p += maxChars;
+                    }
+                    current.Append(word.AsSpan(p));
+                }
+            }
+        }
+        if (current.Length > 0) lines.Add(current.ToString());
+        return lines;
     }
 
     /// <summary>Draw a 1px translucent outline around the
