@@ -42,4 +42,14 @@ public sealed class HttpFetcherOptions
     /// accidental gigabyte downloads from blowing the Job Object budget.
     /// </summary>
     public long MaxResponseBytes { get; init; } = 50L * 1024 * 1024;
+
+    /// <summary>Optional host hook that can short-circuit
+    /// outbound requests. Returning <c>null</c> from the
+    /// interceptor lets the request proceed normally;
+    /// returning an <see cref="InterceptedResponse"/> uses it
+    /// in place of the network call. See
+    /// <see cref="RequestInterceptor"/> for the full
+    /// contract — the same delegate runs for page navigation,
+    /// script tags, <c>fetch</c>, and <c>XMLHttpRequest</c>.</summary>
+    public RequestInterceptor? Interceptor { get; init; }
 }

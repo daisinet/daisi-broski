@@ -70,6 +70,24 @@ public sealed class HttpFetcher : IDisposable
 
         while (true)
         {
+            // Give the host-supplied interceptor a chance to
+            // short-circuit before we hit the wire. Runs on
+            // every hop in the redirect chain so a synthetic
+            // response can replace any link in the chain
+            // (useful for pinning a 302 → mock-200 path).
+            if (_options.Interceptor is { } intercept)
+            {
+                var synthetic = intercept(new InterceptedRequest
+                {
+                    Url = current,
+                    Method = "GET",
+                });
+                if (synthetic is not null)
+                {
+                    return BuildSyntheticResult(url, current, chain, synthetic);
+                }
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
             using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
@@ -144,6 +162,41 @@ public sealed class HttpFetcher : IDisposable
         }
 
         return buffer.ToArray();
+    }
+
+    /// <summary>Build a <see cref="FetchResult"/> from a host-
+    /// supplied <see cref="InterceptedResponse"/>. Mirrors the
+    /// shape of the real-network path so callers can't tell
+    /// the difference. The <c>Content-Type</c> header gets
+    /// added if the interceptor set one explicitly and didn't
+    /// also set the headers map.</summary>
+    private static FetchResult BuildSyntheticResult(
+        Uri requestUrl, Uri finalUrl, List<Uri> chain,
+        InterceptedResponse synthetic)
+    {
+        var headers = synthetic.Headers
+            ?? new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        if (synthetic.ContentType is { } ct
+            && synthetic.Headers is null)
+        {
+            // Promote the explicit content-type into the
+            // headers map so consumers that read through the
+            // headers (the JS-side fetch path does this) see
+            // the same value.
+            var dict = new Dictionary<string, IReadOnlyList<string>>(
+                StringComparer.OrdinalIgnoreCase) { [ "content-type" ] = new[] { ct } };
+            headers = dict;
+        }
+        return new FetchResult
+        {
+            RequestUrl = requestUrl,
+            FinalUrl = finalUrl,
+            Status = (System.Net.HttpStatusCode)synthetic.Status,
+            Body = synthetic.Body ?? Array.Empty<byte>(),
+            ContentType = synthetic.ContentType,
+            RedirectChain = chain,
+            Headers = headers,
+        };
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> SnapshotHeaders(

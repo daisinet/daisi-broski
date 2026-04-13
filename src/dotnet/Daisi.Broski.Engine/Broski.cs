@@ -1,3 +1,4 @@
+using Daisi.Broski.Engine.Js;
 using Daisi.Broski.Engine.Net;
 
 namespace Daisi.Broski.Engine;
@@ -33,7 +34,14 @@ public static class Broski
         ArgumentNullException.ThrowIfNull(url);
         options ??= new BroskiOptions();
 
-        var fetcherOptions = options.Fetcher ?? new HttpFetcherOptions();
+        // When the caller didn't supply a full HttpFetcherOptions
+        // but did supply an interceptor, fold it in. A
+        // caller-provided Fetcher already carries its own
+        // interceptor (or none) — don't second-guess that.
+        var fetcherOptions = options.Fetcher ?? new HttpFetcherOptions
+        {
+            Interceptor = options.Interceptor,
+        };
         // Use one fetcher for the page + scripts so the cookie jar
         // (which sites use to gate "are you logged in?" responses
         // for chunk URLs) is shared.
@@ -102,4 +110,12 @@ public sealed class BroskiOptions
     /// this value. Pass <see cref="Broski.DefaultStoragePath"/>
     /// for a sensible per-user location.</summary>
     public string? StoragePath { get; init; }
+
+    /// <summary>Optional request interceptor wired into the
+    /// internal <see cref="HttpFetcherOptions.Interceptor"/>
+    /// when <see cref="Fetcher"/> is null. When you provide
+    /// your own <see cref="Fetcher"/>, that fetcher's
+    /// interceptor wins. Use this for ad blocking, test
+    /// scaffolding, or offline replay.</summary>
+    public RequestInterceptor? Interceptor { get; init; }
 }
