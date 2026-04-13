@@ -141,8 +141,11 @@ public static class Painter
         double fontSize = ResolveFontSizePx(style);
 
         // Same dispatch as PaintTextContent — prefer web font
-        // when available, fall back to the bitmap.
-        var webFont = ResolveWebFont(document, style);
+        // when available, fall back to the bitmap. Pass the
+        // first char as a coverage hint so the resolver can
+        // skip subset files that don't cover Latin.
+        int sampleCharText = box.TextRun!.Length > 0 ? box.TextRun[0] : 'A';
+        var webFont = ResolveWebFont(document, style, sampleCharText);
         if (webFont is not null)
         {
             int lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
@@ -215,8 +218,11 @@ public static class Painter
         // Prefer a loaded web-font when the element's
         // font-family resolves to one the document fetched.
         // Falls through to the bitmap font when no match or
-        // the font can't be parsed.
-        var webFont = ResolveWebFont(box.Element.OwnerDocument, style);
+        // the font can't be parsed. Pass the first char as a
+        // unicode-range hint so Google-Fonts-style split
+        // subsets resolve to the right Latin file.
+        int sampleChar = text.Length > 0 ? text[0] : 'A';
+        var webFont = ResolveWebFont(box.Element.OwnerDocument, style, sampleChar);
         if (webFont is not null)
         {
             lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
@@ -263,7 +269,7 @@ public static class Painter
     }
 
     private static Daisi.Broski.Engine.Fonts.TtfReader? ResolveWebFont(
-        Document? doc, ComputedStyle? style)
+        Document? doc, ComputedStyle? style, int sampleChar = 'A')
     {
         if (doc is null || style is null || doc.Fonts.Count == 0) return null;
         var family = style.GetPropertyValue("font-family");
@@ -271,7 +277,8 @@ public static class Painter
         int weight = ParseWeight(style.GetPropertyValue("font-weight"));
         var styleKw = style.GetPropertyValue("font-style");
         if (string.IsNullOrEmpty(styleKw)) styleKw = "normal";
-        return Daisi.Broski.Engine.Fonts.FontResolver.Resolve(doc, family, weight, styleKw);
+        return Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
+            doc, family, weight, styleKw, sampleChar);
     }
 
     private static int ParseWeight(string? value)

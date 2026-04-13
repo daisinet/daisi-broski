@@ -47,4 +47,32 @@ public sealed record WebFont
     /// <summary>Raw HTTP response body for the font. Parsed on
     /// demand by the glyph rasterizer.</summary>
     public required byte[] Bytes { get; init; }
+
+    /// <summary>Parsed <c>unicode-range</c> from the
+    /// <c>@font-face</c> declaration. Each entry is a
+    /// [start, end] inclusive code-point range. Empty list =
+    /// covers all code points (the CSS default when the
+    /// descriptor is omitted).
+    ///
+    /// <para>Google Fonts slices one family into 200+
+    /// subsetted files, one per unicode-range block
+    /// (Latin / Latin-ext / Cyrillic / Vietnamese / ...). Without
+    /// checking this at resolve time, the font picker grabs
+    /// the first match — often a Cyrillic subset — and every
+    /// Latin glyph lookup returns .notdef.</para></summary>
+    public IReadOnlyList<(int Start, int End)> UnicodeRange { get; init; } =
+        Array.Empty<(int, int)>();
+
+    /// <summary>True when the font's declared
+    /// <c>unicode-range</c> covers the given char (or when no
+    /// range was declared, which means "covers everything").</summary>
+    public bool Covers(int codePoint)
+    {
+        if (UnicodeRange.Count == 0) return true;
+        foreach (var (s, e) in UnicodeRange)
+        {
+            if (codePoint >= s && codePoint <= e) return true;
+        }
+        return false;
+    }
 }

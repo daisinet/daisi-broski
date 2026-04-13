@@ -87,38 +87,19 @@ internal static class InlineLayout
         var containerStyle = resolver.Resolve(element);
         foreach (var child in element.ChildNodes)
         {
-            // Anonymous text run — a Text node mixed in with
-            // inline elements. Emit a synthetic layout box at
-            // the cursor so the painter draws the text at its
-            // real position instead of painting every direct
-            // Text sibling stacked at the parent's origin.
+            // Anonymous text runs — a Text node mixed in with
+            // inline elements. We split the fragment at word
+            // boundaries and emit one layout box per line
+            // (greedy word wrap) so long paragraphs break
+            // properly instead of extending past the container
+            // edge as a single atomic run.
             if (child is Daisi.Broski.Engine.Dom.Text tn)
             {
                 var normalized = NormalizeTextFragment(tn.Data);
                 if (normalized.Length == 0) continue;
-                double runWidth = MeasureTextFragment(normalized, containerCellW);
-                // Simple wrap: if the run doesn't fit on the
-                // current line, break before it. Word-level
-                // wrap within a single run would be the next
-                // slice; for now we commit the whole fragment
-                // as one item.
-                if (cursorX > 0 && cursorX + runWidth > availWidth)
-                {
-                    cursorX = 0;
-                    cursorY += lineHeight;
-                }
-                var textBox = new LayoutBox
-                {
-                    TextRun = normalized,
-                    InheritedStyle = containerStyle,
-                    Display = BoxDisplay.Inline,
-                    Width = Math.Min(runWidth, availWidth),
-                    Height = containerLineH,
-                };
-                container.Children.Add(textBox);
-                textBox.X = container.X + cursorX;
-                textBox.Y = container.Y + cursorY;
-                cursorX += runWidth;
+                EmitWrappedTextRuns(container, normalized, containerStyle,
+                    containerCellW, containerLineH, availWidth,
+                    ref cursorX, ref cursorY, ref lineHeight);
                 continue;
             }
             if (child is not Element childEl) continue;
@@ -240,6 +221,87 @@ internal static class InlineLayout
         {
             container.Height = Math.Max(container.Height, cursorY + lineHeight);
         }
+    }
+
+    /// <summary>Greedy word-wrap a text fragment into one or
+    /// more anonymous text-run layout boxes. The cursor is
+    /// advanced as if each line were placed inline; lines
+    /// after the first sit at cursorX=0 of the next line
+    /// (just like a real inline text run that overflows).</summary>
+    private static void EmitWrappedTextRuns(
+        LayoutBox container, string text, ComputedStyle containerStyle,
+        int cellWidth, double lineHeight, double availWidth,
+        ref double cursorX, ref double cursorY, ref double lineHeightVar)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return;
+        double spaceW = cellWidth; // one cell of space between words
+
+        var current = new System.Text.StringBuilder();
+        double currentW = 0;
+
+        foreach (var word in words)
+        {
+            double wordW = word.Length * cellWidth;
+            // Starting a fresh line? Emit the word even if it
+            // overflows — hard-break within a word would need
+            // character-level slicing.
+            if (current.Length == 0 && cursorX == 0)
+            {
+                current.Append(word);
+                currentW = wordW;
+                continue;
+            }
+            // Would appending this word (preceded by a space)
+            // overflow the container's content width?
+            double needed = currentW + spaceW + wordW;
+            if (cursorX + needed <= availWidth)
+            {
+                if (current.Length > 0)
+                {
+                    current.Append(' ');
+                    currentW += spaceW;
+                }
+                current.Append(word);
+                currentW += wordW;
+            }
+            else
+            {
+                // Commit the current run and wrap to a new line.
+                CommitRun(container, current, currentW, containerStyle,
+                    lineHeight, ref cursorX, ref cursorY);
+                current.Clear();
+                currentW = 0;
+                cursorX = 0;
+                cursorY += lineHeight;
+                current.Append(word);
+                currentW = wordW;
+            }
+        }
+        CommitRun(container, current, currentW, containerStyle,
+            lineHeight, ref cursorX, ref cursorY);
+        if (lineHeight > lineHeightVar) lineHeightVar = lineHeight;
+    }
+
+    private static void CommitRun(
+        LayoutBox container, System.Text.StringBuilder current, double currentW,
+        ComputedStyle containerStyle, double lineHeight,
+        ref double cursorX, ref double cursorY)
+    {
+        if (current.Length == 0) return;
+        var runText = current.ToString();
+        var tb = new LayoutBox
+        {
+            TextRun = runText,
+            InheritedStyle = containerStyle,
+            Display = BoxDisplay.Inline,
+            Width = currentW,
+            Height = lineHeight,
+        };
+        container.Children.Add(tb);
+        tb.X = container.X + cursorX;
+        tb.Y = container.Y + cursorY;
+        cursorX += currentW;
     }
 
     private static string NormalizeTextFragment(string data)

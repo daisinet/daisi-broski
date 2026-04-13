@@ -311,6 +311,7 @@ public sealed class PageLoader : IDisposable
                     Source = pair.url,
                     Format = pair.c.Format,
                     Bytes = result.Body,
+                    UnicodeRange = pair.c.UnicodeRange,
                 };
             }
             catch

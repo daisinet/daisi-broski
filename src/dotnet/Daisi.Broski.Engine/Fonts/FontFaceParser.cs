@@ -15,7 +15,8 @@ internal static class FontFaceParser
 {
     /// <summary>Parsed candidate — not yet fetched.</summary>
     public sealed record Candidate(
-        string Family, int Weight, string Style, string Src, string Format);
+        string Family, int Weight, string Style, string Src, string Format,
+        IReadOnlyList<(int Start, int End)> UnicodeRange);
 
     public static List<Candidate> Extract(Stylesheet sheet)
     {
@@ -35,6 +36,7 @@ internal static class FontFaceParser
         string weight = "400";
         string style = "normal";
         string src = "";
+        string unicodeRange = "";
         foreach (var d in rule.Declarations)
         {
             switch (d.Property.ToLowerInvariant())
@@ -43,15 +45,73 @@ internal static class FontFaceParser
                 case "font-weight": weight = d.Value.Trim(); break;
                 case "font-style": style = d.Value.Trim(); break;
                 case "src": src = d.Value; break;
+                case "unicode-range": unicodeRange = d.Value; break;
             }
         }
         if (string.IsNullOrEmpty(family) || string.IsNullOrEmpty(src)) return;
         int weightInt = ParseFirstInt(weight, 400);
+        var ranges = ParseUnicodeRange(unicodeRange);
         foreach (var entry in SplitSrc(src))
         {
-            into.Add(new Candidate(family, weightInt, style, entry.Url, entry.Format));
+            into.Add(new Candidate(family, weightInt, style, entry.Url, entry.Format, ranges));
         }
     }
+
+    /// <summary>Parse a CSS <c>unicode-range</c> value into a
+    /// list of [start, end] code-point ranges. Honors the
+    /// three forms the spec calls out:
+    /// <list type="bullet">
+    /// <item><c>U+26</c> — single code point.</item>
+    /// <item><c>U+0-7F</c> — explicit range.</item>
+    /// <item><c>U+4??</c> — wildcard range
+    ///   (<c>?</c> expands to <c>0</c>..<c>F</c>).</item>
+    /// </list>
+    /// Empty / "U+0-10FFFF" / unparseable input returns an
+    /// empty list (interpreted as "covers everything").</summary>
+    internal static List<(int Start, int End)> ParseUnicodeRange(string value)
+    {
+        var result = new List<(int, int)>();
+        if (string.IsNullOrWhiteSpace(value)) return result;
+        foreach (var rawPart in value.Split(','))
+        {
+            var part = rawPart.Trim();
+            if (!part.StartsWith("U+", StringComparison.OrdinalIgnoreCase)) continue;
+            part = part.Substring(2);
+            // Wildcard form: "4??" → [400, 4FF].
+            if (part.Contains('?'))
+            {
+                var lo = part.Replace('?', '0');
+                var hi = part.Replace('?', 'F');
+                if (TryHex(lo, out var sLo) && TryHex(hi, out var sHi))
+                {
+                    result.Add((sLo, sHi));
+                }
+                continue;
+            }
+            // Range form: "0-7F".
+            int dash = part.IndexOf('-');
+            if (dash > 0)
+            {
+                var lo = part.Substring(0, dash);
+                var hi = part.Substring(dash + 1);
+                if (TryHex(lo, out var s) && TryHex(hi, out var e))
+                {
+                    result.Add((s, e));
+                }
+                continue;
+            }
+            // Single code point.
+            if (TryHex(part, out var cp))
+            {
+                result.Add((cp, cp));
+            }
+        }
+        return result;
+    }
+
+    private static bool TryHex(string s, out int value) =>
+        int.TryParse(s, System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture, out value);
 
     private readonly record struct SrcEntry(string Url, string Format);
 

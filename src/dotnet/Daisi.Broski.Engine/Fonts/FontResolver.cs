@@ -26,9 +26,15 @@ public static class FontResolver
     /// <paramref name="document"/>. <paramref name="fontFamily"/>
     /// is the raw cascade value — CSS allows a comma-separated
     /// stack, so we try each name in order and return the first
-    /// one we can parse.</summary>
+    /// one we can parse. The <paramref name="sampleChar"/>
+    /// lets the resolver pick a file whose <c>unicode-range</c>
+    /// actually covers the text — critical on pages that use
+    /// Google Fonts' per-subset splits, where the same family
+    /// arrives as 200+ files each covering a different block
+    /// (Latin / Cyrillic / Vietnamese / ...).</summary>
     public static TtfReader? Resolve(
-        Document document, string fontFamily, int weight, string style)
+        Document document, string fontFamily, int weight, string style,
+        int sampleChar = 'A')
     {
         if (document.Fonts.Count == 0) return null;
         if (string.IsNullOrWhiteSpace(fontFamily)) return null;
@@ -40,11 +46,11 @@ public static class FontResolver
             if (name.Length == 0) continue;
             if (!document.Fonts.TryGetValue(name, out var candidates)) continue;
 
-            // Pick the best weight/style match. Closest weight
-            // wins; ties break by matching style. Not the full
-            // CSS font matching algorithm (§5.2) but the common
-            // cases (regular / bold / italic / bold-italic)
-            // resolve correctly.
+            // Pick the best weight+style+coverage match. Weight
+            // closeness and style match drive the core score;
+            // a font that doesn't cover the sample character
+            // takes a large penalty so Latin text doesn't
+            // accidentally resolve to the Cyrillic subset.
             WebFont? best = null;
             int bestScore = int.MaxValue;
             foreach (var font in candidates)
@@ -54,6 +60,7 @@ public static class FontResolver
                 {
                     score += 500;
                 }
+                if (!font.Covers(sampleChar)) score += 10000;
                 if (score < bestScore) { best = font; bestScore = score; }
             }
             if (best is null) continue;
