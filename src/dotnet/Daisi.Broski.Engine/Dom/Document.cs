@@ -143,6 +143,34 @@ public sealed class Document : Node
         _styleSheets = null;
     }
 
+    /// <summary>Web fonts fetched from <c>@font-face</c>
+    /// rules during page load. Painter looks up the best
+    /// match for a text run's <c>font-family</c> and renders
+    /// glyphs from the first font it can parse; anything
+    /// else falls back to the bundled bitmap font. Keyed by
+    /// family name (case-insensitive) so multiple weights /
+    /// styles of the same family can coexist.</summary>
+    private Dictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>? _fonts;
+
+    public IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>> Fonts =>
+        (IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>?)_fonts
+            ?? EmptyFonts;
+
+    private static readonly IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>> EmptyFonts =
+        new Dictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>(StringComparer.OrdinalIgnoreCase);
+
+    public void AttachFont(Daisi.Broski.Engine.Fonts.WebFont font)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        _fonts ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!_fonts.TryGetValue(font.Family, out var list))
+        {
+            list = new List<Daisi.Broski.Engine.Fonts.WebFont>();
+            _fonts[font.Family] = list;
+        }
+        list.Add(font);
+    }
+
     private void RecomputeStyleSheets()
     {
         var list = new List<Stylesheet>();

@@ -883,6 +883,19 @@ public static class Program
                 var page = await Daisi.Broski.Engine.Broski.LoadAsync(url,
                     new Daisi.Broski.Engine.BroskiOptions { ScriptingEnabled = true });
                 var vp = new Daisi.Broski.Engine.Css.Viewport { Width = width, Height = height };
+                // Print font-fetch stats before the layout dump
+                // so we can see whether @font-face came through
+                // without waking through the full tree output.
+                int fontFiles = 0;
+                foreach (var fam in page.Document.Fonts.Values) fontFiles += fam.Count;
+                Console.Out.WriteLine($"fonts: {page.Document.Fonts.Count} families, "
+                    + $"{fontFiles} files");
+                foreach (var (family, files) in page.Document.Fonts)
+                {
+                    long bytes = 0;
+                    foreach (var f in files) bytes += f.Bytes.Length;
+                    Console.Out.WriteLine($"  {family} — {files.Count} file(s), {bytes} bytes");
+                }
                 var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(page.Document, vp);
                 int n = 0;
                 foreach (var box in WalkBoxes(root))

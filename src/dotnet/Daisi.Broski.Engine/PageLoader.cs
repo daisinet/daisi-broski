@@ -81,6 +81,13 @@ public sealed class PageLoader : IDisposable
         // the decode and fall through to the placeholder rect.
         await FetchImagesAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
 
+        // Phase 6r: fetch @font-face sources in parallel. At
+        // this stage we only store the raw bytes keyed by
+        // family — parsing + glyph rasterization lands in a
+        // follow-up slice. Swallows per-font errors so a 404
+        // on an optional font variant doesn't nuke the page.
+        await FetchFontsAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
+
         return new LoadedPage
         {
             RequestUrl = fetchResult.RequestUrl,
@@ -238,6 +245,67 @@ public sealed class PageLoader : IDisposable
             if (hit is not null) return hit;
         }
         return null;
+    }
+
+    /// <summary>Pull <c>@font-face</c> rules out of every
+    /// already-fetched stylesheet, fetch each unique
+    /// <c>src:url()</c>, and hand the raw bytes to the
+    /// document's font store. Families are cached so the
+    /// same font referenced by multiple weights doesn't
+    /// refetch. Parsing + rendering is out of scope for this
+    /// slice — we just need the bytes present so the next
+    /// slice can rasterize them.</summary>
+    private async Task FetchFontsAsync(
+        Document document, Uri baseUrl, CancellationToken ct)
+    {
+        var candidates = new List<Daisi.Broski.Engine.Fonts.FontFaceParser.Candidate>();
+        foreach (var sheet in document.StyleSheets)
+        {
+            candidates.AddRange(Daisi.Broski.Engine.Fonts.FontFaceParser.Extract(sheet));
+        }
+        if (candidates.Count == 0) return;
+
+        // Deduplicate by absolute URL — many Google Fonts
+        // CSS files list the same file under multiple
+        // unicode-range blocks, and we only need to fetch
+        // each once.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unique = new List<(Daisi.Broski.Engine.Fonts.FontFaceParser.Candidate c, Uri url)>();
+        foreach (var c in candidates)
+        {
+            if (!Uri.TryCreate(baseUrl, c.Src, out var uri)) continue;
+            if (uri.Scheme is not ("http" or "https")) continue;
+            if (!seen.Add(uri.AbsoluteUri)) continue;
+            unique.Add((c, uri));
+        }
+
+        var tasks = unique.Select(async pair =>
+        {
+            try
+            {
+                var result = await _fetcher.FetchAsync(pair.url, ct).ConfigureAwait(false);
+                if ((int)result.Status < 200 || (int)result.Status >= 300) return null;
+                return new Daisi.Broski.Engine.Fonts.WebFont
+                {
+                    Family = pair.c.Family,
+                    Weight = pair.c.Weight,
+                    Style = pair.c.Style,
+                    Source = pair.url,
+                    Format = pair.c.Format,
+                    Bytes = result.Body,
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }).ToList();
+
+        var loaded = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var font in loaded)
+        {
+            if (font is not null) document.AttachFont(font);
+        }
     }
 
     public void Dispose()
