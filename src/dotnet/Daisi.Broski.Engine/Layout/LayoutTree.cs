@@ -180,6 +180,17 @@ public static class LayoutTree
                 fontSize, rootFontSize);
             return;
         }
+        if (box.Display == BoxDisplay.Grid)
+        {
+            if (!declaredHeight.IsNone && !declaredHeight.IsAuto)
+            {
+                box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
+            }
+            var style = resolver.Resolve(element);
+            GridLayout.LayoutChildren(box, element, style, resolver, viewport,
+                fontSize, rootFontSize);
+            return;
+        }
 
         foreach (var child in element.ChildNodes)
         {
@@ -243,7 +254,8 @@ public static class LayoutTree
         {
             "none" => BoxDisplay.None,
             "flex" => BoxDisplay.Flex,
-            "block" or "list-item" or "grid"
+            "grid" => BoxDisplay.Grid,
+            "block" or "list-item"
                 or "table" or "table-row" or "table-cell"
                 => BoxDisplay.Block,
             "inline" => BoxDisplay.Inline,

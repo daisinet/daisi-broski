@@ -118,4 +118,10 @@ public enum BoxDisplay
     /// laid out along the main axis (row by default) per
     /// CSS Flexible Box Layout (slice 6d).</summary>
     Flex,
+    /// <summary>Grid container — children auto-place into a
+    /// 2D grid defined by <c>grid-template-columns</c> /
+    /// <c>grid-template-rows</c> per CSS Grid Layout
+    /// (slice 6e). Minimum-viable single-cell-per-item only;
+    /// span / explicit placement / named lines deferred.</summary>
+    Grid,
 }
