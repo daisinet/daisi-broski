@@ -54,6 +54,15 @@ public sealed class JsVM
     private readonly object?[] _stack = new object?[4096];
     private int _sp;
 
+    /// <summary>
+    /// CLR-stack re-entry depth for <see cref="InvokeJsFunction"/>.
+    /// Guards against runaway recursion through native→JS bridges
+    /// (e.g. a user accessor that calls back into another accessor
+    /// on the same object) by converting the 3rd-order recursion
+    /// into a script-visible <c>RangeError</c>.
+    /// </summary>
+    private int _reentryDepth;
+
     // Single compiler-owned scratch slot for postfix-update
     // sequences. Not observable to user code.
     private object? _scratch;
@@ -347,12 +356,25 @@ public sealed class JsVM
         _handlers.Clear();
         _frames.Clear();
         _pendingException = null;
+        _reentryDepth = 0;
         _this = JsValue.Undefined;
         // Reset the env to the globals env — any nested function
         // scopes from a prior run are no longer live and we
         // don't want their bindings leaking into this run.
         while (_env.Parent is not null) _env = _env.Parent;
-        RunLoop(stopFrameDepth: -1);
+        try
+        {
+            RunLoop(stopFrameDepth: -1);
+        }
+        catch (JsThrowSignal sig)
+        {
+            // An uncaught throw (or our recursion guard) escaped
+            // all VM handlers. Surface it to the host as a
+            // normal JsRuntimeException matching what
+            // DrainEventLoop already does.
+            throw new JsRuntimeException(
+                $"Uncaught {JsValue.ToJsString(sig.JsValue)}", sig.JsValue);
+        }
         return CompletionValue;
     }
 
@@ -807,6 +829,18 @@ public sealed class JsVM
             return fn.NativeCallable(this, thisVal, args);
         }
 
+        // Guard against unbounded recursion — surface as a
+        // script-visible RangeError rather than a CLR
+        // StackOverflowException which would kill the process.
+        // The check uses a per-VM re-entry counter because the
+        // JS frame stack doesn't grow when accessor getters /
+        // setters re-enter via native→JS bridges.
+        if (_reentryDepth > 100)
+        {
+            JsThrow.RangeError("Maximum call stack size exceeded");
+        }
+        _reentryDepth++;
+
         int enterDepth = _frames.Count;
 
         // Snapshot the caller's VM state so we can restore it
@@ -870,6 +904,7 @@ public sealed class JsVM
         finally
         {
             _nativeBoundaries.Pop();
+            _reentryDepth--;
         }
     }
 
@@ -2478,6 +2513,18 @@ public sealed class JsVM
             DriveAsyncGenerator(innerGen, promise);
             Push(promise);
             return;
+        }
+
+        // Protect against unbounded JS-side recursion. The
+        // native re-entry guard in InvokeJsFunction covers the
+        // case where an accessor bounces back into the VM, but
+        // pure bytecode recursion (e.g. `function f(){f();}`)
+        // goes through InvokeFunction and grows only _frames
+        // — cap frame depth here so a runaway call surfaces as
+        // a script-visible RangeError.
+        if (_frames.Count > 1024)
+        {
+            JsThrow.RangeError("Maximum call stack size exceeded");
         }
 
         var template = fn.Template!;

@@ -1111,10 +1111,23 @@ public sealed class JsLexer
         c == '\u00A0';
 
     private static bool IsIdentifierStart(char c) =>
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' ||
+        // ES2015+ allows any Unicode letter (UnicodeIDStart) as an
+        // identifier start. We approximate via .NET's
+        // <see cref="char.IsLetter"/> which covers all letter
+        // categories — the spec also includes Number-letter
+        // (Nl, e.g. Roman numerals) which IsLetter does not, but
+        // those are vanishingly rare in real code. Common cases
+        // we care about: minified bundlers that emit non-ASCII
+        // property keys (ã, ñ, ko/ja chars) inside transliteration
+        // tables; without this, our lexer rejected those keys.
+        (c >= 0x80 && char.IsLetter(c));
 
     private static bool IsIdentifierPart(char c) =>
-        IsIdentifierStart(c) || (c >= '0' && c <= '9');
+        IsIdentifierStart(c) || (c >= '0' && c <= '9') ||
+        // Unicode digits (Nd) and combining marks (Mn/Mc) are
+        // allowed in identifier continuation per UnicodeIDContinue.
+        (c >= 0x80 && (char.IsDigit(c) || char.IsLetter(c)));
 
     private static bool IsHexDigit(char c) =>
         (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');

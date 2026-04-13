@@ -1357,14 +1357,25 @@ public sealed class JsParser
         // another name.
         MethodDefinitionKind accessorKind = MethodDefinitionKind.Method;
         if (Current.Kind == JsTokenKind.Identifier &&
-            (Current.StringValue == "get" || Current.StringValue == "set") &&
-            Peek(1).Kind == JsTokenKind.Identifier &&
-            Peek(2).Kind == JsTokenKind.LeftParen)
+            (Current.StringValue == "get" || Current.StringValue == "set"))
         {
-            accessorKind = Current.StringValue == "get"
-                ? MethodDefinitionKind.Get
-                : MethodDefinitionKind.Set;
-            Consume();
+            // `get name() {}` / `set name(v) {}` — bare
+            // identifier name. `get [computed]() {}` — computed
+            // accessor key (seen in core-js / notion class
+            // bodies). A method literally named `get` / `set`
+            // has `(` directly after, which we exclude here.
+            var p1 = Peek(1).Kind;
+            var p2 = Peek(2).Kind;
+            bool isAccessor =
+                (p1 == JsTokenKind.Identifier && p2 == JsTokenKind.LeftParen) ||
+                (p1 == JsTokenKind.LeftBracket);
+            if (isAccessor)
+            {
+                accessorKind = Current.StringValue == "get"
+                    ? MethodDefinitionKind.Get
+                    : MethodDefinitionKind.Set;
+                Consume();
+            }
         }
 
         // ES2017 async method: `async name(...) { ... }`.
@@ -2530,12 +2541,15 @@ public sealed class JsParser
         }
 
         // get / set accessors: the identifier 'get' or 'set' followed
-        // by another property name (not by ':' or ',' or '}').
+        // by another property name (not by ':' or ',' or '}' — and
+        // not by '(' which means a shorthand method literally named
+        // 'get' / 'set', e.g. `{ get(r) {} }`).
         if (Current.Kind == JsTokenKind.Identifier &&
             (Current.StringValue == "get" || Current.StringValue == "set"))
         {
             var next = Peek(1).Kind;
-            if (next != JsTokenKind.Colon && next != JsTokenKind.Comma && next != JsTokenKind.RightBrace)
+            if (next != JsTokenKind.Colon && next != JsTokenKind.Comma &&
+                next != JsTokenKind.RightBrace && next != JsTokenKind.LeftParen)
             {
                 return ParseAccessorProperty();
             }
