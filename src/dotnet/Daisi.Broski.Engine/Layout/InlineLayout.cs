@@ -171,9 +171,21 @@ internal static class InlineLayout
                 // box.Width = parent.Width when auto, which is
                 // wrong for inline; recompute.
                 var declaredWidth = Length.Parse(childStyle.GetPropertyValue("width"));
+                // Use the child's actual webfont for intrinsic
+                // width when available, apply text-transform
+                // + bold-width adjustment before measuring so
+                // the box is sized to match what the painter
+                // will actually render.
+                var childWebFont = container.Element?.OwnerDocument is { } doc2
+                    ? ResolveWebFontForMeasure(doc2, childStyle, "X")
+                    : null;
+                var childTransform = (childStyle.GetPropertyValue("text-transform") ?? "none")
+                    .Trim().ToLowerInvariant();
+                bool childBold = ParseWeightValue(childStyle.GetPropertyValue("font-weight")) >= 600;
                 double width = !declaredWidth.IsNone && !declaredWidth.IsAuto
                     ? declaredWidth.Resolve(availWidth, itemFs, itemRs)
-                    : MeasureIntrinsicWidth(childEl, childCellW);
+                    : MeasureIntrinsicWidth(childEl, childCellW,
+                        childWebFont, itemFs, childTransform, childBold);
                 // Cap width to the line so it never overflows;
                 // text inside will wrap separately when painted.
                 width = Math.Min(width, availWidth
@@ -449,6 +461,20 @@ internal static class InlineLayout
         cursorX += currentW;
     }
 
+    private static int ParseWeightValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 400;
+        var t = value.Trim().ToLowerInvariant();
+        return t switch
+        {
+            "normal" => 400,
+            "bold" => 700,
+            "lighter" => 300,
+            "bolder" => 700,
+            _ => int.TryParse(t, out var n) ? n : 400,
+        };
+    }
+
     /// <summary>Resolve the web font InlineLayout should
     /// measure with. Picks the font that covers the first
     /// char of the text so Latin / non-Latin fonts don't get
@@ -550,7 +576,20 @@ internal static class InlineLayout
     /// padding + border + margin contributed by descendant
     /// elements so a button with `padding: 8px 16px` shrinks
     /// to its label width plus 32px.</summary>
-    private static double MeasureIntrinsicWidth(Element element, int cellWidth)
+    private static double MeasureIntrinsicWidth(Element element, int cellWidth) =>
+        MeasureIntrinsicWidth(element, cellWidth, font: null, fontSize: 0);
+
+    /// <summary>Measure an element's intrinsic width using
+    /// the resolved web font's advance widths when one is
+    /// available. Text-transform is applied BEFORE measuring
+    /// so 'text-uppercase' strings are measured uppercase
+    /// (letters are wider). <paramref name="textTransform"/>
+    /// is passed down through the recursion.</summary>
+    private static double MeasureIntrinsicWidth(
+        Element element, int cellWidth,
+        Daisi.Broski.Engine.Fonts.TtfReader? font, double fontSize,
+        string textTransform = "none",
+        bool bold = false)
     {
         double total = 0;
         foreach (var child in element.ChildNodes)
@@ -560,23 +599,39 @@ internal static class InlineLayout
                 case Text t:
                     {
                         var s = t.Data;
-                        // Collapse whitespace runs so the
-                        // measure matches what the painter
-                        // will actually draw.
-                        int chars = 0;
+                        var normalized = new System.Text.StringBuilder(s.Length);
                         bool prevWasWs = false;
                         foreach (var c in s)
                         {
                             bool ws = char.IsWhiteSpace(c);
                             if (ws && prevWasWs) continue;
-                            chars++;
+                            normalized.Append(ws ? ' ' : c);
                             prevWasWs = ws;
                         }
-                        total += chars * cellWidth;
+                        var txt = normalized.ToString();
+                        txt = textTransform switch
+                        {
+                            "uppercase" => txt.ToUpperInvariant(),
+                            "lowercase" => txt.ToLowerInvariant(),
+                            _ => txt,
+                        };
+                        if (font is not null && fontSize > 0)
+                        {
+                            // Include synthesized-bold offset
+                            // so the box is wide enough for the
+                            // painter's double-stamped glyphs.
+                            total += Daisi.Broski.Engine.Fonts.GlyphRasterizer
+                                .MeasureText(font, txt, fontSize, bold);
+                        }
+                        else
+                        {
+                            total += txt.Length * cellWidth;
+                        }
                         break;
                     }
                 case Element e:
-                    total += MeasureIntrinsicWidth(e, cellWidth);
+                    total += MeasureIntrinsicWidth(
+                        e, cellWidth, font, fontSize, textTransform, bold);
                     break;
             }
         }
