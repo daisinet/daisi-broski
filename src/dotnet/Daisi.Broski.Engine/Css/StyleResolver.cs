@@ -104,9 +104,48 @@ public static class StyleResolver
         // nearest ancestor that does and adopt that value.
         ApplyInheritance(element, viewport, values);
 
+        // 4) Inherit CSS custom properties (--*). The spec
+        // declares custom properties always inheritable so a
+        // <html> root with `--accent: red` flows down to
+        // every descendant unless overridden.
+        InheritCustomProperties(element, viewport, values);
+
+        // 5) Substitute var() references in every value
+        // against the resolved custom-property map. Has to
+        // run last so the values being substituted into are
+        // already cascaded + inherited.
+        VarResolver.SubstituteAll(values);
+
         var result = new ComputedStyle(values);
         cache[key] = result;
         return result;
+    }
+
+    /// <summary>Pull every custom property (any property
+    /// name starting with <c>--</c>) the element doesn't
+    /// already declare from the nearest ancestor that
+    /// does. CSS custom properties have an implicit
+    /// `inherits: true` flag — without this pass, a leaf
+    /// element wouldn't see <c>--accent</c> set on
+    /// <c>:root</c>.</summary>
+    private static void InheritCustomProperties(
+        Element element, Viewport viewport, Dictionary<string, string> into)
+    {
+        for (var anc = element.ParentNode as Element; anc is not null; anc = anc.ParentNode as Element)
+        {
+            var ancStyle = Resolve(anc, viewport);
+            foreach (var kv in ancStyle.Entries())
+            {
+                if (!kv.Key.StartsWith("--", StringComparison.Ordinal)) continue;
+                if (into.ContainsKey(kv.Key)) continue;
+                into[kv.Key] = kv.Value;
+            }
+            // Don't break — accumulate from every ancestor
+            // so deeper ancestor values stay reachable when
+            // intermediate ones don't redefine. The nearest-
+            // wins rule is enforced by the `ContainsKey`
+            // skip above.
+        }
     }
 
     private static void CollectMatches(

@@ -442,7 +442,31 @@ internal static class CompositeResolver
         // Inheritance — same set as StyleResolver.
         ApplyInheritance(element, sheets, viewport, values, resolver);
 
+        // Inherit custom properties + substitute var()
+        // references so layout-time consumers (display,
+        // width, etc.) see resolved values.
+        InheritCustomProperties(element, sheets, viewport, values, resolver);
+        VarResolver.SubstituteAll(values);
+
         return new ComputedStyle(values);
+    }
+
+    private static void InheritCustomProperties(
+        Element element, IReadOnlyList<Stylesheet> sheets, Viewport viewport,
+        Dictionary<string, string> into, LayoutStyleResolver? resolver)
+    {
+        for (var anc = element.ParentNode as Element; anc is not null; anc = anc.ParentNode as Element)
+        {
+            ComputedStyle ancStyle = resolver is not null
+                ? resolver.Resolve(anc)
+                : Resolve(anc, sheets, viewport);
+            foreach (var kv in ancStyle.Entries())
+            {
+                if (!kv.Key.StartsWith("--", StringComparison.Ordinal)) continue;
+                if (into.ContainsKey(kv.Key)) continue;
+                into[kv.Key] = kv.Value;
+            }
+        }
     }
 
     private static void AddIfMatches(
