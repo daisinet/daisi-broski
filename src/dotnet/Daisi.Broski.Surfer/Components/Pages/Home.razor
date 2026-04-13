@@ -106,16 +106,13 @@ else if (Session.Current is { } article)
 else
 {
     <div class="empty">
-        <h2>Welcome to <strong>daisi-broski-surfer</strong></h2>
-        <p>Type a URL above and press <kbd>Enter</kbd>. The page is fetched and parsed
-           by the local broski engine, then run through the Skimmer to extract the
-           main content. Switch between Reader / Markdown / JSON / Links views with
-           the buttons on the right.</p>
-        <p>Try one of these:</p>
+        <h2>Loading <strong>daisi-broski-surfer</strong> …</h2>
+        <p>The home page <code>@HomeUrl</code> is being skimmed.
+           If this hangs, type a URL above and press <kbd>Enter</kbd>, or pick one:</p>
         <ul>
+            <li><button class="link-nav" @onclick='@(() => Navigate("https://daisi.ai"))'>daisi.ai</button></li>
             <li><button class="link-nav" @onclick='@(() => Navigate("https://news.ycombinator.com"))'>news.ycombinator.com</button></li>
             <li><button class="link-nav" @onclick='@(() => Navigate("https://en.wikipedia.org/wiki/JavaScript"))'>en.wikipedia.org/wiki/JavaScript</button></li>
-            <li><button class="link-nav" @onclick='@(() => Navigate("https://daisi.ai"))'>daisi.ai</button></li>
             <li><button class="link-nav" @onclick='@(() => Navigate("https://www.linkedin.com/company/daisinet"))'>linkedin.com/company/daisinet</button></li>
         </ul>
     </div>
@@ -130,6 +127,14 @@ else
     private DotNetObjectReference<Home>? _selfRef;
     private bool _interceptInstalled;
 
+    /// <summary>
+    /// Default page loaded on first launch. Sets the Surfer's
+    /// landing experience to the DAISI Learn portal — a real
+    /// content-rich page that exercises the Skimmer end-to-end on
+    /// every cold start.
+    /// </summary>
+    private const string HomeUrl = "https://daisi.ai/learn";
+
     protected override void OnInitialized()
     {
         Session.StateChanged += OnSessionChanged;
@@ -140,14 +145,29 @@ else
         _selfRef = DotNetObjectReference.Create(this);
     }
 
+    /// <summary>Auto-skim the configured home URL on first render.
+    /// We do this in <c>OnAfterRenderAsync</c> rather than
+    /// <c>OnInitialized</c> so the loading spinner has somewhere to
+    /// render — the address bar is up and visible by the time the
+    /// fetch starts.</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && Session.Current is null && !Session.IsLoading)
+        {
+            await Navigate(HomeUrl);
+            return;
+        }
+        await InstallReaderInterceptorIfNeeded();
+    }
+
     /// <summary>Install the anchor-click interceptor on the reader
-    /// body container after each render. The interceptor lives in
-    /// JS (registered inline via <c>eval</c> so we don't have to
-    /// ship a separate .js file), captures clicks on links inside
-    /// the <c>MarkupString</c>-rendered HTML, prevents the default
+    /// body container. The interceptor lives in JS (registered
+    /// inline via <c>eval</c> so we don't have to ship a separate
+    /// .js file), captures clicks on links inside the
+    /// <c>MarkupString</c>-rendered HTML, prevents the default
     /// browser navigation, and posts the URL back to .NET so the
     /// Surfer's own router handles it.</summary>
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    private async Task InstallReaderInterceptorIfNeeded()
     {
         if (!_interceptInstalled && _format == "Reader" &&
             Session.Current is not null)
