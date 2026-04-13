@@ -87,6 +87,10 @@ public abstract class Node
 
         child.ParentNode?.RemoveChild(child);
 
+        // Capture the prior last child as the previousSibling
+        // for any MutationObserver record we emit below.
+        Node? prevSibling = _children.Count > 0 ? _children[^1] : null;
+
         // Wire up sibling pointers.
         if (_children.Count > 0)
         {
@@ -102,6 +106,13 @@ public abstract class Node
         // Adopt into this node's owner document if it isn't already.
         var owner = OwnerDocument ?? this as Document;
         if (owner is not null) AdoptSubtree(child, owner);
+
+        if (owner is { HasMutationObservers: true })
+        {
+            owner.MutationDispatcher.NotifyChildList(
+                this, new[] { child }, Array.Empty<Node>(),
+                prevSibling, null);
+        }
 
         return child;
     }
@@ -135,6 +146,13 @@ public abstract class Node
         var owner = OwnerDocument ?? this as Document;
         if (owner is not null) AdoptSubtree(newChild, owner);
 
+        if (owner is { HasMutationObservers: true })
+        {
+            owner.MutationDispatcher.NotifyChildList(
+                this, new[] { newChild }, Array.Empty<Node>(),
+                prev, referenceChild);
+        }
+
         return newChild;
     }
 
@@ -159,6 +177,14 @@ public abstract class Node
         child.ParentNode = null;
         child.PreviousSibling = null;
         child.NextSibling = null;
+
+        var owner = OwnerDocument ?? this as Document;
+        if (owner is { HasMutationObservers: true })
+        {
+            owner.MutationDispatcher.NotifyChildList(
+                this, Array.Empty<Node>(), new[] { child },
+                prev, next);
+        }
 
         return child;
     }

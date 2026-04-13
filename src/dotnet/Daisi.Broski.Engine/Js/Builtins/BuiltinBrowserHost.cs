@@ -732,7 +732,9 @@ internal static class BuiltinBrowserHost
         // just don't receive any notifications.
         engine.Globals["IntersectionObserver"] = MakeObserverCtor(engine, "IntersectionObserver");
         engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
-        engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
+        // Real implementation — replaces the stub now that the
+        // engine has a per-document MutationDispatcher.
+        BuiltinMutationObserver.Install(engine);
         engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
 
         // Common DOM-API constants + namespaces real sites poke at

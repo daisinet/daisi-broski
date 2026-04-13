@@ -21,6 +21,29 @@ public sealed class Document : Node
         OwnerDocument = this;
     }
 
+    /// <summary>Per-document mutation fan-out. Lazily allocated
+    /// on first access, so documents that never have a
+    /// MutationObserver attached pay zero cost. Mutations on any
+    /// node in this document's tree route through this
+    /// dispatcher when it exists; ignore otherwise.</summary>
+    public MutationDispatcher MutationDispatcher
+    {
+        get
+        {
+            _mutationDispatcher ??= new MutationDispatcher();
+            return _mutationDispatcher;
+        }
+    }
+    private MutationDispatcher? _mutationDispatcher;
+
+    /// <summary>True when at least one MutationObserver is
+    /// registered against any node in this document. Mutation
+    /// methods consult this before doing the (cheap) walk into
+    /// the dispatcher so the no-observers case is just one
+    /// boolean test.</summary>
+    internal bool HasMutationObservers =>
+        _mutationDispatcher is { RegistrationCount: > 0 };
+
     /// <summary>
     /// The root element of the document (typically <c>&lt;html&gt;</c>).
     /// Returns <c>null</c> until the tree builder has inserted one.
