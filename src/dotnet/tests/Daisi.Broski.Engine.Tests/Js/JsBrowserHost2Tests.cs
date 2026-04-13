@@ -227,14 +227,20 @@ public class JsBrowserHost2Tests
     }
 
     [Fact]
-    public void Element_getBoundingClientRect_returns_zero_rect()
+    public void Element_getBoundingClientRect_returns_a_DOMRect()
     {
+        // Phase 6c shipped real layout — an empty div now has
+        // a non-zero width because block boxes default to
+        // filling their containing block. The pre-layout
+        // expectation here was "zero rect" and it was relaxed
+        // to "non-zero width" once block layout landed.
         var (eng, doc) = MakeEngineWithDocument();
         var div = doc.CreateElement("div");
         doc.Body!.AppendChild(div);
-        Assert.Equal(
-            0.0,
-            eng.Evaluate("document.body.firstChild.getBoundingClientRect().width;"));
+        var width = (double)eng.Evaluate(
+            "document.body.firstChild.getBoundingClientRect().width;")!;
+        Assert.True(width > 0,
+            "block layout should give the div a non-zero width");
     }
 
     [Fact]
