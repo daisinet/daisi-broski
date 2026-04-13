@@ -98,6 +98,19 @@ internal static class InlineLayout
             {
                 var normalized = NormalizeTextFragment(tn.Data);
                 if (normalized.Length == 0) continue;
+                // Strip leading whitespace at line-box start —
+                // "<p>\n  DAISI...</p>" shouldn't paint a
+                // leading space before "DAISI". We only trim
+                // the leading space; trailing space is kept so
+                // subsequent text runs / elements get their
+                // boundary gap.
+                bool atLineStart = cursorX == 0
+                    && container.Children.Count == layoutStartIndex;
+                if (atLineStart && normalized[0] == ' ')
+                {
+                    normalized = normalized.TrimStart();
+                    if (normalized.Length == 0) continue;
+                }
                 // Measure with the actual font that the
                 // painter will use so layout's wrap decisions
                 // match what ends up in pixels. Without this
@@ -320,70 +333,94 @@ internal static class InlineLayout
         }
     }
 
-    /// <summary>Greedy word-wrap a text fragment into one or
-    /// more anonymous text-run layout boxes. The cursor is
-    /// advanced as if each line were placed inline; lines
-    /// after the first sit at cursorX=0 of the next line
-    /// (just like a real inline text run that overflows).
-    /// Measures word widths via the resolved web font when
-    /// one is available so the wrap matches what the painter
-    /// will actually draw.</summary>
+    /// <summary>Greedy word-wrap that preserves boundary
+    /// whitespace. Splits the fragment into tokens where each
+    /// token is either a non-whitespace word or a single
+    /// space, then iterates: if appending the next token to
+    /// the current run fits the line, do it; otherwise commit
+    /// the current run, wrap to a new line, and continue. A
+    /// space token at the start of a new line is dropped
+    /// (CSS white-space: normal collapses it to nothing at
+    /// the line-box boundary). This lets "...of <span>x</span>
+    /// intelligence..." keep the spaces around the span
+    /// instead of jamming words together.</summary>
     private static void EmitWrappedTextRuns(
         LayoutBox container, string text, ComputedStyle containerStyle,
         int cellWidth, double lineHeight, double availWidth,
         Daisi.Broski.Engine.Fonts.TtfReader? font, double fontSize,
         ref double cursorX, ref double cursorY, ref double lineHeightVar)
     {
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0) return;
+        if (text.Length == 0) return;
         double spaceW = font is not null
             ? Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, " ", fontSize)
             : cellWidth;
         if (spaceW <= 0) spaceW = cellWidth;
-
         double Measure(string w) => font is not null
             ? Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, w, fontSize)
             : w.Length * cellWidth;
 
+        // Tokenize: alternating runs of word/space.
+        var tokens = new List<(string Text, bool IsSpace)>();
+        {
+            int i = 0;
+            while (i < text.Length)
+            {
+                if (text[i] == ' ')
+                {
+                    tokens.Add((" ", true));
+                    i++;
+                }
+                else
+                {
+                    int j = i;
+                    while (j < text.Length && text[j] != ' ') j++;
+                    tokens.Add((text.Substring(i, j - i), false));
+                    i = j;
+                }
+            }
+        }
+
         var current = new System.Text.StringBuilder();
         double currentW = 0;
 
-        foreach (var word in words)
+        foreach (var (tok, isSpace) in tokens)
         {
-            double wordW = Measure(word);
-            // Starting a fresh line? Emit the word even if it
-            // overflows — hard-break within a word would need
-            // character-level slicing.
+            double tokW = isSpace ? spaceW : Measure(tok);
+            // Drop a leading space at a line-box boundary —
+            // matches browser CSS white-space: normal.
+            if (isSpace && current.Length == 0 && cursorX == 0) continue;
+
+            // Always accept the token at line start (even if
+            // too wide — hard-break within a word needs
+            // char-level slicing, out of scope).
             if (current.Length == 0 && cursorX == 0)
             {
-                current.Append(word);
-                currentW = wordW;
+                current.Append(tok);
+                currentW = tokW;
                 continue;
             }
-            // Would appending this word (preceded by a space)
-            // overflow the container's content width?
-            double needed = currentW + spaceW + wordW;
-            if (cursorX + needed <= availWidth)
+
+            if (cursorX + currentW + tokW <= availWidth)
             {
-                if (current.Length > 0)
-                {
-                    current.Append(' ');
-                    currentW += spaceW;
-                }
-                current.Append(word);
-                currentW += wordW;
+                current.Append(tok);
+                currentW += tokW;
             }
             else
             {
-                // Commit the current run and wrap to a new line.
+                // Wrap. Commit what we've got and start a new
+                // line. Drop the token if it's a pure space —
+                // it would be the line-box leading space.
                 CommitRun(container, current, currentW, containerStyle,
                     lineHeight, ref cursorX, ref cursorY);
                 current.Clear();
                 currentW = 0;
                 cursorX = 0;
                 cursorY += lineHeight;
-                current.Append(word);
-                currentW = wordW;
+                if (!isSpace)
+                {
+                    current.Append(tok);
+                    currentW = tokW;
+                }
             }
         }
         CommitRun(container, current, currentW, containerStyle,
@@ -441,13 +478,17 @@ internal static class InlineLayout
 
     private static string NormalizeTextFragment(string data)
     {
-        // Collapse runs of whitespace to a single space, per
-        // CSS `white-space: normal`. Empty-after-collapse
-        // fragments are dropped so they don't leave a bare
-        // space between two inline elements that were already
-        // positioned flush.
+        // CSS white-space: normal semantics. Collapse runs of
+        // whitespace to a single space; PRESERVE leading and
+        // trailing spaces (unlike a naive Trim) so adjacent
+        // inline elements get their boundary whitespace —
+        // "...of <span>decentralized</span> intelligence..."
+        // must keep the space before and after the span or
+        // "of" and "decentralized" end up glued together.
+        // The caller is responsible for stripping leading
+        // whitespace at line-box boundaries.
         var sb = new System.Text.StringBuilder(data.Length);
-        bool lastWs = true;
+        bool lastWs = false;
         foreach (var c in data)
         {
             if (char.IsWhiteSpace(c))
@@ -461,7 +502,7 @@ internal static class InlineLayout
                 lastWs = false;
             }
         }
-        return sb.ToString().Trim();
+        return sb.ToString();
     }
 
     private static double MeasureTextFragment(string text, int cellWidth) =>

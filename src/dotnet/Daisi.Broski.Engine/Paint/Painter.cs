@@ -302,14 +302,15 @@ public static class Painter
             var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize);
             var align = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
             double yBase = box.Y;
-            double maxY = box.Y + box.Height;
             for (int i = 0; i < linesVector.Count; i++)
             {
                 // Baseline sits ~80% of the line height down
-                // from the line top — a reasonable default
-                // when the font's ascender metric isn't read.
+                // from the line top. Text that overflows the
+                // box vertically is the element's own problem
+                // (CSS default overflow:visible) — the buffer's
+                // bounds clip it anyway, so we don't skip
+                // lines based on box.Height.
                 double y = yBase + i * lineStep + lineStep * 0.8;
-                if (y + fontSize * 0.25 > maxY && box.Height > 0) break;
                 double lineWidth = Daisi.Broski.Engine.Fonts.GlyphRasterizer
                     .MeasureText(webFont, linesVector[i], fontSize);
                 double xAligned = box.X + AlignOffset(align, contentWidth, lineWidth);
