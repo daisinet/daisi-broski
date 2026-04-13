@@ -68,12 +68,21 @@ internal static class InlineLayout
         LayoutStyleResolver resolver, Viewport viewport,
         double fontSize, double rootFontSize)
     {
+        // Container-level font metrics — used for shrink-to-
+        // fit width measurement and as the minimum line
+        // advance when no child forces something taller.
+        int containerScale = BitmapFont.ScaleFor(fontSize);
+        int containerCellW = BitmapFont.CellWidth * containerScale;
+        double containerLineH = ResolveCssLineHeight(
+            resolver.Resolve(element), fontSize,
+            BitmapFont.GlyphHeight * containerScale);
+
         double availWidth = container.Width;
-        if (availWidth < BitmapFont.CellWidth) return;
+        if (availWidth < containerCellW) return;
 
         double cursorX = 0;
         double cursorY = 0;
-        double lineHeight = BitmapFont.LineHeight;
+        double lineHeight = containerLineH;
 
         foreach (var child in element.ChildNodes)
         {
@@ -82,23 +91,39 @@ internal static class InlineLayout
             if (prepared is null) continue;
             var (box, itemFs, itemRs, itemDeclaredHeight) = prepared.Value;
 
-            // Override width: shrink-to-fit unless the
-            // cascade declared one. PrepareBox set
-            // box.Width = parent.Width when auto, which is
-            // wrong for inline; recompute.
             var childStyle = resolver.Resolve(childEl);
-            var declaredWidth = Length.Parse(childStyle.GetPropertyValue("width"));
-            double width = !declaredWidth.IsNone && !declaredWidth.IsAuto
-                ? declaredWidth.Resolve(availWidth, itemFs, itemRs)
-                : MeasureIntrinsicWidth(childEl, BitmapFont.CellWidth);
-            // Cap width to the line so it never overflows;
-            // text inside will wrap separately when painted.
-            width = Math.Min(width, availWidth
-                - box.Margin.Left - box.Margin.Right
-                - box.Padding.Left - box.Padding.Right
-                - box.Border.Left - box.Border.Right);
-            if (width < 0) width = 0;
-            box.Width = width;
+            int childScale = BitmapFont.ScaleFor(itemFs);
+            int childCellW = BitmapFont.CellWidth * childScale;
+            int childGlyphH = BitmapFont.GlyphHeight * childScale;
+            double childLineH = ResolveCssLineHeight(childStyle, itemFs, childGlyphH);
+            // img / svg / input carry their own intrinsic
+            // sizing via HTML attributes or the decoded image's
+            // natural dimensions — PrepareBox already resolved
+            // those. The generic inline shrink-to-fit path
+            // would count child text characters (0 for a void
+            // element) and overwrite the good width with zero,
+            // so logos vanish. Keep PrepareBox's answer for
+            // these tags.
+            bool keepPreparedSize = childEl.TagName is "img" or "svg" or "input";
+            if (!keepPreparedSize)
+            {
+                // Override width: shrink-to-fit unless the
+                // cascade declared one. PrepareBox set
+                // box.Width = parent.Width when auto, which is
+                // wrong for inline; recompute.
+                var declaredWidth = Length.Parse(childStyle.GetPropertyValue("width"));
+                double width = !declaredWidth.IsNone && !declaredWidth.IsAuto
+                    ? declaredWidth.Resolve(availWidth, itemFs, itemRs)
+                    : MeasureIntrinsicWidth(childEl, childCellW);
+                // Cap width to the line so it never overflows;
+                // text inside will wrap separately when painted.
+                width = Math.Min(width, availWidth
+                    - box.Margin.Left - box.Margin.Right
+                    - box.Padding.Left - box.Padding.Right
+                    - box.Border.Left - box.Border.Right);
+                if (width < 0) width = 0;
+                box.Width = width;
+            }
 
             // Outer width drives line packing.
             double outer = LayoutTree.OuterWidth(box);
@@ -129,8 +154,13 @@ internal static class InlineLayout
 
             // Use the natural line height when the child's
             // own height didn't grow (no nested children,
-            // just text painted at render time).
-            if (box.Height < BitmapFont.GlyphHeight && box.Display != BoxDisplay.Block)
+            // just text painted at render time). img / svg
+            // / input keep the height PrepareBox resolved
+            // from their attrs — same reason we kept the
+            // width above.
+            if (!keepPreparedSize
+                && box.Height < childGlyphH
+                && box.Display != BoxDisplay.Block)
             {
                 // Direct text content of this inline child
                 // wraps to as many lines as needed; estimate
@@ -138,10 +168,16 @@ internal static class InlineLayout
                 // actual word-wrap so this is just a height
                 // hint.
                 int charCount = CountDirectTextChars(childEl);
-                int charsPerLine = Math.Max(1, (int)(box.Width / BitmapFont.CellWidth));
+                int charsPerLine = Math.Max(1, (int)(box.Width / childCellW));
                 int lines = Math.Max(1, (int)Math.Ceiling(charCount / (double)charsPerLine));
-                box.Height = lines * BitmapFont.LineHeight;
+                box.Height = lines * childLineH;
             }
+
+            // Grow the current line to fit this child's
+            // outer height — a 48px heading on the same line
+            // as a 16px span stretches the line to the heading.
+            double childOuter = LayoutTree.OuterHeight(box);
+            if (childOuter > lineHeight) lineHeight = childOuter;
 
             cursorX += outer;
         }
@@ -153,6 +189,42 @@ internal static class InlineLayout
         {
             container.Height = Math.Max(container.Height, cursorY + lineHeight);
         }
+    }
+
+    /// <summary>Resolve the computed <c>line-height</c> for
+    /// an element: unit-less multipliers of font-size,
+    /// percentages, pixel lengths, and the default "normal"
+    /// keyword (≈1.2). Falls back to <paramref name="glyphHeight"/>
+    /// so lines are at least the bitmap font's cell height.</summary>
+    private static double ResolveCssLineHeight(ComputedStyle style, double fontSize, int glyphHeight)
+    {
+        var raw = style.GetPropertyValue("line-height");
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var trimmed = raw.Trim();
+            if (!trimmed.EndsWith('%')
+                && double.TryParse(trimmed,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var mult))
+            {
+                return fontSize * mult;
+            }
+            if (trimmed.EndsWith('%') && double.TryParse(
+                trimmed.AsSpan(0, trimmed.Length - 1),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var pct))
+            {
+                return fontSize * pct / 100.0;
+            }
+            var len = Length.Parse(trimmed);
+            if (!len.IsNone && !len.IsAuto)
+            {
+                return len.Resolve(fontSize, fontSize, 16, fontSize * 1.2);
+            }
+        }
+        return Math.Max(glyphHeight, fontSize * 1.2);
     }
 
     /// <summary>Walk the element + its descendants, summing

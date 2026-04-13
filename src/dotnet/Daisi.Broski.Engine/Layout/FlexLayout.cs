@@ -89,7 +89,9 @@ internal static class FlexLayout
                 shorthandShrink);
             var basisLen = Length.Parse(itemStyle.GetPropertyValue("flex-basis"));
             if (basisLen.IsNone) basisLen = shorthandBasis;
-            double basis = ResolveBasis(basisLen, isRow, box, container, itemFontSize, itemRootFs, itemStyle);
+            double basis = ResolveBasis(
+                basisLen, isRow, box, container, itemFontSize, itemRootFs,
+                itemStyle, childEl, grow);
 
             items.Add(new FlexItem
             {
@@ -327,14 +329,18 @@ internal static class FlexLayout
 
     /// <summary>Resolve the spec's <c>flex-basis</c> per-item:
     /// an explicit length wins; <c>auto</c> / <c>none</c> falls
-    /// back to the item's declared main-axis length, then to 0
-    /// (the spec's "max-content size of an empty box"). Without
-    /// this fallback, <c>flex: auto</c> items would use the
-    /// block-layout fill-parent width as their basis and any
-    /// flex-grow distribution would collapse to even shrinking.</summary>
+    /// back to the item's declared main-axis length, then to
+    /// the item's content size (approximated by the intrinsic
+    /// text/child width we can measure). We used to return 0
+    /// for the content-size case, which worked for
+    /// <c>flex-grow: 1</c> items (they grow to fill) but
+    /// collapsed every default <c>flex: 0 1 auto</c> item to
+    /// zero — so navbar links, logos, and inline-block
+    /// children of flex containers vanished on real pages.</summary>
     private static double ResolveBasis(
         Length basis, bool isRow, LayoutBox box, LayoutBox container,
-        double fontSize, double rootFontSize, ComputedStyle itemStyle)
+        double fontSize, double rootFontSize, ComputedStyle itemStyle,
+        Element itemElement, double grow)
     {
         if (!basis.IsNone && !basis.IsAuto)
         {
@@ -348,7 +354,78 @@ internal static class FlexLayout
             return declared.Resolve(isRow ? container.Width : container.Height,
                 fontSize, rootFontSize);
         }
+        // Items explicitly asking to grow (e.g. `flex: 1`)
+        // want a 0 basis so grow weights carve up the container
+        // evenly — matching every flex-grow test we already
+        // have. Non-growing items (the common default
+        // `flex: 0 1 auto` nav links) need a real content
+        // size so they don't collapse.
+        if (grow > 0) return 0;
+
+        if (isRow)
+        {
+            // Use intrinsic text/image width when the item
+            // has laid-out content; fall back to box.Width
+            // (PrepareBox's parent-fill) when nothing else is
+            // available so the item at least spans something.
+            int cellW = Daisi.Broski.Engine.Paint.BitmapFont.CellWidth
+                * Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
+            double intrinsic = MeasureIntrinsicMainSize(itemElement, cellW);
+            if (intrinsic > 0) return Math.Min(intrinsic, container.Width);
+        }
         return 0;
+    }
+
+    /// <summary>Best-effort intrinsic width: sum of descendant
+    /// text cell widths plus any explicit <c>width</c> on
+    /// descendants. Good enough to keep "navbar with a few
+    /// text links" from collapsing; doesn't need the full
+    /// min/max-content machinery the spec describes.</summary>
+    private static double MeasureIntrinsicMainSize(Element element, int cellWidth)
+    {
+        double total = 0;
+        foreach (var child in element.ChildNodes)
+        {
+            switch (child)
+            {
+                case Daisi.Broski.Engine.Dom.Text t:
+                    {
+                        int chars = 0;
+                        bool prevWs = true;
+                        foreach (var c in t.Data)
+                        {
+                            bool ws = char.IsWhiteSpace(c);
+                            if (ws && prevWs) continue;
+                            chars++;
+                            prevWs = ws;
+                        }
+                        total += chars * cellWidth;
+                        break;
+                    }
+                case Element e:
+                    {
+                        // Explicit width on a descendant wins
+                        // over recursing for its text: an img
+                        // with width="120" contributes 120 even
+                        // though the img has no text children.
+                        var w = e.GetAttribute("width");
+                        if (!string.IsNullOrEmpty(w)
+                            && double.TryParse(w,
+                                System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                out var wp))
+                        {
+                            total += wp;
+                        }
+                        else
+                        {
+                            total += MeasureIntrinsicMainSize(e, cellWidth);
+                        }
+                        break;
+                    }
+            }
+        }
+        return total;
     }
 
     private static double ParseDouble(string s, double fallback)

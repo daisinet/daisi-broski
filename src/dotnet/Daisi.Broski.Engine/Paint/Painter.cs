@@ -139,13 +139,20 @@ public static class Painter
         text = NormalizeWhitespace(text);
         if (text.Length == 0) return;
 
-        // Word-wrap to the box content width. Each line is
-        // BitmapFont.LineHeight tall. Lines that don't fit
-        // vertically are dropped (we don't grow the box at
-        // paint time).
+        // Resolve CSS font-size and line-height so the bitmap
+        // font scales up for headings and tight/loose line
+        // spacing actually applies. Without this every chunk
+        // of text renders at the same 7px glyph regardless of
+        // `font-size: 48px` or similar.
+        double fontSize = ResolveFontSizePx(style);
+        int scale = BitmapFont.ScaleFor(fontSize);
+        int glyphCellW = BitmapFont.CellWidth * scale;
+        int glyphH = BitmapFont.GlyphHeight * scale;
+        int lineStep = ResolveLineHeightPx(style, fontSize, glyphH);
+
         int contentWidth = (int)Math.Round(box.Width);
-        if (contentWidth < BitmapFont.CellWidth) return;
-        int maxCharsPerLine = contentWidth / BitmapFont.CellWidth;
+        if (contentWidth < glyphCellW) return;
+        int maxCharsPerLine = contentWidth / glyphCellW;
         if (maxCharsPerLine <= 0) return;
 
         var lines = WrapText(text, maxCharsPerLine);
@@ -155,10 +162,63 @@ public static class Painter
 
         for (int i = 0; i < lines.Count; i++)
         {
-            int y = yBase + i * BitmapFont.LineHeight;
-            if (y + BitmapFont.GlyphHeight > maxY && box.Height > 0) break;
-            BitmapFont.DrawText(buffer, x, y, lines[i], color);
+            int y = yBase + i * lineStep;
+            if (y + glyphH > maxY && box.Height > 0) break;
+            BitmapFont.DrawText(buffer, x, y, lines[i], color, scale);
         }
+    }
+
+    /// <summary>Resolve the computed <c>font-size</c> to
+    /// pixels. Inheritance has already happened in the
+    /// cascade; a missing value falls back to 16px (the
+    /// root default).</summary>
+    private static double ResolveFontSizePx(ComputedStyle style)
+    {
+        var raw = Daisi.Broski.Engine.Layout.Length.Parse(style.GetPropertyValue("font-size"));
+        if (raw.IsNone || raw.IsAuto) return 16;
+        return raw.Resolve(containingSize: 16, fontSize: 16, rootFontSize: 16, fallback: 16);
+    }
+
+    /// <summary>Compute the per-line advance in pixels given
+    /// the computed <c>line-height</c> + <c>font-size</c>.
+    /// Honors unit-less multipliers (<c>line-height: 1.5</c>),
+    /// px lengths, percentages, and the default "normal"
+    /// keyword (≈1.2em). Falls back to the glyph height when
+    /// the value is missing or unparseable.</summary>
+    private static int ResolveLineHeightPx(ComputedStyle style, double fontSize, int glyphHeight)
+    {
+        var raw = style.GetPropertyValue("line-height");
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var trimmed = raw.Trim();
+            // Unit-less number → multiplier of font-size.
+            if (double.TryParse(trimmed,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var mult) && !trimmed.EndsWith('%'))
+            {
+                return (int)Math.Round(fontSize * mult);
+            }
+            if (trimmed.EndsWith('%') && double.TryParse(
+                trimmed.AsSpan(0, trimmed.Length - 1),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var pct))
+            {
+                return (int)Math.Round(fontSize * pct / 100.0);
+            }
+            var len = Daisi.Broski.Engine.Layout.Length.Parse(trimmed);
+            if (!len.IsNone && !len.IsAuto)
+            {
+                return (int)Math.Round(len.Resolve(
+                    containingSize: fontSize, fontSize: fontSize,
+                    rootFontSize: 16, fallback: fontSize * 1.2));
+            }
+        }
+        // CSS default line-height is "normal" (~1.2) — falls
+        // through to this when the cascade didn't set it.
+        double normal = fontSize * 1.2;
+        return Math.Max(glyphHeight, (int)Math.Round(normal));
     }
 
     /// <summary>Collapse runs of whitespace to a single space

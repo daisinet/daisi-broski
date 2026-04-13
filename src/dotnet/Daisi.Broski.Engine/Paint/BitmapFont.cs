@@ -47,31 +47,53 @@ public static class BitmapFont
     private static byte[][]? _glyphsCache;
     private static byte[][] _glyphs => _glyphsCache ??= BuildGlyphs();
 
-    /// <summary>Pixel width of a one-line text run (no
-    /// wrapping). Glyph cells are fixed-width, so the total
-    /// is just <c>length * CellWidth</c>.</summary>
+    /// <summary>Pixel width of a one-line text run at 1x
+    /// scale. Glyph cells are fixed-width.</summary>
     public static int MeasureText(string text) =>
         text.Length * CellWidth;
 
-    /// <summary>Render a single line of text into the buffer
-    /// starting at <paramref name="x"/> / <paramref name="y"/>
-    /// (top-left of the first glyph). Each lit pixel is
-    /// painted as a 1×1 solid rect of <paramref name="color"/>.
-    /// Out-of-buffer pixels are clipped by
-    /// <see cref="RasterBuffer.FillRect"/>.</summary>
-    public static void DrawText(RasterBuffer buffer, int x, int y, string text, PaintColor color)
+    /// <summary>Pixel width of a one-line text run at the
+    /// given integer <paramref name="scale"/> — used when
+    /// the painter renders CSS <c>font-size</c> by scaling
+    /// each bitmap pixel up.</summary>
+    public static int MeasureText(string text, int scale) =>
+        text.Length * CellWidth * Math.Max(1, scale);
+
+    /// <summary>Pick a pixel scale for the bitmap font that
+    /// approximates a CSS <c>font-size</c>. At body default
+    /// (16px) scale is 2 so body text is visibly larger than
+    /// the 1x debug metrics; headings step up from there.
+    /// Clamped to at least 1 so everything stays visible.</summary>
+    public static int ScaleFor(double fontSizePx) =>
+        Math.Max(1, (int)Math.Round(fontSizePx / 8.0));
+
+    /// <summary>Render text at scale 1. Convenience wrapper
+    /// over the scaled variant.</summary>
+    public static void DrawText(RasterBuffer buffer, int x, int y, string text, PaintColor color) =>
+        DrawText(buffer, x, y, text, color, scale: 1);
+
+    /// <summary>Render a single line of text at the given
+    /// <paramref name="scale"/>. Each lit pixel of the source
+    /// bitmap is painted as a <paramref name="scale"/>×<paramref name="scale"/>
+    /// solid rect — so text at scale 4 is 4× the metrics of
+    /// the bitmap, without needing a larger glyph bank.</summary>
+    public static void DrawText(
+        RasterBuffer buffer, int x, int y, string text,
+        PaintColor color, int scale)
     {
         if (string.IsNullOrEmpty(text) || color.IsTransparent) return;
+        if (scale < 1) scale = 1;
         for (int i = 0; i < text.Length; i++)
         {
-            DrawGlyph(buffer, x + i * CellWidth, y, text[i], color);
+            DrawGlyph(buffer, x + i * CellWidth * scale, y, text[i], color, scale);
         }
     }
 
-    /// <summary>Draw one glyph. Honors uppercase fallback for
-    /// lowercase letters where the bitmap table only carries
-    /// the uppercase form.</summary>
-    private static void DrawGlyph(RasterBuffer buffer, int x, int y, char ch, PaintColor color)
+    /// <summary>Draw one glyph at <paramref name="scale"/>.
+    /// Honors uppercase fallback for lowercase letters where
+    /// the bitmap table only carries the uppercase form.</summary>
+    private static void DrawGlyph(
+        RasterBuffer buffer, int x, int y, char ch, PaintColor color, int scale)
     {
         // Lowercase fallback: many lowercase letters share a
         // recognizable shape with their uppercase, and
@@ -83,7 +105,7 @@ public static class BitmapFont
 
         if (effective < 32 || effective > 126)
         {
-            DrawMissingGlyph(buffer, x, y, color);
+            DrawMissingGlyph(buffer, x, y, color, scale);
             return;
         }
         var bits = _glyphs[effective - 32];
@@ -96,20 +118,24 @@ public static class BitmapFont
             {
                 if ((row & (1 << (4 - c))) != 0)
                 {
-                    buffer.FillRect(x + c, y + r + yOffset, 1, 1, color);
+                    buffer.FillRect(
+                        x + c * scale, y + (r + yOffset) * scale,
+                        scale, scale, color);
                 }
             }
         }
     }
 
-    private static void DrawMissingGlyph(RasterBuffer buffer, int x, int y, PaintColor color)
+    private static void DrawMissingGlyph(
+        RasterBuffer buffer, int x, int y, PaintColor color, int scale)
     {
-        // 5×7 outlined box — visually distinct so missing
-        // characters are obvious.
-        buffer.FillRect(x, y, 5, 1, color);
-        buffer.FillRect(x, y + GlyphHeight - 1, 5, 1, color);
-        buffer.FillRect(x, y, 1, GlyphHeight, color);
-        buffer.FillRect(x + 4, y, 1, GlyphHeight, color);
+        // 5×7 outlined box (scaled) — visually distinct so
+        // missing characters are obvious in output.
+        int w = 5 * scale, h = GlyphHeight * scale;
+        buffer.FillRect(x, y, w, scale, color);
+        buffer.FillRect(x, y + h - scale, w, scale, color);
+        buffer.FillRect(x, y, scale, h, color);
+        buffer.FillRect(x + w - scale, y, scale, h, color);
     }
 
     /// <summary>Parse the multi-line glyph art at the bottom
