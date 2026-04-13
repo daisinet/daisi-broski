@@ -807,6 +807,20 @@ public sealed class Super : Expression
     public Super(int start, int end) : base(start, end) { }
 }
 
+/// <summary>
+/// ES2015 <c>new.target</c> meta-property. Inside a function called via
+/// <c>new F(...)</c>, evaluates to <c>F</c> (the constructor function);
+/// inside a plain call (or at module top-level), evaluates to
+/// <c>undefined</c>. Class polyfills routinely use
+/// <c>new.target.prototype</c> to set up the instance prototype chain
+/// when transpiled to ES5 — without this node, sites that ship that
+/// pattern fail at parse time on the unexpected `.` after `new`.
+/// </summary>
+public sealed class NewTarget : Expression
+{
+    public NewTarget(int start, int end) : base(start, end) { }
+}
+
 // ---------------------------------------------------------------------------
 // Operator expressions
 // ---------------------------------------------------------------------------

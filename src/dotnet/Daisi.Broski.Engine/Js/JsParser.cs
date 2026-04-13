@@ -764,6 +764,19 @@ public sealed class JsParser
     {
         int start = Current.Start;
         Consume(); // for
+        // ES2018 `for await (...)` async iteration. We accept the
+        // `await` modifier syntactically but compile it like a
+        // regular `for-of` — the engine doesn't yet implement the
+        // async-iterator protocol, but the loop body still runs
+        // for any synchronously-iterable RHS, which is the common
+        // case in transpiled bundles where the async iteration is
+        // a polyfill over a sync source. `await` is a contextual
+        // keyword (Identifier token, not its own keyword kind).
+        if (Current.Kind == JsTokenKind.Identifier &&
+            Current.StringValue == "await")
+        {
+            Consume(); // await
+        }
         Expect(JsTokenKind.LeftParen, "for");
 
         JsNode? init = null;
@@ -1341,11 +1354,49 @@ public sealed class JsParser
         // `static` is an ES2015 future-reserved keyword; in
         // class body position it's a modifier. A method
         // literally named "static" has `static` followed by
-        // `(` — disambiguate via lookahead.
+        // `(` — disambiguate via lookahead. ES2022 also adds
+        // a `static { ... }` initialization block, which we
+        // accept syntactically and skip — running its body
+        // would require a full class-init context the
+        // compiler doesn't yet model. Skipping is safe: the
+        // block typically populates static state that
+        // dependent code re-derives, and the alternative is
+        // a parse error that kills the entire chunk.
         if (Current.Kind == JsTokenKind.KeywordStatic &&
             Peek(1).Kind != JsTokenKind.LeftParen)
         {
             Consume();
+            if (Current.Kind == JsTokenKind.LeftBrace)
+            {
+                // Skip the `{ ... }` body. Track depth so a
+                // nested `{` inside the block doesn't end the
+                // skip prematurely.
+                int blockStart = Current.Start;
+                Consume(); // {
+                int depth = 1;
+                while (depth > 0 && Current.Kind != JsTokenKind.EndOfFile)
+                {
+                    if (Current.Kind == JsTokenKind.LeftBrace) depth++;
+                    else if (Current.Kind == JsTokenKind.RightBrace) depth--;
+                    if (depth > 0) Consume();
+                }
+                Expect(JsTokenKind.RightBrace, "static block");
+                // Synthesize a no-op method placeholder — the
+                // class-body loop expects a MethodDefinition
+                // back. Use a fresh empty function so emit code
+                // is harmless if the placeholder is ever dispatched.
+                var emptyParams = new List<FunctionParameter>();
+                var emptyBody = new BlockStatement(blockStart, blockStart, new List<Statement>());
+                var emptyFn = new FunctionExpression(
+                    blockStart, blockStart, id: null,
+                    @params: emptyParams, body: emptyBody,
+                    isGenerator: false, isAsync: false);
+                var dummyKey = new Identifier(
+                    blockStart, blockStart, "__static_init__$" + blockStart);
+                return new MethodDefinition(
+                    blockStart, blockStart, dummyKey, emptyFn,
+                    MethodDefinitionKind.Method, isStatic: true);
+            }
             isStatic = true;
         }
 
@@ -1362,13 +1413,18 @@ public sealed class JsParser
             // `get name() {}` / `set name(v) {}` — bare
             // identifier name. `get [computed]() {}` — computed
             // accessor key (seen in core-js / notion class
-            // bodies). A method literally named `get` / `set`
-            // has `(` directly after, which we exclude here.
+            // bodies). `get keyword() {}` — keyword used as
+            // accessor name (e.g. `get enum()` in zod). A
+            // method literally named `get` / `set` has `(`
+            // directly after, which we exclude here.
             var p1 = Peek(1).Kind;
             var p2 = Peek(2).Kind;
             bool isAccessor =
                 (p1 == JsTokenKind.Identifier && p2 == JsTokenKind.LeftParen) ||
-                (p1 == JsTokenKind.LeftBracket);
+                (p1 == JsTokenKind.LeftBracket) ||
+                (IsKeyword(p1) && p2 == JsTokenKind.LeftParen) ||
+                ((p1 == JsTokenKind.StringLiteral || p1 == JsTokenKind.NumberLiteral)
+                    && p2 == JsTokenKind.LeftParen);
             if (isAccessor)
             {
                 accessorKind = Current.StringValue == "get"
@@ -1381,18 +1437,40 @@ public sealed class JsParser
         // ES2017 async method: `async name(...) { ... }`.
         // Same contextual-keyword pattern as other `async`
         // recognition sites — consume only if it's followed
-        // by an identifier and not a paren (so a method
-        // literally named `async` still works). Mutually
+        // by a valid method-name token (identifier, computed
+        // bracket, or `*` for an async generator). Mutually
         // exclusive with get/set — an accessor can't also be
         // async in this slice.
         bool isAsync = false;
         if (accessorKind == MethodDefinitionKind.Method &&
             Current.Kind == JsTokenKind.Identifier &&
-            Current.StringValue == "async" &&
-            Peek(1).Kind == JsTokenKind.Identifier)
+            Current.StringValue == "async")
+        {
+            var p1 = Peek(1).Kind;
+            // Accept any valid method-key follower: identifier,
+            // string / number literal, computed `[`, keyword
+            // (e.g. `async delete()`), or `*` for an async
+            // generator method.
+            if (p1 == JsTokenKind.Identifier ||
+                p1 == JsTokenKind.StringLiteral ||
+                p1 == JsTokenKind.NumberLiteral ||
+                p1 == JsTokenKind.LeftBracket ||
+                p1 == JsTokenKind.Star ||
+                IsKeyword(p1))
+            {
+                Consume();
+                isAsync = true;
+            }
+        }
+
+        // ES2018 async generator method: `async * name(...){}`.
+        // Also plain generator method `* name(...){}`.
+        bool isGenMethod = false;
+        if (accessorKind == MethodDefinitionKind.Method &&
+            Current.Kind == JsTokenKind.Star)
         {
             Consume();
-            isAsync = true;
+            isGenMethod = true;
         }
 
         // Method name — accept a plain Identifier, or a
@@ -1444,7 +1522,7 @@ public sealed class JsParser
         var key = new Identifier(keyStart, keyEnd, methodName);
 
         var paramList = ParseFormalParameters();
-        var body = ParseFunctionBody(insideAsync: isAsync);
+        var body = ParseFunctionBody(insideGenerator: isGenMethod, insideAsync: isAsync);
 
         var fnExpr = new FunctionExpression(
             start: key.Start,
@@ -1452,7 +1530,7 @@ public sealed class JsParser
             id: null,
             @params: paramList,
             body: body,
-            isGenerator: false,
+            isGenerator: isGenMethod,
             isAsync: isAsync);
 
         MethodDefinitionKind kind;
@@ -2233,6 +2311,26 @@ public sealed class JsParser
     {
         int start = Current.Start;
         Consume(); // new
+
+        // ES2015 meta-property: `new.target`. Resolves to the
+        // constructor function in a constructor call, or
+        // undefined otherwise. Class polyfills use
+        // `new.target.prototype` heavily.
+        if (Current.Kind == JsTokenKind.Dot)
+        {
+            Consume(); // .
+            if (Current.Kind != JsTokenKind.Identifier ||
+                Current.StringValue != "target")
+            {
+                throw new JsParseException(
+                    "Only `new.target` is a valid meta-property",
+                    Current.Start);
+            }
+            int ntEnd = Current.End;
+            Consume(); // target
+            return new NewTarget(start, ntEnd);
+        }
+
         Expression callee = Current.Kind == JsTokenKind.KeywordNew
             ? ParseNewExpression()
             : ParsePrimaryExpression();

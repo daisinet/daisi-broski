@@ -1284,6 +1284,24 @@ public sealed class JsVM
                         Push(superObj);
                     }
                     break;
+                case OpCode.LoadNewTarget:
+                    {
+                        // The most recently pushed call frame
+                        // records *this* function's call mode
+                        // (it stores the caller's pre-call state
+                        // including the IsConstructor flag the
+                        // VM used to enter our frame). Peek it
+                        // to decide what `new.target` should be.
+                        if (_frames.Count > 0 && _frames.Peek().IsConstructor)
+                        {
+                            Push(_currentFn ?? (object)JsValue.Undefined);
+                        }
+                        else
+                        {
+                            Push(JsValue.Undefined);
+                        }
+                    }
+                    break;
                 case OpCode.Return:
                     {
                         var returnValue = Pop();

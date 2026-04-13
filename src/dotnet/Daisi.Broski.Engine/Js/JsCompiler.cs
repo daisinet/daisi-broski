@@ -1641,6 +1641,9 @@ public sealed class JsCompiler
                 throw new JsCompileException(
                     "'super' must be followed by a member access or call",
                     sup.Start);
+            case NewTarget:
+                _chunk.Emit(OpCode.LoadNewTarget);
+                return;
 
             default:
                 throw new JsCompileException(

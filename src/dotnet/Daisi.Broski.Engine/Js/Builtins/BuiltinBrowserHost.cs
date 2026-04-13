@@ -736,6 +736,59 @@ internal static class BuiltinBrowserHost
         engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
         engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
         engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
+
+        // Common DOM-API constants + namespaces real sites poke at
+        // before doing any actual layout work. Without these as at
+        // least bare objects, scripts crash with ReferenceError on
+        // module load (seen on airbnb, cloudflare, anthropic).
+        var nodeFilter = new JsObject { Prototype = engine.ObjectPrototype };
+        // Standard NodeFilter constants — bitmask values from the
+        // DOM Traversal spec. Real consumers use these to
+        // configure TreeWalker / NodeIterator.
+        nodeFilter.Set("FILTER_ACCEPT", 1.0);
+        nodeFilter.Set("FILTER_REJECT", 2.0);
+        nodeFilter.Set("FILTER_SKIP", 3.0);
+        nodeFilter.Set("SHOW_ALL", (double)0xFFFFFFFFu);
+        nodeFilter.Set("SHOW_ELEMENT", 1.0);
+        nodeFilter.Set("SHOW_ATTRIBUTE", 2.0);
+        nodeFilter.Set("SHOW_TEXT", 4.0);
+        nodeFilter.Set("SHOW_CDATA_SECTION", 8.0);
+        nodeFilter.Set("SHOW_COMMENT", 128.0);
+        nodeFilter.Set("SHOW_DOCUMENT", 256.0);
+        nodeFilter.Set("SHOW_DOCUMENT_TYPE", 512.0);
+        nodeFilter.Set("SHOW_DOCUMENT_FRAGMENT", 1024.0);
+        engine.Globals["NodeFilter"] = nodeFilter;
+
+        // CSS namespace — typically used as `CSS.supports(...)` or
+        // `CSS.escape(...)`. We return false / pass-through stubs
+        // so consumers don't crash; real CSSOM support is in a
+        // future slice.
+        var cssObj = new JsObject { Prototype = engine.ObjectPrototype };
+        cssObj.Set("supports", new JsFunction("supports",
+            (thisVal, args) => false));
+        cssObj.Set("escape", new JsFunction("escape", (thisVal, args) =>
+        {
+            // Per CSS.escape spec: backslash-escape any character
+            // outside [-_a-zA-Z0-9]. Sufficient for sites that use
+            // it to build selector strings from arbitrary input.
+            if (args.Count == 0) return "";
+            var s = JsValue.ToJsString(args[0]);
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (var c in s)
+            {
+                if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') || c == '-' || c == '_')
+                {
+                    sb.Append(c);
+                }
+                else
+                {
+                    sb.Append('\\').Append(c);
+                }
+            }
+            return sb.ToString();
+        }));
+        engine.Globals["CSS"] = cssObj;
     }
 
     /// <summary>
