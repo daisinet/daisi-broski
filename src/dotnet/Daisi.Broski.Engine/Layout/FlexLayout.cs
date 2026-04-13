@@ -261,14 +261,31 @@ internal static class FlexLayout
             cursor += OuterMainOf(it.Box, isRow) + mainBetween;
         }
 
-        // 5) Position items along the cross axis.
+        // 5) Position items along the cross axis. For
+        // auto-sized containers with align-items: center or
+        // end, we need the effective cross size (the max
+        // outer-cross of all items) instead of the declared
+        // container cross (which is 0 until step 6). Without
+        // this clamp, a .row with auto height and
+        // align-items:center computes crossOffset =
+        // (0 - itemCross)/2 = -itemCross/2, lifting every
+        // item above the viewport.
+        double effectiveCross = containerCross;
+        if (effectiveCross <= 0)
+        {
+            foreach (var it in items)
+            {
+                double ocr = OuterCrossOf(it.Box, isRow);
+                if (ocr > effectiveCross) effectiveCross = ocr;
+            }
+        }
         foreach (var it in items)
         {
             double itemCross = OuterCrossOf(it.Box, isRow);
             double crossOffset = alignItems switch
             {
-                FlexAlign.Center => (containerCross - itemCross) / 2,
-                FlexAlign.End => containerCross - itemCross,
+                FlexAlign.Center => (effectiveCross - itemCross) / 2,
+                FlexAlign.End => effectiveCross - itemCross,
                 _ => 0,
             };
             if (isRow)
