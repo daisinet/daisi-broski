@@ -265,6 +265,131 @@ internal static class BuiltinBrowserHost
         });
     }
 
+    /// <summary>Wrap a <see cref="Daisi.Broski.Engine.Css.ComputedStyle"/>
+    /// in the script-shaped CSSStyleDeclaration surface
+    /// (<c>length</c>, indexed <c>item(i)</c>,
+    /// <c>getPropertyValue</c>, plus a getter per kebab /
+    /// camel property name). Read-only — writes are accepted
+    /// but ignored, matching what spec'd
+    /// <c>getComputedStyle</c> returns.</summary>
+    private static JsObject BuildComputedStyleObject(
+        JsEngine engine, Daisi.Broski.Engine.Css.ComputedStyle computed)
+    {
+        var obj = new ComputedStyleProxy(computed)
+        { Prototype = engine.ObjectPrototype };
+        obj.SetNonEnumerable("getPropertyValue",
+            new JsFunction("getPropertyValue", (t, a) =>
+            {
+                if (a.Count == 0) return "";
+                return computed.GetPropertyValue(JsValue.ToJsString(a[0]));
+            }));
+        obj.SetNonEnumerable("getPropertyPriority",
+            new JsFunction("getPropertyPriority", (t, a) => ""));
+        obj.SetNonEnumerable("setProperty",
+            new JsFunction("setProperty", (t, a) => JsValue.Undefined));
+        obj.SetNonEnumerable("removeProperty",
+            new JsFunction("removeProperty", (t, a) => ""));
+        obj.SetNonEnumerable("item", new JsFunction("item", (t, a) =>
+        {
+            int idx = a.Count > 0 ? (int)JsValue.ToNumber(a[0]) : 0;
+            int i = 0;
+            foreach (var kv in computed.Entries())
+            {
+                if (i++ == idx) return kv.Key;
+            }
+            return "";
+        }));
+        return obj;
+    }
+
+    /// <summary>JsObject subclass that surfaces computed-style
+    /// values via Get without copying the dictionary into the
+    /// JsObject's own property bag. Honors both kebab-case
+    /// and camelCase reads (so <c>style.color</c> and
+    /// <c>style.backgroundColor</c> both work) plus the
+    /// <c>length</c> shortcut.</summary>
+    private sealed class ComputedStyleProxy : JsObject
+    {
+        private readonly Daisi.Broski.Engine.Css.ComputedStyle _computed;
+        public ComputedStyleProxy(Daisi.Broski.Engine.Css.ComputedStyle computed)
+        {
+            _computed = computed;
+        }
+
+        public override object? Get(string key)
+        {
+            if (key == "length") return (double)_computed.Length;
+            // Try direct (kebab-case) and camelCase → kebab
+            // conversion. Properties on this set come from the
+            // resolver (which lowercases) so OrdinalIgnoreCase
+            // matches camelCase too.
+            if (_computed.TryGet(key, out var v)) return v;
+            var kebab = CamelToKebab(key);
+            if (_computed.TryGet(kebab, out var v2)) return v2;
+            // Resolve own properties (the installed prototype
+            // methods like getPropertyValue) BEFORE the
+            // CSS-property fallback so we don't shadow them
+            // with the empty-string default.
+            var baseValue = base.Get(key);
+            if (baseValue is not JsUndefined) return baseValue;
+            // For anything that looks like a CSS property name,
+            // honor the spec's "always return a string, never
+            // undefined" rule — unset values come back as "".
+            if (LooksLikeCssProperty(key)) return "";
+            return baseValue;
+        }
+
+        private static bool LooksLikeCssProperty(string key)
+        {
+            if (key.Length == 0) return false;
+            if (key.Contains('-')) return true;
+            if (!char.IsLower(key[0])) return false;
+            // camelCase: lowercase first char + at least one
+            // uppercase later — assume CSS shape.
+            for (int i = 1; i < key.Length; i++)
+            {
+                if (char.IsUpper(key[i])) return true;
+            }
+            // Single-word lowercase: the common CSS property
+            // names that real scripts read off getComputedStyle
+            // without going through getPropertyValue. Conservative
+            // list — better to occasionally return undefined
+            // for an obscure single-word property than to
+            // intercept a non-CSS field.
+            return key is "color" or "display" or "width" or "height"
+                or "margin" or "padding" or "position" or "top"
+                or "left" or "right" or "bottom" or "overflow"
+                or "opacity" or "visibility" or "cursor" or "float"
+                or "clear" or "content" or "border" or "outline"
+                or "background" or "font" or "transform"
+                or "transition" or "animation" or "flex" or "grid"
+                or "gap" or "order" or "direction" or "quotes";
+        }
+
+        public override bool Has(string key) =>
+            key == "length" || _computed.TryGet(key, out _) ||
+            _computed.TryGet(CamelToKebab(key), out _) || base.Has(key);
+
+        private static string CamelToKebab(string name)
+        {
+            if (name.Contains('-')) return name;
+            var sb = new System.Text.StringBuilder(name.Length + 4);
+            foreach (var c in name)
+            {
+                if (char.IsUpper(c))
+                {
+                    if (sb.Length > 0) sb.Append('-');
+                    sb.Append(char.ToLowerInvariant(c));
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
+        }
+    }
+
     // =======================================================
     // Storage (localStorage / sessionStorage)
     // =======================================================
@@ -492,26 +617,30 @@ internal static class BuiltinBrowserHost
         engine.Globals["scrollBy"] = new JsFunction("scrollBy", (t, a) => JsValue.Undefined);
         engine.Globals["scroll"] = new JsFunction("scroll", (t, a) => JsValue.Undefined);
 
-        // getComputedStyle — returns the element's inline style
-        // object (which is the best we can do without a real
-        // cascade / layout). Scripts that check
-        // getComputedStyle(el).display get the inline-set
-        // value back, which covers the common "did my
-        // script-side style change take effect?" pattern.
+        // getComputedStyle — runs the phase-6b cascade
+        // resolver against the element's owner document,
+        // returning a read-only style object that includes
+        // matched author rules, inline declarations, and
+        // inherited values from ancestors. Falls back to an
+        // empty stub when the argument isn't a wrapped DOM
+        // element so feature-detection paths
+        // (`getComputedStyle(window).whatever`) still don't
+        // crash.
         engine.Globals["getComputedStyle"] = new JsFunction("getComputedStyle", (thisVal, args) =>
         {
             if (args.Count == 0 || args[0] is not Daisi.Broski.Engine.Js.Dom.JsDomElement el)
             {
-                // Return a stub with empty getPropertyValue
-                // so script code that blindly calls
-                // getComputedStyle(nonElement) doesn't crash.
                 var stub = new JsObject { Prototype = engine.ObjectPrototype };
                 stub.SetNonEnumerable("getPropertyValue",
                     new JsFunction("getPropertyValue", (t, a) => ""));
                 return stub;
             }
-            // Delegate to the element's own style object.
-            return el.Get("style");
+            if (el.BackingNode is not Daisi.Broski.Engine.Dom.Element backing)
+            {
+                return new JsObject { Prototype = engine.ObjectPrototype };
+            }
+            var computed = Daisi.Broski.Engine.Css.StyleResolver.Resolve(backing);
+            return BuildComputedStyleObject(engine, computed);
         });
 
         // matchMedia returns a MediaQueryList-shaped object.
