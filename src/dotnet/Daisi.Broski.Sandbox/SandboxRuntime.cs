@@ -122,6 +122,9 @@ internal static class SandboxRuntime
                 case Methods.ReleaseHandles:
                     return HandleReleaseHandles(request, state);
 
+                case Methods.Screenshot:
+                    return HandleScreenshot(request, state);
+
                 case Methods.Close:
                     return IpcMessage.Response(request.Id, new CloseResponse());
 
@@ -530,6 +533,31 @@ internal static class SandboxRuntime
         return IpcMessage.Response(request.Id, new QueryHandlesResponse
         {
             Handles = handles,
+        });
+    }
+
+    private static IpcMessage HandleScreenshot(IpcMessage request, State state)
+    {
+        if (state.Page is null)
+        {
+            return IpcMessage.ResponseError(request.Id, "no_page",
+                "navigate / run must succeed before screenshot");
+        }
+        var req = request.ParamsAs<ScreenshotRequest>() ?? new ScreenshotRequest();
+        var viewport = new Daisi.Broski.Engine.Css.Viewport
+        {
+            Width = req.Width ?? Daisi.Broski.Engine.Css.Viewport.Default.Width,
+            Height = req.Height ?? Daisi.Broski.Engine.Css.Viewport.Default.Height,
+        };
+        var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(state.Page.Document, viewport);
+        var raster = Daisi.Broski.Engine.Paint.Painter.Paint(
+            root, state.Page.Document, viewport);
+        var png = Daisi.Broski.Engine.Paint.PngEncoder.Encode(raster);
+        return IpcMessage.Response(request.Id, new ScreenshotResponse
+        {
+            Png = png,
+            Width = viewport.Width,
+            Height = viewport.Height,
         });
     }
 

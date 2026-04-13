@@ -217,6 +217,23 @@ public sealed class BrowserSession : IAsyncDisposable
             Methods.Skim, request, ct).ConfigureAwait(false);
     }
 
+    /// <summary>Render the currently loaded page to a PNG.
+    /// The sandbox builds a fresh layout tree, paints
+    /// backgrounds + borders into a raster buffer, and
+    /// returns the encoded PNG bytes plus the viewport
+    /// dimensions used. Text rendering is gated on font
+    /// support (deferred) — pages dominated by colored
+    /// regions render correctly; text-heavy pages render
+    /// as the surrounding boxes only.</summary>
+    public async Task<ScreenshotResponse> ScreenshotAsync(
+        int? width = null, int? height = null,
+        CancellationToken ct = default)
+    {
+        var request = new ScreenshotRequest { Width = width, Height = height };
+        return await SendWithRespawnAsync<ScreenshotRequest, ScreenshotResponse>(
+            Methods.Screenshot, request, ct).ConfigureAwait(false);
+    }
+
     // ========================================================
     // Phase-4 live handle table — host-side entry points.
     //

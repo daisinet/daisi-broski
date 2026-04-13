@@ -507,6 +507,42 @@ public class BrowserSessionIntegrationTests
     }
 
     [Fact]
+    public async Task Screenshot_returns_PNG_bytes()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");
+
+        const string html = """
+            <!DOCTYPE html>
+            <html><head><style>
+              body { margin: 0; background-color: red; }
+            </style></head><body></body></html>
+            """;
+        using var server = new LocalHttpServer(ctx =>
+        {
+            LocalHttpServer.WriteText(ctx, html);
+            return Task.CompletedTask;
+        });
+
+        await using var session = BrowserSession.Create();
+        await session.NavigateAsync(server.BaseUrl,
+            ct: TestContext.Current.CancellationToken);
+
+        var resp = await session.ScreenshotAsync(
+            width: 200, height: 100,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(200, resp.Width);
+        Assert.Equal(100, resp.Height);
+        Assert.NotNull(resp.Png);
+        Assert.True(resp.Png.Length > 0);
+        // PNG signature
+        Assert.Equal(0x89, resp.Png[0]);
+        Assert.Equal(0x50, resp.Png[1]);
+        Assert.Equal(0x4E, resp.Png[2]);
+        Assert.Equal(0x47, resp.Png[3]);
+    }
+
+    [Fact]
     public async Task Navigate_invalidates_prior_handles()
     {
         Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows-only");

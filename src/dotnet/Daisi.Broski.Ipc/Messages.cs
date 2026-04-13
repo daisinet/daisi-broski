@@ -37,6 +37,11 @@ public static class Methods
     public const string QueryHandles = "query_handles";
     public const string ReleaseHandles = "release_handles";
 
+    // Phase 6f paint: layout the current page and return a
+    // PNG of the rendered viewport. Backgrounds + borders
+    // only — text rendering is gated on font support.
+    public const string Screenshot = "screenshot";
+
     // Notifications (sandbox → host)
     public const string NavigationStarted = "navigation_started";
     public const string NavigationCompleted = "navigation_completed";
@@ -442,6 +447,33 @@ public sealed class ReleaseHandlesResponse
 {
     [JsonPropertyName("released")]
     public required int Released { get; init; }
+}
+
+/// <summary>Request payload for <see cref="Methods.Screenshot"/>.
+/// Optional viewport overrides — when null, the engine's
+/// default 1280×720 viewport is used.</summary>
+public sealed class ScreenshotRequest
+{
+    [JsonPropertyName("width")]
+    public int? Width { get; init; }
+
+    [JsonPropertyName("height")]
+    public int? Height { get; init; }
+}
+
+/// <summary>Response payload for <see cref="Methods.Screenshot"/>.
+/// Carries the raw PNG bytes; the host saves to disk or
+/// hands to whatever consumer asked.</summary>
+public sealed class ScreenshotResponse
+{
+    [JsonPropertyName("png")]
+    public required byte[] Png { get; init; }
+
+    [JsonPropertyName("width")]
+    public required int Width { get; init; }
+
+    [JsonPropertyName("height")]
+    public required int Height { get; init; }
 }
 
 /// <summary>Payload for <see cref="Methods.NavigationCompleted"/>.</summary>
