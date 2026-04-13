@@ -232,6 +232,22 @@ public static class LayoutTree
             width = declaredWidth.Resolve(parent.Width, fontSize, rootFontSize);
         }
 
+        // min-width / max-width clamps — applied to resolved
+        // width so 'width: 100%' with 'max-width: 600px' stops
+        // at 600. CSS default is none for both.
+        var minWidth = Length.Parse(style.GetPropertyValue("min-width"));
+        if (!minWidth.IsNone && !minWidth.IsAuto)
+        {
+            double mw = minWidth.Resolve(parent.Width, fontSize, rootFontSize);
+            if (width < mw) width = mw;
+        }
+        var maxWidth = Length.Parse(style.GetPropertyValue("max-width"));
+        if (!maxWidth.IsNone && !maxWidth.IsAuto)
+        {
+            double mw = maxWidth.Resolve(parent.Width, fontSize, rootFontSize);
+            if (width > mw) width = mw;
+        }
+
         var declaredHeight = Length.Parse(style.GetPropertyValue("height"));
         if (declaredHeight.IsNone && element.TagName == "img")
         {
@@ -332,6 +348,24 @@ public static class LayoutTree
         else
         {
             box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
+        }
+        // Apply min-height / max-height clamps. Bootstrap's
+        // .form-control has `min-height: calc(1.5em + .75rem + 2px)`
+        // which is why empty inputs have a visible height at
+        // all — without respecting this, form fields render
+        // as zero-height bars.
+        var resolverStyle = resolver.Resolve(element);
+        var minH = Length.Parse(resolverStyle.GetPropertyValue("min-height"));
+        if (!minH.IsNone && !minH.IsAuto)
+        {
+            double mh = minH.Resolve(containingHeight, fontSize, rootFontSize);
+            if (box.Height < mh) box.Height = mh;
+        }
+        var maxH = Length.Parse(resolverStyle.GetPropertyValue("max-height"));
+        if (!maxH.IsNone && !maxH.IsAuto)
+        {
+            double mh = maxH.Resolve(containingHeight, fontSize, rootFontSize);
+            if (box.Height > mh) box.Height = mh;
         }
     }
 

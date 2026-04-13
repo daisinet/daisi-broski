@@ -274,6 +274,25 @@ public static class Painter
                 text += t.Data;
             }
         }
+        // Inputs have no children — fall back to `value` or,
+        // when empty, render the placeholder text dimmed.
+        if (text.Length == 0 && box.Element.TagName == "input")
+        {
+            var value = box.Element.GetAttribute("value");
+            if (!string.IsNullOrEmpty(value))
+            {
+                text = value;
+            }
+            else
+            {
+                var ph = box.Element.GetAttribute("placeholder");
+                if (!string.IsNullOrEmpty(ph))
+                {
+                    text = ph;
+                    color = ApplyAlpha(color, 0.55);
+                }
+            }
+        }
         text = NormalizeWhitespace(text);
         text = ApplyTextTransform(style, text);
         if (text.Length == 0) return;
