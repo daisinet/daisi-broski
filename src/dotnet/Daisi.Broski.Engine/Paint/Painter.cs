@@ -57,14 +57,33 @@ public static class Painter
         // background) overwrite the header's content.
         var positioned = new List<LayoutBox>();
         PaintBox(root, document, viewport, buffer, wireframe, positioned);
+        // Sort positioned boxes by z-index ascending; ties
+        // break on DOM order (stable sort). Matches the CSS
+        // painting-order rules where z-index controls the
+        // within-stacking-context order.
+        positioned.Sort((a, b) =>
+        {
+            int za = ResolveZIndex(a, viewport);
+            int zb = ResolveZIndex(b, viewport);
+            return za.CompareTo(zb);
+        });
         foreach (var p in positioned)
         {
-            // Paint the positioned subtree fully — descendants
-            // of a positioned box paint in their own stacking
-            // context, so we walk them normally from here.
             PaintBox(p, document, viewport, buffer, wireframe, positioned: null);
         }
         return buffer;
+    }
+
+    private static int ResolveZIndex(LayoutBox box, Viewport viewport)
+    {
+        if (box.Element is null) return 0;
+        var style = StyleResolver.Resolve(box.Element, viewport);
+        var raw = style.GetPropertyValue("z-index");
+        if (string.IsNullOrWhiteSpace(raw) || raw.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+        return int.TryParse(raw.Trim(), out var z) ? z : 0;
     }
 
     /// <summary>True when the box's element is out-of-flow
@@ -278,7 +297,7 @@ public static class Painter
             int contentWidth = (int)Math.Round(box.Width);
             if (contentWidth < 1) return;
             var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize);
-            double xBase = box.X;
+            var align = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
             double yBase = box.Y;
             double maxY = box.Y + box.Height;
             for (int i = 0; i < linesVector.Count; i++)
@@ -288,8 +307,11 @@ public static class Painter
                 // when the font's ascender metric isn't read.
                 double y = yBase + i * lineStep + lineStep * 0.8;
                 if (y + fontSize * 0.25 > maxY && box.Height > 0) break;
+                double lineWidth = Daisi.Broski.Engine.Fonts.GlyphRasterizer
+                    .MeasureText(webFont, linesVector[i], fontSize);
+                double xAligned = box.X + AlignOffset(align, contentWidth, lineWidth);
                 Daisi.Broski.Engine.Fonts.GlyphRasterizer.DrawText(
-                    buffer, webFont, xBase, y, linesVector[i], fontSize, color);
+                    buffer, webFont, xAligned, y, linesVector[i], fontSize, color);
             }
             return;
         }
@@ -305,7 +327,7 @@ public static class Painter
         if (maxCharsPerLine <= 0) return;
 
         var lines = WrapText(text, maxCharsPerLine);
-        int x = (int)Math.Round(box.X);
+        var alignBmp = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
         int yBaseInt = (int)Math.Round(box.Y);
         int maxYInt = (int)Math.Round(box.Y + box.Height);
 
@@ -313,8 +335,29 @@ public static class Painter
         {
             int y = yBaseInt + i * lineStep;
             if (y + glyphH > maxYInt && box.Height > 0) break;
+            double lineWidth = lines[i].Length * glyphCellW;
+            int x = (int)Math.Round(box.X
+                + AlignOffset(alignBmp, contentWidthBmp, lineWidth));
             BitmapFont.DrawText(buffer, x, y, lines[i], color, scale);
         }
+    }
+
+    /// <summary>Compute the horizontal offset for a line of
+    /// text inside its content box based on
+    /// <c>text-align</c>. <c>left</c>/<c>start</c> = 0;
+    /// <c>center</c> = half the slack; <c>right</c>/<c>end</c>
+    /// = all the slack. <c>justify</c> is treated as left for
+    /// now (word-spacing adjustment is a later slice).</summary>
+    private static double AlignOffset(string align, double contentWidth, double lineWidth)
+    {
+        double slack = contentWidth - lineWidth;
+        if (slack <= 0) return 0;
+        return align switch
+        {
+            "center" => slack / 2,
+            "right" or "end" => slack,
+            _ => 0,
+        };
     }
 
     private static Daisi.Broski.Engine.Fonts.TtfReader? ResolveWebFont(
@@ -546,45 +589,222 @@ public static class Painter
         int rw = (int)Math.Round(rect.Width);
         int rh = (int)Math.Round(rect.Height);
 
+        var radii = ParseBorderRadius(style, rw, rh, ResolveFontSizePx(style));
 
-        // Try background-image first (linear-gradient,
-        // url(...), etc.) — when present it stacks over the
-        // background-color, but for v1 we treat them as
-        // alternatives: gradient OR solid, never both.
-        var bgImage = style.GetPropertyValue("background-image");
+
+        // Paint the background-color FIRST so bg-image
+        // blends on top. CSS order:
+        //   1. background-color (a flat fill)
+        //   2. each background-image layer, back-to-front
+        var bgColor = CssColor.Parse(style.GetPropertyValue("background-color"));
         var bgShorthand = style.GetPropertyValue("background");
+        if (bgColor.IsTransparent)
+        {
+            bgColor = ExtractColorFromShorthand(bgShorthand);
+        }
+        if (!bgColor.IsTransparent)
+        {
+            FillRectOrRoundedRect(buffer, rx, ry, rw, rh,
+                ApplyAlpha(bgColor, opacity), radii);
+        }
+
+        // background-image: linear-gradient OR url(...). The
+        // two stack on top of background-color — transparent
+        // pixels inside the image show through.
+        var bgImage = style.GetPropertyValue("background-image");
         var gradientSrc = !string.IsNullOrEmpty(bgImage) ? bgImage : bgShorthand;
         if (Gradient.IsLinearGradient(gradientSrc))
         {
             var gradient = Gradient.TryParseLinear(gradientSrc);
             if (gradient is not null)
             {
-                // Minimum-viable opacity pass for gradients:
-                // when the element has opacity < 1, pre-scale
-                // every stop's alpha. Not quite spec-correct
-                // (real CSS opacity is a group composite) but
-                // avoids painting a full-alpha gradient over
-                // the existing canvas.
+                // Opacity pass for gradients — pre-scale stop
+                // alpha so the existing blend path composites
+                // the rest correctly.
                 var paintedGrad = opacity < 1 ? gradient with
                 {
                     Stops = gradient.Stops
                         .Select(s => new GradientStop(ApplyAlpha(s.Color, opacity), s.Position))
                         .ToList()
                 } : gradient;
-                Gradient.Paint(buffer, rx, ry, rw, rh, paintedGrad);
+                PaintGradientMasked(buffer, rx, ry, rw, rh, paintedGrad, radii);
                 return;
             }
         }
-
-        // Fall through to flat color: longhand first, then
-        // first color-shaped token in the shorthand.
-        var color = CssColor.Parse(style.GetPropertyValue("background-color"));
-        if (color.IsTransparent)
+        // url() background image — blit the fetched raster
+        // into the box, cover / stretch per CSS
+        // background-size. Transparent gradients stack over
+        // this; solid color stacks under.
+        if (box.Element is not null)
         {
-            color = ExtractColorFromShorthand(bgShorthand);
+            PaintBackgroundImageUrl(box, style, rx, ry, rw, rh, radii, opacity, buffer);
         }
+    }
+
+    /// <summary>Fill a rect honoring the parsed corner radii.
+    /// Degenerates to <see cref="RasterBuffer.FillRect"/> when
+    /// all corners are zero so unit tests that expect the old
+    /// behavior still pass.</summary>
+    private static void FillRectOrRoundedRect(
+        RasterBuffer buffer, int x, int y, int w, int h, PaintColor color,
+        (int tl, int tr, int br, int bl) radii)
+    {
         if (color.IsTransparent) return;
-        buffer.FillRect(rx, ry, rw, rh, ApplyAlpha(color, opacity));
+        if (radii.tl == 0 && radii.tr == 0 && radii.br == 0 && radii.bl == 0)
+        {
+            buffer.FillRect(x, y, w, h, color);
+            return;
+        }
+        buffer.FillRoundedRect(x, y, w, h, color,
+            radii.tl, radii.tr, radii.br, radii.bl);
+    }
+
+    /// <summary>Paint a linear gradient clipped to a rounded
+    /// rect — per-pixel mask so corner regions outside the
+    /// rounded shape pass through whatever's already behind
+    /// the element (nav, canvas, sibling background). The
+    /// earlier "paint-whole-rect then clear corners" version
+    /// zeroed the pixels there, erasing whatever sat below.</summary>
+    private static void PaintGradientMasked(
+        RasterBuffer buffer, int rx, int ry, int rw, int rh,
+        ParsedLinearGradient gradient, (int tl, int tr, int br, int bl) radii)
+    {
+        if (radii.tl == 0 && radii.tr == 0 && radii.br == 0 && radii.bl == 0)
+        {
+            Gradient.Paint(buffer, rx, ry, rw, rh, gradient);
+            return;
+        }
+        Gradient.PaintMasked(buffer, rx, ry, rw, rh, gradient,
+            (lx, ly) => RasterBuffer.PointInRoundedRect(
+                lx, ly, rw, rh, radii.tl, radii.tr, radii.br, radii.bl));
+    }
+
+    /// <summary>Resolve CSS <c>border-radius</c> to per-corner
+    /// integer pixel values. Accepts the common forms:
+    /// <c>8px</c>, <c>8px 16px</c> (tl-br / tr-bl),
+    /// <c>8px 16px 24px</c>, <c>8px 16px 24px 32px</c>, and
+    /// <c>9999px</c> pill. <c>%</c> values resolve against
+    /// the box's width (per spec, technically both axes —
+    /// close enough for v1).</summary>
+    private static (int TopLeft, int TopRight, int BottomRight, int BottomLeft)
+        ParseBorderRadius(ComputedStyle style, int width, int height, double fontSize)
+    {
+        var raw = style.GetPropertyValue("border-radius");
+        if (string.IsNullOrWhiteSpace(raw)) return (0, 0, 0, 0);
+        // Strip anything after `/` — that's the vertical-axis
+        // radius list, rarely used; the horizontal list
+        // matches it for circular corners.
+        int slash = raw.IndexOf('/');
+        var h = slash >= 0 ? raw.Substring(0, slash) : raw;
+        var tokens = h.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0) return (0, 0, 0, 0);
+
+        int Resolve(string t)
+        {
+            var len = Daisi.Broski.Engine.Layout.Length.Parse(t);
+            if (len.IsNone || len.IsAuto) return 0;
+            return (int)Math.Round(len.Resolve(width, fontSize, 16));
+        }
+
+        int a = Resolve(tokens[0]);
+        int b = tokens.Length > 1 ? Resolve(tokens[1]) : a;
+        int c = tokens.Length > 2 ? Resolve(tokens[2]) : a;
+        int d = tokens.Length > 3 ? Resolve(tokens[3]) : b;
+        return (a, b, c, d);
+    }
+
+    /// <summary>Paint a fetched <c>background-image: url(...)</c>
+    /// into the box, honoring <c>background-size</c>
+    /// (<c>cover</c> / <c>contain</c> / explicit px) and the
+    /// rounded-rect mask.</summary>
+    private static void PaintBackgroundImageUrl(
+        LayoutBox box, ComputedStyle style,
+        int rx, int ry, int rw, int rh,
+        (int tl, int tr, int br, int bl) radii,
+        double opacity, RasterBuffer buffer)
+    {
+        if (box.Element?.OwnerDocument is not { } doc) return;
+        if (doc.BackgroundImages is null) return;
+        if (!doc.BackgroundImages.TryGetValue(box.Element, out var src)) return;
+        if (src is null) return;
+        var sizeKw = style.GetPropertyValue("background-size");
+        double scaleX, scaleY;
+        switch ((sizeKw ?? "").Trim().ToLowerInvariant())
+        {
+            case "contain":
+                double cScale = Math.Min(rw / (double)src.Width, rh / (double)src.Height);
+                scaleX = scaleY = cScale;
+                break;
+            case "cover":
+            default:
+                double fScale = Math.Max(rw / (double)src.Width, rh / (double)src.Height);
+                scaleX = scaleY = fScale;
+                break;
+        }
+        int dw = (int)Math.Round(src.Width * scaleX);
+        int dh = (int)Math.Round(src.Height * scaleY);
+        // Center the scaled image in the box (CSS default
+        // for background-position is 0 0, but visually
+        // "cover" usually centers; we split the difference).
+        int dx = rx + (rw - dw) / 2;
+        int dy = ry + (rh - dh) / 2;
+        BlitImageMasked(src, buffer, dx, dy, dw, dh, rx, ry, rw, rh, radii, opacity);
+    }
+
+    private static void BlitImageMasked(
+        RasterBuffer src, RasterBuffer dst,
+        int dstX, int dstY, int dstW, int dstH,
+        int clipX, int clipY, int clipW, int clipH,
+        (int tl, int tr, int br, int bl) radii,
+        double opacity)
+    {
+        int x0 = Math.Max(Math.Max(0, clipX), dstX);
+        int y0 = Math.Max(Math.Max(0, clipY), dstY);
+        int x1 = Math.Min(Math.Min(dst.Width, clipX + clipW), dstX + dstW);
+        int y1 = Math.Min(Math.Min(dst.Height, clipY + clipH), dstY + dstH);
+        if (x0 >= x1 || y0 >= y1) return;
+        bool hasRadii = radii.tl > 0 || radii.tr > 0 || radii.br > 0 || radii.bl > 0;
+        for (int dy = y0; dy < y1; dy++)
+        {
+            int sy = (int)((dy - dstY) * (long)src.Height / dstH);
+            if (sy < 0 || sy >= src.Height) continue;
+            int localY = dy - clipY;
+            for (int dx = x0; dx < x1; dx++)
+            {
+                if (hasRadii)
+                {
+                    int localX = dx - clipX;
+                    if (!RasterBuffer.PointInRoundedRect(
+                        localX, localY, clipW, clipH,
+                        radii.tl, radii.tr, radii.br, radii.bl)) continue;
+                }
+                int sx = (int)((dx - dstX) * (long)src.Width / dstW);
+                if (sx < 0 || sx >= src.Width) continue;
+                int srcIdx = (sy * src.Width + sx) * 4;
+                int dstIdx = (dy * dst.Width + dx) * 4;
+                byte sR = src.Pixels[srcIdx];
+                byte sG = src.Pixels[srcIdx + 1];
+                byte sB = src.Pixels[srcIdx + 2];
+                byte sA = src.Pixels[srcIdx + 3];
+                if (sA == 0) continue;
+                double a = (sA / 255.0) * opacity;
+                if (a >= 1)
+                {
+                    dst.Pixels[dstIdx] = sR;
+                    dst.Pixels[dstIdx + 1] = sG;
+                    dst.Pixels[dstIdx + 2] = sB;
+                    dst.Pixels[dstIdx + 3] = 255;
+                }
+                else
+                {
+                    double oneMinus = 1 - a;
+                    dst.Pixels[dstIdx] = (byte)(sR * a + dst.Pixels[dstIdx] * oneMinus);
+                    dst.Pixels[dstIdx + 1] = (byte)(sG * a + dst.Pixels[dstIdx + 1] * oneMinus);
+                    dst.Pixels[dstIdx + 2] = (byte)(sB * a + dst.Pixels[dstIdx + 2] * oneMinus);
+                    dst.Pixels[dstIdx + 3] = (byte)Math.Min(255, dst.Pixels[dstIdx + 3] + a * 255);
+                }
+            }
+        }
     }
 
     /// <summary>Resolve the computed <c>opacity</c> to a

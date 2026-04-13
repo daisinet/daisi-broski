@@ -83,6 +83,7 @@ internal static class InlineLayout
         double cursorX = 0;
         double cursorY = 0;
         double lineHeight = containerLineH;
+        int layoutStartIndex = container.Children.Count;
 
         var containerStyle = resolver.Resolve(element);
         foreach (var child in element.ChildNodes)
@@ -97,8 +98,21 @@ internal static class InlineLayout
             {
                 var normalized = NormalizeTextFragment(tn.Data);
                 if (normalized.Length == 0) continue;
+                // Measure with the actual font that the
+                // painter will use so layout's wrap decisions
+                // match what ends up in pixels. Without this
+                // the layout sees bitmap-width estimates
+                // (6 × scale per char) but the painter emits
+                // real font advance widths — narrow words
+                // like "it" overestimate, wide words like
+                // "Intelligence." underestimate, and either
+                // way the line break falls in the wrong spot.
+                var webFont = container.Element?.OwnerDocument is { } doc
+                    ? ResolveWebFontForMeasure(doc, containerStyle, normalized)
+                    : null;
                 EmitWrappedTextRuns(container, normalized, containerStyle,
                     containerCellW, containerLineH, availWidth,
+                    webFont, fontSize,
                     ref cursorX, ref cursorY, ref lineHeight);
                 continue;
             }
@@ -221,28 +235,122 @@ internal static class InlineLayout
         {
             container.Height = Math.Max(container.Height, cursorY + lineHeight);
         }
+
+        // Apply text-align across whole lines: group inline
+        // children by their Y bucket, compute the line's
+        // width, shift every child on the line by the align
+        // offset. Per-run shifting (done earlier) only worked
+        // for single-run lines; mixed inline content
+        // (h2>Alpha<span>Phase</span>) needs per-line grouping
+        // so the whole line pair centers together.
+        ApplyTextAlignToChildren(container, containerStyle, layoutStartIndex);
+    }
+
+    private static void ApplyTextAlignToChildren(
+        LayoutBox container, ComputedStyle style, int startIndex)
+    {
+        var align = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
+        if (align != "center" && align != "right" && align != "end") return;
+        int count = container.Children.Count;
+        if (count <= startIndex) return;
+
+        // Group children by their Y coord (rounded to integer
+        // so float noise doesn't split adjacent runs). For
+        // each group, find minX + maxX and shift each child
+        // by the slack-based offset.
+        var byLine = new Dictionary<int, List<LayoutBox>>();
+        for (int i = startIndex; i < count; i++)
+        {
+            var ch = container.Children[i];
+            int key = (int)Math.Round(ch.Y);
+            if (!byLine.TryGetValue(key, out var list))
+            {
+                list = new List<LayoutBox>();
+                byLine[key] = list;
+            }
+            list.Add(ch);
+        }
+        double contentWidth = container.Width;
+        foreach (var list in byLine.Values)
+        {
+            double minX = double.MaxValue, maxX = double.MinValue;
+            foreach (var ch in list)
+            {
+                if (ch.X < minX) minX = ch.X;
+                double right = ch.X + ch.Width;
+                if (right > maxX) maxX = right;
+            }
+            double lineW = maxX - minX;
+            // Undo the old cursor-relative offset (minX is
+            // container.X for left-aligned); the shift here
+            // produces the final alignment.
+            double containerLeft = container.X;
+            double slack = contentWidth - lineW;
+            if (slack <= 0) continue;
+            double shift = align switch
+            {
+                "center" => slack / 2,
+                _ => slack,
+            };
+            // Remove any per-run offset I applied in CommitRun —
+            // subtract its effect by resetting all boxes to
+            // start from containerLeft then adding the group
+            // shift. We detect the per-run shift by comparing
+            // minX vs containerLeft. If minX > containerLeft
+            // the per-run shift is already baked in, so we
+            // only apply the difference.
+            double existingShift = minX - containerLeft;
+            double delta = shift - existingShift;
+            if (Math.Abs(delta) < 0.5) continue;
+            foreach (var ch in list)
+            {
+                ch.X += delta;
+                ShiftDescendants(ch, delta, 0);
+            }
+        }
+    }
+
+    private static void ShiftDescendants(LayoutBox box, double dx, double dy)
+    {
+        foreach (var child in box.Children)
+        {
+            child.X += dx;
+            child.Y += dy;
+            ShiftDescendants(child, dx, dy);
+        }
     }
 
     /// <summary>Greedy word-wrap a text fragment into one or
     /// more anonymous text-run layout boxes. The cursor is
     /// advanced as if each line were placed inline; lines
     /// after the first sit at cursorX=0 of the next line
-    /// (just like a real inline text run that overflows).</summary>
+    /// (just like a real inline text run that overflows).
+    /// Measures word widths via the resolved web font when
+    /// one is available so the wrap matches what the painter
+    /// will actually draw.</summary>
     private static void EmitWrappedTextRuns(
         LayoutBox container, string text, ComputedStyle containerStyle,
         int cellWidth, double lineHeight, double availWidth,
+        Daisi.Broski.Engine.Fonts.TtfReader? font, double fontSize,
         ref double cursorX, ref double cursorY, ref double lineHeightVar)
     {
         var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length == 0) return;
-        double spaceW = cellWidth; // one cell of space between words
+        double spaceW = font is not null
+            ? Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, " ", fontSize)
+            : cellWidth;
+        if (spaceW <= 0) spaceW = cellWidth;
+
+        double Measure(string w) => font is not null
+            ? Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, w, fontSize)
+            : w.Length * cellWidth;
 
         var current = new System.Text.StringBuilder();
         double currentW = 0;
 
         foreach (var word in words)
         {
-            double wordW = word.Length * cellWidth;
+            double wordW = Measure(word);
             // Starting a fresh line? Emit the word even if it
             // overflows — hard-break within a word would need
             // character-level slicing.
@@ -302,6 +410,33 @@ internal static class InlineLayout
         tb.X = container.X + cursorX;
         tb.Y = container.Y + cursorY;
         cursorX += currentW;
+    }
+
+    /// <summary>Resolve the web font InlineLayout should
+    /// measure with. Picks the font that covers the first
+    /// char of the text so Latin / non-Latin fonts don't get
+    /// mixed up.</summary>
+    private static Daisi.Broski.Engine.Fonts.TtfReader? ResolveWebFontForMeasure(
+        Daisi.Broski.Engine.Dom.Document doc, ComputedStyle style, string text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        var family = style.GetPropertyValue("font-family");
+        if (string.IsNullOrWhiteSpace(family)) return null;
+        int weight = 400;
+        var wRaw = style.GetPropertyValue("font-weight");
+        if (!string.IsNullOrWhiteSpace(wRaw))
+        {
+            var t = wRaw.Trim().ToLowerInvariant();
+            weight = t switch
+            {
+                "bold" => 700, "lighter" => 300, "bolder" => 700, "normal" => 400,
+                _ => int.TryParse(t, out var n) ? n : 400,
+            };
+        }
+        var sKw = style.GetPropertyValue("font-style");
+        if (string.IsNullOrEmpty(sKw)) sKw = "normal";
+        return Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
+            doc, family, weight, sKw, text[0]);
     }
 
     private static string NormalizeTextFragment(string data)

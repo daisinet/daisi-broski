@@ -171,6 +171,26 @@ public sealed class Document : Node
         list.Add(font);
     }
 
+    /// <summary>CSS-referenced background images
+    /// (<c>background-image: url(...)</c>), fetched and
+    /// decoded by PageLoader. Keyed by the element the rule
+    /// matches, so the painter can blit the image as a
+    /// layer over the element's background color.</summary>
+    private Dictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>? _backgroundImages;
+
+    public IReadOnlyDictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>? BackgroundImages =>
+        _backgroundImages;
+
+    public void AttachBackgroundImage(
+        Element element, Daisi.Broski.Engine.Paint.RasterBuffer decoded)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(decoded);
+        _backgroundImages ??= new Dictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>(
+            ReferenceEqualityComparer.Instance);
+        _backgroundImages[element] = decoded;
+    }
+
     private void RecomputeStyleSheets()
     {
         var list = new List<Stylesheet>();

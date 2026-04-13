@@ -86,6 +86,102 @@ public sealed class RasterBuffer
         }
     }
 
+    /// <summary>Fill a rounded rectangle with per-corner
+    /// radii. Each corner is clipped against a circle of
+    /// its own radius so different CSS <c>border-radius</c>
+    /// values per corner render correctly. Pixels outside
+    /// the arcs aren't filled; pixels inside get the full
+    /// color (no anti-aliasing — a sub-pixel coverage pass
+    /// is a follow-up).</summary>
+    public void FillRoundedRect(
+        int x, int y, int w, int h, PaintColor color,
+        int topLeft, int topRight, int bottomRight, int bottomLeft)
+    {
+        if (color.IsTransparent) return;
+        if (w <= 0 || h <= 0) return;
+        // Clamp radii to half the smaller dimension so they
+        // can't overlap (spec §5.1). Integer math keeps the
+        // inside-test cheap.
+        int maxR = Math.Min(w, h) / 2;
+        if (topLeft > maxR) topLeft = maxR;
+        if (topRight > maxR) topRight = maxR;
+        if (bottomRight > maxR) bottomRight = maxR;
+        if (bottomLeft > maxR) bottomLeft = maxR;
+
+        int x0 = Math.Max(0, x);
+        int y0 = Math.Max(0, y);
+        int x1 = Math.Min(Width, x + w);
+        int y1 = Math.Min(Height, y + h);
+        if (x0 >= x1 || y0 >= y1) return;
+
+        // Corner centers (relative to (x, y)).
+        // Inside-arc test: (dx*dx + dy*dy) <= r*r, where
+        // dx/dy are distances from the center to the pixel.
+        double a = color.A / 255.0;
+        double oneMinus = 1 - a;
+
+        for (int py = y0; py < y1; py++)
+        {
+            int localY = py - y;
+            for (int px = x0; px < x1; px++)
+            {
+                int localX = px - x;
+                if (!PointInRoundedRect(localX, localY, w, h,
+                    topLeft, topRight, bottomRight, bottomLeft)) continue;
+                int idx = (py * Width + px) * 4;
+                if (color.IsOpaque)
+                {
+                    Pixels[idx] = color.R;
+                    Pixels[idx + 1] = color.G;
+                    Pixels[idx + 2] = color.B;
+                    Pixels[idx + 3] = 255;
+                }
+                else
+                {
+                    Pixels[idx] = (byte)(color.R * a + Pixels[idx] * oneMinus);
+                    Pixels[idx + 1] = (byte)(color.G * a + Pixels[idx + 1] * oneMinus);
+                    Pixels[idx + 2] = (byte)(color.B * a + Pixels[idx + 2] * oneMinus);
+                    Pixels[idx + 3] = (byte)Math.Min(255, Pixels[idx + 3] + color.A * oneMinus);
+                }
+            }
+        }
+    }
+
+    /// <summary>Is <c>(lx, ly)</c> inside a rounded rect of
+    /// size <c>w × h</c> with the given corner radii? Each
+    /// corner's circular region is checked via squared-
+    /// distance (avoids Math.Sqrt per pixel).</summary>
+    internal static bool PointInRoundedRect(
+        int lx, int ly, int w, int h,
+        int tl, int tr, int br, int bl)
+    {
+        // Top-left corner region
+        if (lx < tl && ly < tl)
+        {
+            int dx = tl - lx, dy = tl - ly;
+            return dx * dx + dy * dy <= tl * tl;
+        }
+        // Top-right
+        if (lx >= w - tr && ly < tr)
+        {
+            int dx = lx - (w - tr - 1), dy = tr - ly;
+            return dx * dx + dy * dy <= tr * tr;
+        }
+        // Bottom-right
+        if (lx >= w - br && ly >= h - br)
+        {
+            int dx = lx - (w - br - 1), dy = ly - (h - br - 1);
+            return dx * dx + dy * dy <= br * br;
+        }
+        // Bottom-left
+        if (lx < bl && ly >= h - bl)
+        {
+            int dx = bl - lx, dy = ly - (h - bl - 1);
+            return dx * dx + dy * dy <= bl * bl;
+        }
+        return true;
+    }
+
     /// <summary>Draw a 1-side-at-a-time outlined rectangle
     /// — top, right, bottom, left — using the supplied
     /// border widths. Each side fills the rect spanning

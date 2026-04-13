@@ -88,6 +88,13 @@ public sealed class PageLoader : IDisposable
         // on an optional font variant doesn't nuke the page.
         await FetchFontsAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
 
+        // Phase 6z: fetch CSS-referenced background images
+        // (background-image: url(...)). Walk every selector
+        // that sets a background-image URL, match against
+        // the DOM, and fetch+decode the referenced file so
+        // the painter can blit it as a layer.
+        await FetchBackgroundImagesAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
+
         return new LoadedPage
         {
             RequestUrl = fetchResult.RequestUrl,
@@ -325,6 +332,125 @@ public sealed class PageLoader : IDisposable
         {
             if (font is not null) document.AttachFont(font);
         }
+    }
+
+    /// <summary>Walk every StyleRule in every loaded
+    /// stylesheet; for each declaration that sets a
+    /// <c>background-image: url(...)</c>, resolve the URL
+    /// against the stylesheet's base (we track which sheet
+    /// each rule came from), match the selector against the
+    /// DOM, fetch + decode the image, and attach the decoded
+    /// buffer to each matching element. PNG only for now.</summary>
+    private async Task FetchBackgroundImagesAsync(
+        Document document, Uri baseUri, CancellationToken ct)
+    {
+        var elementUrls = new List<(Element el, Uri url)>();
+        var uniqueUrls = new HashSet<Uri>();
+
+        foreach (var sheet in document.StyleSheets)
+        {
+            foreach (var rule in sheet.Rules)
+            {
+                ScanRule(rule, document, baseUri, elementUrls, uniqueUrls);
+            }
+        }
+
+        if (uniqueUrls.Count == 0) return;
+
+        // Fetch each unique URL once, decode, stash the
+        // bytes keyed by URL so multiple matching elements
+        // share the decoded buffer.
+        var fetchTasks = uniqueUrls.Select(async url =>
+        {
+            try
+            {
+                var result = await _fetcher.FetchAsync(url, ct).ConfigureAwait(false);
+                if ((int)result.Status < 200 || (int)result.Status >= 300)
+                {
+                    return (url, (RasterBuffer?)null);
+                }
+                return (url, PngDecoder.TryDecode(result.Body));
+            }
+            catch
+            {
+                return (url, (RasterBuffer?)null);
+            }
+        }).ToList();
+
+        var decoded = (await Task.WhenAll(fetchTasks).ConfigureAwait(false))
+            .Where(t => t.Item2 is not null)
+            .ToDictionary(t => t.url, t => t.Item2!);
+
+        foreach (var (el, url) in elementUrls)
+        {
+            if (decoded.TryGetValue(url, out var raster))
+            {
+                document.AttachBackgroundImage(el, raster);
+            }
+        }
+    }
+
+    private static void ScanRule(
+        Css.Rule rule, Document document, Uri baseUri,
+        List<(Element, Uri)> elementUrls, HashSet<Uri> uniqueUrls)
+    {
+        if (rule is Css.StyleRule sr)
+        {
+            // Find a background-image: url(...) declaration.
+            string? urlStr = null;
+            foreach (var d in sr.Declarations)
+            {
+                var prop = d.Property.ToLowerInvariant();
+                if (prop == "background-image" || prop == "background")
+                {
+                    var u = ExtractUrl(d.Value);
+                    if (u is not null) { urlStr = u; break; }
+                }
+            }
+            if (urlStr is null) return;
+            if (!Uri.TryCreate(baseUri, urlStr, out var absUrl)) return;
+            if (absUrl.Scheme is not ("http" or "https")) return;
+            uniqueUrls.Add(absUrl);
+            if (sr.Selectors is null) return;
+            foreach (var el in document.DescendantElements())
+            {
+                foreach (var complex in sr.Selectors.Selectors)
+                {
+                    if (Daisi.Broski.Engine.Dom.Selectors.SelectorMatcher.MatchesComplex(el, complex))
+                    {
+                        elementUrls.Add((el, absUrl));
+                        break;
+                    }
+                }
+            }
+        }
+        else if (rule is Css.AtRule ar && ar.Rules is { Count: > 0 })
+        {
+            foreach (var nested in ar.Rules)
+            {
+                ScanRule(nested, document, baseUri, elementUrls, uniqueUrls);
+            }
+        }
+    }
+
+    /// <summary>Pull the first <c>url(...)</c> target out of
+    /// a CSS value. Accepts quoted and unquoted URLs; returns
+    /// null when no url() is present (e.g. a pure gradient
+    /// or keyword value).</summary>
+    private static string? ExtractUrl(string value)
+    {
+        int i = value.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+        if (i < 0) return null;
+        int start = i + 4;
+        int end = value.IndexOf(')', start);
+        if (end < 0) return null;
+        var inner = value.Substring(start, end - start).Trim();
+        if (inner.Length >= 2 && (inner[0] == '"' || inner[0] == '\'')
+            && inner[^1] == inner[0])
+        {
+            inner = inner.Substring(1, inner.Length - 2);
+        }
+        return inner.Length == 0 ? null : inner;
     }
 
     private static bool LooksLikeGoogleFonts(Uri url) =>

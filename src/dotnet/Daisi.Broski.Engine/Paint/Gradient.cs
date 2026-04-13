@@ -38,6 +38,48 @@ public static class Gradient
     /// rect are ignored — every pixel receives the
     /// interpolated color at its position along the gradient
     /// axis.</summary>
+    /// <summary>Paint a gradient clipped to a mask predicate.
+    /// <paramref name="inside"/> receives box-local (lx, ly)
+    /// coords and returns true when that pixel should be
+    /// painted. Used by rounded-rect backgrounds so corners
+    /// outside the rounded shape pass through.</summary>
+    public static void PaintMasked(
+        RasterBuffer buffer, int x, int y, int w, int h,
+        ParsedLinearGradient gradient, Func<int, int, bool> inside)
+    {
+        if (w <= 0 || h <= 0) return;
+        if (gradient.Stops.Count == 0) return;
+        var stops = NormalizeStops(gradient.Stops);
+        var (dx, dy) = DirectionVector(gradient.AngleDeg, w, h);
+        double len = Math.Abs(dx * w) + Math.Abs(dy * h);
+        if (len < 1) len = 1;
+        double norm = Math.Sqrt(dx * dx + dy * dy);
+        double udx = dx / norm;
+        double udy = dy / norm;
+        double originX = dx >= 0 ? 0 : w;
+        double originY = dy >= 0 ? 0 : h;
+
+        int x0 = Math.Max(0, x);
+        int y0 = Math.Max(0, y);
+        int x1 = Math.Min(buffer.Width, x + w);
+        int y1 = Math.Min(buffer.Height, y + h);
+        for (int py = y0; py < y1; py++)
+        {
+            double localY = py - y - originY;
+            for (int px = x0; px < x1; px++)
+            {
+                if (!inside(px - x, py - y)) continue;
+                double localX = px - x - originX;
+                double t = (localX * udx + localY * udy) / len;
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+                var color = SampleStops(stops, t);
+                if (color.A == 0) continue;
+                BlitPixel(buffer, px, py, color);
+            }
+        }
+    }
+
     public static void Paint(
         RasterBuffer buffer, int x, int y, int w, int h, ParsedLinearGradient gradient)
     {
