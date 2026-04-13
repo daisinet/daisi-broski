@@ -7,7 +7,7 @@
     <button class="back-btn" @onclick="GoBack" disabled="@(!Session.History.Any())"
             title="Back to previous page">←</button>
 
-    <input class="url" type="text" @bind="_urlInput" @bind:event="oninput"
+    <input class="url" type="text" value="@_urlInput" @oninput="OnUrlInput"
            @onkeydown="OnUrlKeyDown" @ref="_urlInputRef"
            placeholder="Type a URL (https://example.com)..."
            disabled="@Session.IsLoading" />
@@ -265,6 +265,14 @@ else
         {
             _urlInput = Session.CurrentRequestUrl;
         }
+        // Force a re-render: when this method is called from
+        // [JSInvokable] NavigateFromReader (the in-page link click
+        // path), Blazor doesn't auto-render after the call returns
+        // the way it does for component-bound event handlers.
+        // OnSessionChanged usually catches it, but the explicit
+        // render guarantees the address bar reflects the
+        // post-redirect URL the moment the navigation completes.
+        StateHasChanged();
     }
 
     private async Task GoBack() => await Session.GoBackAsync();
@@ -285,6 +293,18 @@ else
     private async Task OnUrlKeyDown(KeyboardEventArgs e)
     {
         if (e.Key == "Enter") await Go();
+    }
+
+    /// <summary>Read the user's typed value from the input on
+    /// every keystroke. We do the read explicitly (rather than via
+    /// <c>@bind</c>) so the address bar's <c>value</c> attribute
+    /// is always re-rendered from the C# field — that lets a
+    /// post-redirect URL update show up immediately after a
+    /// link click, which the bidirectional <c>@bind</c> binding
+    /// missed in some cases.</summary>
+    private void OnUrlInput(ChangeEventArgs e)
+    {
+        _urlInput = e.Value as string ?? "";
     }
 
     public void Dispose()
