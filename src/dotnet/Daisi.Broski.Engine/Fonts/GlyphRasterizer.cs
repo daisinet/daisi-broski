@@ -45,12 +45,24 @@ public static class GlyphRasterizer
     /// naturally; buffer bounds clip, the box doesn't.</summary>
     public static void DrawText(
         RasterBuffer buffer, TtfReader font, double startX, double baselineY,
-        string text, double pixelSize, PaintColor color)
+        string text, double pixelSize, PaintColor color) =>
+        DrawText(buffer, font, startX, baselineY, text, pixelSize, color, synthesizeBold: false);
+
+    /// <summary>Draw text, optionally double-stamping each
+    /// glyph to synthesize bold for fonts we rendered at a
+    /// lighter weight (variable-font axes aren't honored by
+    /// TtfReader yet, so <c>font-weight: 700</c> otherwise
+    /// paints at the base weight). The offset is a fraction
+    /// of em so bold looks proportional at all sizes.</summary>
+    public static void DrawText(
+        RasterBuffer buffer, TtfReader font, double startX, double baselineY,
+        string text, double pixelSize, PaintColor color, bool synthesizeBold)
     {
         if (string.IsNullOrEmpty(text) || color.IsTransparent) return;
         if (font.UnitsPerEm <= 0) return;
         double scale = pixelSize / font.UnitsPerEm;
         double cursorX = startX;
+        double boldOffset = synthesizeBold ? Math.Max(0.5, pixelSize / 24.0) : 0;
         foreach (var ch in text)
         {
             int gid = font.GlyphIndex(ch);
@@ -58,9 +70,29 @@ public static class GlyphRasterizer
             if (outlines.Count > 0)
             {
                 FillGlyph(buffer, outlines, cursorX, baselineY, scale, color);
+                if (synthesizeBold)
+                {
+                    // Second pass offset by a fraction of em —
+                    // stamps the same outline so strokes
+                    // visually thicken. Skipping vertical
+                    // offset keeps descenders aligned.
+                    FillGlyph(buffer, outlines, cursorX + boldOffset, baselineY,
+                        scale, color);
+                }
             }
             cursorX += font.AdvanceWidth(gid) * scale;
         }
+    }
+
+    /// <summary>Pixel width including synthesized bold's
+    /// horizontal offset, so layout measurement matches what
+    /// the rasterizer will emit.</summary>
+    public static double MeasureText(
+        TtfReader font, string text, double pixelSize, bool synthesizeBold)
+    {
+        double w = MeasureText(font, text, pixelSize);
+        if (synthesizeBold) w += Math.Max(0.5, pixelSize / 24.0);
+        return w;
     }
 
     /// <summary>Even-odd scanline fill of the glyph's

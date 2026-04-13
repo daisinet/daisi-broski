@@ -234,6 +234,32 @@ internal static class FlexLayout
         double startMain = 0;
         double mainBetween = gap;
         double remaining = containerMain - SumOuterMain(items, isRow) - totalGap;
+
+        // Flex auto-margins: margin-left/right: auto on a
+        // flex item absorbs free main-axis space per spec §8.1.
+        // `<ul class="navbar-nav mx-auto">` is the canonical
+        // "center me within the flex row" pattern; we need
+        // both margins to be auto and at least one item to
+        // have them.
+        var autoStart = new bool[items.Count];
+        var autoEnd = new bool[items.Count];
+        int totalAutoMargins = 0;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var itStyle = resolver.Resolve(items[i].Element);
+            bool s = IsMarginAuto(itStyle, isRow, startSide: true);
+            bool e = IsMarginAuto(itStyle, isRow, startSide: false);
+            autoStart[i] = s;
+            autoEnd[i] = e;
+            if (s) totalAutoMargins++;
+            if (e) totalAutoMargins++;
+        }
+        double perAutoMargin = 0;
+        if (totalAutoMargins > 0 && remaining > 0)
+        {
+            perAutoMargin = remaining / totalAutoMargins;
+            remaining = 0;
+        }
         var effectiveJustify = reverse
             ? justify switch
             {
@@ -270,14 +296,17 @@ internal static class FlexLayout
         }
 
         double cursor = startMain;
-        foreach (var it in items)
+        for (int i = 0; i < items.Count; i++)
         {
+            var it = items[i];
+            if (autoStart[i]) cursor += perAutoMargin;
             double mainPos = isRow
                 ? container.X + cursor + it.Box.Margin.Left + it.Box.Border.Left + it.Box.Padding.Left
                 : container.Y + cursor + it.Box.Margin.Top + it.Box.Border.Top + it.Box.Padding.Top;
             if (isRow) it.Box.X = mainPos;
             else it.Box.Y = mainPos;
             cursor += OuterMainOf(it.Box, isRow) + mainBetween;
+            if (autoEnd[i]) cursor += perAutoMargin;
         }
 
         // 5) Position items along the cross axis. For
@@ -360,6 +389,49 @@ internal static class FlexLayout
     /// <paramref name="box"/> by the given delta. Leaves the
     /// box itself unchanged — its own position was already set
     /// by the caller.</summary>
+    /// <summary>Inspect the element's computed style for
+    /// an auto value on the requested main-axis edge
+    /// (<paramref name="startSide"/> = true → left for row /
+    /// top for column; false → right / bottom). Reads the
+    /// per-side longhand first, falling back to the
+    /// <c>margin</c> shorthand tokens.</summary>
+    private static bool IsMarginAuto(ComputedStyle style, bool isRow, bool startSide)
+    {
+        string prop = (isRow, startSide) switch
+        {
+            (true, true) => "margin-left",
+            (true, false) => "margin-right",
+            (false, true) => "margin-top",
+            (false, false) => "margin-bottom",
+        };
+        var v = style.GetPropertyValue(prop);
+        if (!string.IsNullOrWhiteSpace(v))
+        {
+            return v.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
+        }
+        // Fall back to the shorthand — 1-4 token list;
+        // resolve which token applies to our side.
+        var shorthand = style.GetPropertyValue("margin");
+        if (string.IsNullOrWhiteSpace(shorthand)) return false;
+        var tokens = shorthand.Trim().Split(' ',
+            StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0) return false;
+        string pick = (isRow, startSide, tokens.Length) switch
+        {
+            (true, true, 1) => tokens[0],
+            (true, true, 2) => tokens[1],
+            (true, true, 3) => tokens[1],
+            (true, true, _) => tokens[3],
+            (true, false, 1) => tokens[0],
+            (true, false, _) => tokens[1],
+            (false, true, _) => tokens[0],
+            (false, false, 1) => tokens[0],
+            (false, false, 2) => tokens[0],
+            (false, false, _) => tokens[2],
+        };
+        return pick.Equals("auto", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static void TranslateDescendants(LayoutBox box, double dx, double dy)
     {
         foreach (var child in box.Children)

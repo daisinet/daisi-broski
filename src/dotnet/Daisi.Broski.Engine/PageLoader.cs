@@ -314,6 +314,7 @@ public sealed class PageLoader : IDisposable
                 {
                     Family = pair.c.Family,
                     Weight = pair.c.Weight,
+                    WeightMax = pair.c.WeightMax,
                     Style = pair.c.Style,
                     Source = pair.url,
                     Format = pair.c.Format,

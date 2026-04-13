@@ -24,10 +24,19 @@ public sealed record WebFont
     /// text run.</summary>
     public required string Family { get; init; }
 
-    /// <summary>CSS <c>font-weight</c> from the rule — 400 =
-    /// regular, 700 = bold, etc. The spec permits a range
-    /// (<c>100 900</c>); we store the first token only.</summary>
+    /// <summary>CSS <c>font-weight</c> min from the rule —
+    /// 400 = regular, 700 = bold. For single-value rules
+    /// this equals <see cref="WeightMax"/>; for variable fonts
+    /// it's the lower end of the declared range.</summary>
     public int Weight { get; init; } = 400;
+
+    /// <summary>Upper bound of the weight range. Variable-font
+    /// <c>@font-face</c> rules declare ranges like <c>100 1000</c>
+    /// that the painter can request any intermediate value
+    /// against; requested weights inside [Weight, WeightMax]
+    /// score as a perfect match instead of being clamped to
+    /// the min.</summary>
+    public int WeightMax { get; init; } = 400;
 
     /// <summary>CSS <c>font-style</c>: <c>normal</c>,
     /// <c>italic</c>, or <c>oblique</c>.</summary>

@@ -55,7 +55,16 @@ public static class FontResolver
             int bestScore = int.MaxValue;
             foreach (var font in candidates)
             {
-                int score = Math.Abs(font.Weight - weight);
+                // Weight score: 0 when the requested weight
+                // falls inside the file's declared range
+                // (variable fonts cover the whole 100..900
+                // spectrum in one file), otherwise distance
+                // to the closest end.
+                int wScore;
+                if (weight >= font.Weight && weight <= font.WeightMax) wScore = 0;
+                else if (weight < font.Weight) wScore = font.Weight - weight;
+                else wScore = weight - font.WeightMax;
+                int score = wScore;
                 if (!string.Equals(font.Style, style, StringComparison.OrdinalIgnoreCase))
                 {
                     score += 500;

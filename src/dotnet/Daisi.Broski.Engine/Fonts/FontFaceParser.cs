@@ -15,7 +15,7 @@ internal static class FontFaceParser
 {
     /// <summary>Parsed candidate — not yet fetched.</summary>
     public sealed record Candidate(
-        string Family, int Weight, string Style, string Src, string Format,
+        string Family, int Weight, int WeightMax, string Style, string Src, string Format,
         IReadOnlyList<(int Start, int End)> UnicodeRange);
 
     public static List<Candidate> Extract(Stylesheet sheet)
@@ -49,12 +49,35 @@ internal static class FontFaceParser
             }
         }
         if (string.IsNullOrEmpty(family) || string.IsNullOrEmpty(src)) return;
-        int weightInt = ParseFirstInt(weight, 400);
+        var (wMin, wMax) = ParseWeightRange(weight);
         var ranges = ParseUnicodeRange(unicodeRange);
         foreach (var entry in SplitSrc(src))
         {
-            into.Add(new Candidate(family, weightInt, style, entry.Url, entry.Format, ranges));
+            into.Add(new Candidate(family, wMin, wMax, style, entry.Url, entry.Format, ranges));
         }
+    }
+
+    /// <summary>Parse <c>font-weight</c> as either a single
+    /// value (<c>400</c>, <c>bold</c>) or a variable-font
+    /// range (<c>100 1000</c>). Returns (min, max); for
+    /// single values min == max.</summary>
+    private static (int Min, int Max) ParseWeightRange(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return (400, 400);
+        var t = value.Trim();
+        // Keyword shortcuts.
+        switch (t.ToLowerInvariant())
+        {
+            case "normal": return (400, 400);
+            case "bold": return (700, 700);
+            case "lighter": return (300, 300);
+            case "bolder": return (700, 700);
+        }
+        var parts = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return (400, 400);
+        int a = ParseFirstInt(parts[0], 400);
+        int b = parts.Length > 1 ? ParseFirstInt(parts[1], a) : a;
+        return (Math.Min(a, b), Math.Max(a, b));
     }
 
     /// <summary>Parse a CSS <c>unicode-range</c> value into a

@@ -219,8 +219,9 @@ public static class Painter
         {
             int lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
             double baseline = box.Y + lineStep * 0.8;
+            bool bold = ParseWeight(style.GetPropertyValue("font-weight")) >= 600;
             Daisi.Broski.Engine.Fonts.GlyphRasterizer.DrawText(
-                buffer, webFont, box.X, baseline, text, fontSize, color);
+                buffer, webFont, box.X, baseline, text, fontSize, color, bold);
             return;
         }
 
@@ -299,23 +300,18 @@ public static class Painter
             lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
             int contentWidth = (int)Math.Round(box.Width);
             if (contentWidth < 1) return;
+            bool bold = ParseWeight(style.GetPropertyValue("font-weight")) >= 600;
             var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize);
             var align = (style.GetPropertyValue("text-align") ?? "").Trim().ToLowerInvariant();
             double yBase = box.Y;
             for (int i = 0; i < linesVector.Count; i++)
             {
-                // Baseline sits ~80% of the line height down
-                // from the line top. Text that overflows the
-                // box vertically is the element's own problem
-                // (CSS default overflow:visible) — the buffer's
-                // bounds clip it anyway, so we don't skip
-                // lines based on box.Height.
                 double y = yBase + i * lineStep + lineStep * 0.8;
                 double lineWidth = Daisi.Broski.Engine.Fonts.GlyphRasterizer
-                    .MeasureText(webFont, linesVector[i], fontSize);
+                    .MeasureText(webFont, linesVector[i], fontSize, bold);
                 double xAligned = box.X + AlignOffset(align, contentWidth, lineWidth);
                 Daisi.Broski.Engine.Fonts.GlyphRasterizer.DrawText(
-                    buffer, webFont, xAligned, y, linesVector[i], fontSize, color);
+                    buffer, webFont, xAligned, y, linesVector[i], fontSize, color, bold);
             }
             return;
         }
