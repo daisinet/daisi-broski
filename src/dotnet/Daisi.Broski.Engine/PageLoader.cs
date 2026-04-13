@@ -136,7 +136,16 @@ public sealed class PageLoader : IDisposable
         {
             try
             {
-                var result = await _fetcher.FetchAsync(pair.href, ct).ConfigureAwait(false);
+                // Google Fonts' CSS endpoint returns different
+                // @font-face src URLs based on User-Agent —
+                // modern UAs get woff2 links; older UAs get
+                // TTF. Since we parse TTF directly, ask for
+                // the TTF-flavored CSS here so the downstream
+                // font fetcher picks up parseable files.
+                string? ua = LooksLikeGoogleFonts(pair.href)
+                    ? "Mozilla/5.0 (Windows NT 6.1; Trident/5.0)" : null;
+                var result = await _fetcher.FetchAsync(pair.href, ua, ct)
+                    .ConfigureAwait(false);
                 if ((int)result.Status >= 200 && (int)result.Status < 300)
                 {
                     var enc = EncodingSniffer.Sniff(result.Body, result.ContentType);
@@ -283,7 +292,16 @@ public sealed class PageLoader : IDisposable
         {
             try
             {
-                var result = await _fetcher.FetchAsync(pair.url, ct).ConfigureAwait(false);
+                // Google Fonts and most CDNs content-negotiate
+                // on User-Agent — modern browsers get WOFF2,
+                // older ones get TTF. Our parser reads TTF
+                // directly, so we spoof an IE9-era UA on the
+                // font request to skip the Brotli+glyf-transform
+                // step entirely.
+                string? ua = LooksLikeGoogleFonts(pair.url)
+                    ? "Mozilla/5.0 (Windows NT 6.1; Trident/5.0)" : null;
+                var result = await _fetcher.FetchAsync(pair.url, ua, ct)
+                    .ConfigureAwait(false);
                 if ((int)result.Status < 200 || (int)result.Status >= 300) return null;
                 return new Daisi.Broski.Engine.Fonts.WebFont
                 {
@@ -307,6 +325,11 @@ public sealed class PageLoader : IDisposable
             if (font is not null) document.AttachFont(font);
         }
     }
+
+    private static bool LooksLikeGoogleFonts(Uri url) =>
+        url.Host.EndsWith("gstatic.com", StringComparison.OrdinalIgnoreCase)
+        || url.Host.EndsWith("googleapis.com", StringComparison.OrdinalIgnoreCase)
+        || url.Host.EndsWith("googleusercontent.com", StringComparison.OrdinalIgnoreCase);
 
     public void Dispose()
     {

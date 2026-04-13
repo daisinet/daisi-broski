@@ -145,27 +145,121 @@ public static class Painter
         // of text renders at the same 7px glyph regardless of
         // `font-size: 48px` or similar.
         double fontSize = ResolveFontSizePx(style);
+        int lineStep;
+
+        // Prefer a loaded web-font when the element's
+        // font-family resolves to one the document fetched.
+        // Falls through to the bitmap font when no match or
+        // the font can't be parsed.
+        var webFont = ResolveWebFont(box.Element.OwnerDocument, style);
+        if (webFont is not null)
+        {
+            lineStep = ResolveLineHeightPx(style, fontSize, (int)Math.Round(fontSize));
+            int contentWidth = (int)Math.Round(box.Width);
+            if (contentWidth < 1) return;
+            var linesVector = WrapTextByMeasure(text, contentWidth, webFont, fontSize);
+            double xBase = box.X;
+            double yBase = box.Y;
+            double maxY = box.Y + box.Height;
+            for (int i = 0; i < linesVector.Count; i++)
+            {
+                // Baseline sits ~80% of the line height down
+                // from the line top — a reasonable default
+                // when the font's ascender metric isn't read.
+                double y = yBase + i * lineStep + lineStep * 0.8;
+                if (y + fontSize * 0.25 > maxY && box.Height > 0) break;
+                Daisi.Broski.Engine.Fonts.GlyphRasterizer.DrawText(
+                    buffer, webFont, xBase, y, linesVector[i], fontSize, color);
+            }
+            return;
+        }
+
         int scale = BitmapFont.ScaleFor(fontSize);
         int glyphCellW = BitmapFont.CellWidth * scale;
         int glyphH = BitmapFont.GlyphHeight * scale;
-        int lineStep = ResolveLineHeightPx(style, fontSize, glyphH);
+        lineStep = ResolveLineHeightPx(style, fontSize, glyphH);
 
-        int contentWidth = (int)Math.Round(box.Width);
-        if (contentWidth < glyphCellW) return;
-        int maxCharsPerLine = contentWidth / glyphCellW;
+        int contentWidthBmp = (int)Math.Round(box.Width);
+        if (contentWidthBmp < glyphCellW) return;
+        int maxCharsPerLine = contentWidthBmp / glyphCellW;
         if (maxCharsPerLine <= 0) return;
 
         var lines = WrapText(text, maxCharsPerLine);
         int x = (int)Math.Round(box.X);
-        int yBase = (int)Math.Round(box.Y);
-        int maxY = (int)Math.Round(box.Y + box.Height);
+        int yBaseInt = (int)Math.Round(box.Y);
+        int maxYInt = (int)Math.Round(box.Y + box.Height);
 
         for (int i = 0; i < lines.Count; i++)
         {
-            int y = yBase + i * lineStep;
-            if (y + glyphH > maxY && box.Height > 0) break;
+            int y = yBaseInt + i * lineStep;
+            if (y + glyphH > maxYInt && box.Height > 0) break;
             BitmapFont.DrawText(buffer, x, y, lines[i], color, scale);
         }
+    }
+
+    private static Daisi.Broski.Engine.Fonts.TtfReader? ResolveWebFont(
+        Document? doc, ComputedStyle style)
+    {
+        if (doc is null || doc.Fonts.Count == 0) return null;
+        var family = style.GetPropertyValue("font-family");
+        if (string.IsNullOrWhiteSpace(family)) return null;
+        int weight = ParseWeight(style.GetPropertyValue("font-weight"));
+        var styleKw = style.GetPropertyValue("font-style");
+        if (string.IsNullOrEmpty(styleKw)) styleKw = "normal";
+        return Daisi.Broski.Engine.Fonts.FontResolver.Resolve(doc, family, weight, styleKw);
+    }
+
+    private static int ParseWeight(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 400;
+        var t = value.Trim().ToLowerInvariant();
+        return t switch
+        {
+            "normal" => 400,
+            "bold" => 700,
+            "lighter" => 300,
+            "bolder" => 700,
+            _ => int.TryParse(t, out var n) ? n : 400,
+        };
+    }
+
+    /// <summary>Greedy word-wrap that measures each word's
+    /// pixel width via the font's advance-width table. Slower
+    /// than the bitmap-font char-count wrap but matches what
+    /// the rasterizer will actually emit. Hard-breaks words
+    /// longer than the line (same behavior as WrapText).</summary>
+    private static List<string> WrapTextByMeasure(
+        string text, int maxPixels, Daisi.Broski.Engine.Fonts.TtfReader font, double pixelSize)
+    {
+        var lines = new List<string>();
+        if (maxPixels <= 0) return lines;
+        var current = new System.Text.StringBuilder();
+        double currentW = 0;
+        double spaceW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, " ", pixelSize);
+        foreach (var word in text.Split(' '))
+        {
+            double wordW = Daisi.Broski.Engine.Fonts.GlyphRasterizer.MeasureText(font, word, pixelSize);
+            if (current.Length == 0)
+            {
+                current.Append(word);
+                currentW = wordW;
+                continue;
+            }
+            if (currentW + spaceW + wordW <= maxPixels)
+            {
+                current.Append(' ').Append(word);
+                currentW += spaceW + wordW;
+            }
+            else
+            {
+                lines.Add(current.ToString());
+                current.Clear();
+                current.Append(word);
+                currentW = wordW;
+            }
+        }
+        if (current.Length > 0) lines.Add(current.ToString());
+        return lines;
     }
 
     /// <summary>Resolve the computed <c>font-size</c> to

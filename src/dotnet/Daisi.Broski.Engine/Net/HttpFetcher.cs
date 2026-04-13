@@ -59,7 +59,17 @@ public sealed class HttpFetcher : IDisposable
     /// <exception cref="HttpRequestException">
     /// Transport-level failure (DNS, TLS, connection refused, etc.).
     /// </exception>
-    public async Task<FetchResult> FetchAsync(Uri url, CancellationToken ct = default)
+    public Task<FetchResult> FetchAsync(Uri url, CancellationToken ct = default) =>
+        FetchAsync(url, userAgentOverride: null, ct);
+
+    /// <summary>Fetch with a per-request User-Agent override.
+    /// Used by the font loader to coax Google Fonts into
+    /// returning TTF instead of WOFF2 — the font service
+    /// dispatches on UA, and a fresh modern UA gets WOFF2
+    /// (which we don't yet decompress). An IE9-era UA gets
+    /// plain TrueType tables our parser can read directly.</summary>
+    public async Task<FetchResult> FetchAsync(
+        Uri url, string? userAgentOverride, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(url);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -89,6 +99,11 @@ public sealed class HttpFetcher : IDisposable
             }
 
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            if (userAgentOverride is not null)
+            {
+                request.Headers.UserAgent.Clear();
+                request.Headers.UserAgent.ParseAdd(userAgentOverride);
+            }
             using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
