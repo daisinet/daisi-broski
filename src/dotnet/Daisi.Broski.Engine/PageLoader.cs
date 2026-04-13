@@ -1,3 +1,4 @@
+using Daisi.Broski.Engine.Css;
 using Daisi.Broski.Engine.Dom;
 using Daisi.Broski.Engine.Html;
 using Daisi.Broski.Engine.Net;
@@ -65,6 +66,14 @@ public sealed class PageLoader : IDisposable
         var html = encoding.GetString(fetchResult.Body);
         var document = HtmlTreeBuilder.Parse(html);
 
+        // Phase 6g: fetch external stylesheets referenced by
+        // `<link rel="stylesheet" href>` so the cascade has
+        // something to work with on real-world pages (which
+        // ship 99% of their CSS as external files). Errors
+        // are swallowed per-link — a 404 on one stylesheet
+        // shouldn't abort the page load.
+        await FetchExternalStylesheetsAsync(document, fetchResult.FinalUrl, ct).ConfigureAwait(false);
+
         return new LoadedPage
         {
             RequestUrl = fetchResult.RequestUrl,
@@ -77,6 +86,66 @@ public sealed class PageLoader : IDisposable
             Html = html,
             Document = document,
         };
+    }
+
+    /// <summary>Walk every <c>&lt;link rel="stylesheet"&gt;</c>
+    /// in the document, fetch its href against the base URL,
+    /// parse the response as CSS, attach to the document.
+    /// Per-link failures (transport errors, non-2xx status,
+    /// non-CSS content type) are logged-and-skipped rather
+    /// than fatal — partial styling is better than none.</summary>
+    private async Task FetchExternalStylesheetsAsync(
+        Document document, Uri baseUrl, CancellationToken ct)
+    {
+        var links = new List<(Element link, Uri href)>();
+        foreach (var el in document.DescendantElements())
+        {
+            if (el.TagName != "link") continue;
+            var rel = el.GetAttribute("rel");
+            if (rel is null || !rel.Split(' ',
+                StringSplitOptions.RemoveEmptyEntries)
+                .Any(t => t.Equals("stylesheet", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+            var hrefRaw = el.GetAttribute("href");
+            if (string.IsNullOrEmpty(hrefRaw)) continue;
+            if (!Uri.TryCreate(baseUrl, hrefRaw, out var href)) continue;
+            if (href.Scheme is not ("http" or "https")) continue;
+            links.Add((el, href));
+        }
+
+        // Fetch in parallel — most pages link 1-5 sheets and
+        // they're independent. Failures don't abort the
+        // whole batch.
+        var tasks = links.Select(async pair =>
+        {
+            try
+            {
+                var result = await _fetcher.FetchAsync(pair.href, ct).ConfigureAwait(false);
+                if ((int)result.Status >= 200 && (int)result.Status < 300)
+                {
+                    var enc = EncodingSniffer.Sniff(result.Body, result.ContentType);
+                    var css = enc.GetString(result.Body);
+                    var sheet = CssParser.Parse(css);
+                    return (pair.link, sheet);
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+            return (pair.link, (Stylesheet?)null);
+        }).ToList();
+
+        var sheets = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var (link, sheet) in sheets)
+        {
+            if (sheet is not null)
+            {
+                document.AttachExternalStylesheet(link, sheet);
+            }
+        }
     }
 
     public void Dispose()

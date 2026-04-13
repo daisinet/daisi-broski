@@ -68,6 +68,33 @@ public sealed class Document : Node
     /// per-style-block parse is itself fast.</summary>
     public void InvalidateStyleSheets() => _styleSheets = null;
 
+    /// <summary>Stylesheets fetched ahead of time from
+    /// <c>&lt;link rel="stylesheet"&gt;</c> by
+    /// <c>PageLoader</c>. Inserted into <see cref="StyleSheets"/>
+    /// at their corresponding source-order positions
+    /// (interleaved with inline <c>&lt;style&gt;</c> blocks)
+    /// so the cascade respects HTML document order. The
+    /// keys are the <c>&lt;link&gt;</c> elements, so the
+    /// insertion order preserves their tree order.</summary>
+    private Dictionary<Element, Stylesheet>? _externalStylesheets;
+
+    /// <summary>Attach a stylesheet that was fetched by the
+    /// host (typically from a <c>&lt;link rel="stylesheet"&gt;</c>
+    /// element) so the cascade picks it up alongside inline
+    /// <c>&lt;style&gt;</c> blocks. The <paramref name="link"/>
+    /// element identifies the source so source-order
+    /// interleaving is exact. Calling this invalidates the
+    /// cached stylesheet list.</summary>
+    public void AttachExternalStylesheet(Element link, Stylesheet sheet)
+    {
+        ArgumentNullException.ThrowIfNull(link);
+        ArgumentNullException.ThrowIfNull(sheet);
+        _externalStylesheets ??= new Dictionary<Element, Stylesheet>(
+            ReferenceEqualityComparer.Instance);
+        _externalStylesheets[link] = sheet;
+        _styleSheets = null;
+    }
+
     private void RecomputeStyleSheets()
     {
         var list = new List<Stylesheet>();
@@ -80,6 +107,16 @@ public sealed class Document : Node
                 {
                     list.Add(CssParser.Parse(css));
                 }
+            }
+            else if (el.TagName == "link" && _externalStylesheets is { } externals
+                && externals.TryGetValue(el, out var external))
+            {
+                // Source-order interleaving: the <link> sits
+                // wherever the parser placed it; we insert
+                // its fetched sheet at the same point in the
+                // list so author rules cascade in the same
+                // order browsers see.
+                list.Add(external);
             }
         }
         _styleSheets = list;

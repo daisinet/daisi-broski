@@ -100,7 +100,18 @@ public static class Painter
 
     private static void PaintBackground(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
     {
+        // Try the longhand first; if absent, scan the
+        // `background` shorthand for a color token. Real
+        // Bootstrap / Tailwind-emitted CSS often uses the
+        // shorthand for `background: linear-gradient(...)` or
+        // `background: rgba(...)` without the longhand
+        // counterpart, so we'd miss those without this
+        // fallback.
         var color = CssColor.Parse(style.GetPropertyValue("background-color"));
+        if (color.IsTransparent)
+        {
+            color = ExtractColorFromShorthand(style.GetPropertyValue("background"));
+        }
         if (color.IsTransparent) return;
         var rect = box.BorderBoxRect;
         buffer.FillRect(
@@ -109,6 +120,47 @@ public static class Painter
             (int)Math.Round(rect.Width),
             (int)Math.Round(rect.Height),
             color);
+    }
+
+    /// <summary>Pick the first color-shaped token out of a
+    /// <c>background</c> shorthand. We don't render
+    /// gradients yet (linear-gradient / radial-gradient),
+    /// but a stop color inside the gradient is a sensible
+    /// solid fallback — better than transparent. Skips the
+    /// CSS function name if any so <c>linear-gradient(red, blue)</c>
+    /// gives us <c>red</c>.</summary>
+    private static PaintColor ExtractColorFromShorthand(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return PaintColor.Transparent;
+        // Strip leading function name (e.g. "linear-gradient")
+        // and the surrounding parens so we can scan the inner
+        // tokens.
+        var working = value;
+        int parenStart = working.IndexOf('(');
+        if (parenStart > 0)
+        {
+            int parenEnd = working.LastIndexOf(')');
+            if (parenEnd > parenStart)
+            {
+                working = working.Substring(parenStart + 1, parenEnd - parenStart - 1);
+            }
+        }
+        // Tokens at top level — a comma split gets the
+        // gradient stops; each stop's first token is the
+        // color (or "to right" / "45deg" / etc., which we
+        // skip).
+        foreach (var stop in working.Split(','))
+        {
+            foreach (var token in stop.Trim().Split(' ',
+                StringSplitOptions.RemoveEmptyEntries))
+            {
+                var c = CssColor.Parse(token);
+                if (!c.IsTransparent) return c;
+            }
+        }
+        // Last resort: try the whole string (rgba(...) on
+        // its own without a function-name wrapper).
+        return CssColor.Parse(value);
     }
 
     private static void PaintBorders(LayoutBox box, ComputedStyle style, RasterBuffer buffer)

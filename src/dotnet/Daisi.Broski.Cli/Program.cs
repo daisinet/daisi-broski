@@ -801,6 +801,21 @@ public static class Program
         return 3;
     }
 
+    private static IEnumerable<Daisi.Broski.Engine.Layout.LayoutBox> WalkBoxes(Daisi.Broski.Engine.Layout.LayoutBox root)
+    {
+        var stack = new Stack<Daisi.Broski.Engine.Layout.LayoutBox>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var box = stack.Pop();
+            yield return box;
+            for (int i = box.Children.Count - 1; i >= 0; i--)
+            {
+                stack.Push(box.Children[i]);
+            }
+        }
+    }
+
     /// <summary>
     /// `daisi-broski screenshot &lt;url&gt; --out &lt;path&gt;
     /// [--width N] [--height N]` — fetch + render the page,
@@ -816,6 +831,7 @@ public static class Program
         int width = 1280;
         int height = 800;
         bool wireframe = false;
+        bool dumpStyles = false;
 
         for (int i = 1; i < args.Length; i++)
         {
@@ -837,6 +853,9 @@ public static class Program
                 case "--wireframe":
                     wireframe = true;
                     break;
+                case "--dump-styles":
+                    dumpStyles = true;
+                    break;
                 default:
                     return UsageError($"unknown screenshot flag '{args[i]}'");
             }
@@ -857,6 +876,32 @@ public static class Program
 
         try
         {
+            if (dumpStyles)
+            {
+                // In-process debug: load, lay out, walk the layout
+                // tree, and print each box's computed color + size.
+                var page = await Daisi.Broski.Engine.Broski.LoadAsync(url,
+                    new Daisi.Broski.Engine.BroskiOptions { ScriptingEnabled = true });
+                var vp = new Daisi.Broski.Engine.Css.Viewport { Width = width, Height = height };
+                var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(page.Document, vp);
+                int n = 0;
+                foreach (var box in WalkBoxes(root))
+                {
+                    if (box.Element is null) continue;
+                    var style = Daisi.Broski.Engine.Css.StyleResolver.Resolve(box.Element, vp);
+                    var bg = style.GetPropertyValue("background-color");
+                    var bs = style.GetPropertyValue("background");
+                    var color = style.GetPropertyValue("color");
+                    var display = style.GetPropertyValue("display");
+                    Console.Out.WriteLine(
+                        $"<{box.Element.TagName}>#{box.Element.Id} .{box.Element.ClassName}  " +
+                        $"rect=({box.X:F0},{box.Y:F0},{box.Width:F0}x{box.Height:F0})  " +
+                        $"display={display}  bg-color='{bg}'  bg='{bs}'  color='{color}'");
+                    if (++n > 40) { Console.Out.WriteLine("  ... truncated ..."); break; }
+                }
+                return 0;
+            }
+
             await using var session = BrowserSession.Create();
             var nav = await session.RunAsync(url, scriptingEnabled: true);
             Console.Error.WriteLine($"{nav.Status} {nav.FinalUrl} (scripts {nav.ScriptsRan}/{nav.ScriptsTotal})");
