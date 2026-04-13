@@ -148,13 +148,22 @@ public sealed class RasterBuffer
     }
 
     /// <summary>Is <c>(lx, ly)</c> inside a rounded rect of
-    /// size <c>w × h</c> with the given corner radii? Each
-    /// corner's circular region is checked via squared-
-    /// distance (avoids Math.Sqrt per pixel).</summary>
+    /// size <c>w × h</c> with the given corner radii? Clamps
+    /// each radius to <c>min(w, h) / 2</c> so callers don't
+    /// have to — a CSS pill often declares
+    /// <c>border-radius: 9999px</c> which would otherwise
+    /// test against a 9999px arc and reject most of the
+    /// box. With the clamp the pill reads as the intended
+    /// half-height curve.</summary>
     internal static bool PointInRoundedRect(
         int lx, int ly, int w, int h,
         int tl, int tr, int br, int bl)
     {
+        int maxR = Math.Min(w, h) / 2;
+        if (tl > maxR) tl = maxR;
+        if (tr > maxR) tr = maxR;
+        if (br > maxR) br = maxR;
+        if (bl > maxR) bl = maxR;
         // Top-left corner region
         if (lx < tl && ly < tl)
         {
