@@ -135,6 +135,14 @@ public static class LayoutTree
     /// decorations wrapped in a <c>position: relative</c>
     /// parent, which is the common pattern). <c>fixed</c>
     /// anchors to the viewport instead of the parent.</summary>
+    /// <summary>Internal passthrough so FlexLayout /
+    /// GridLayout can reuse the absolute-positioning math
+    /// for out-of-flow flex / grid children.</summary>
+    internal static void ResolveAbsolutePositionInternal(
+        LayoutBox box, LayoutBox parent, ComputedStyle style,
+        double fontSize, double rootFontSize, Viewport viewport, bool isFixed) =>
+        ResolveAbsolutePosition(box, parent, style, fontSize, rootFontSize, viewport, isFixed);
+
     private static void ResolveAbsolutePosition(
         LayoutBox box, LayoutBox parent, ComputedStyle style,
         double fontSize, double rootFontSize, Viewport viewport, bool isFixed)

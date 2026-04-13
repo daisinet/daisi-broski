@@ -63,6 +63,27 @@ internal static class FlexLayout
             if (prepared is null) continue;
             var (box, itemFontSize, itemRootFs, itemDeclaredHeight) = prepared.Value;
 
+            var itemStyle = resolver.Resolve(childEl);
+            var position = itemStyle.GetPropertyValue("position");
+            if (position is "absolute" or "fixed")
+            {
+                // Absolutely-positioned flex children are taken
+                // out of flex flow and resolved against the
+                // container the same way BuildAndLay handles
+                // absolute block children. Hero overlays and
+                // decoration spheres land in the right spot
+                // this way, instead of being treated as a row
+                // item that shoves siblings sideways.
+                container.Children.Add(box);
+                LayoutTree.ResolveAbsolutePositionInternal(
+                    box, container, itemStyle,
+                    itemFontSize, itemRootFs, viewport, position == "fixed");
+                LayoutTree.LayChildrenAndResolveHeight(
+                    box, childEl, resolver, viewport,
+                    itemFontSize, itemRootFs, itemDeclaredHeight, container.Height);
+                continue;
+            }
+
             // Lay out the child's own descendants now so its
             // intrinsic content height is known. Width is
             // already set by PrepareBox; for column flex it
@@ -72,8 +93,6 @@ internal static class FlexLayout
             LayoutTree.LayChildrenAndResolveHeight(
                 box, childEl, resolver, viewport,
                 itemFontSize, itemRootFs, itemDeclaredHeight, container.Height);
-
-            var itemStyle = resolver.Resolve(childEl);
 
             // CSS expands `flex: <grow> <shrink>? <basis>?` into
             // the three longhands per Cascade. Our cascade

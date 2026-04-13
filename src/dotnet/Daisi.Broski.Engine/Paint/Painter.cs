@@ -73,10 +73,11 @@ public static class Painter
         if (box.Element is not null)
         {
             var style = StyleResolver.Resolve(box.Element, viewport);
-            PaintBackground(box, style, buffer);
-            PaintImage(box, document, buffer);
-            PaintBorders(box, style, buffer);
-            PaintTextContent(box, style, buffer);
+            double opacity = ResolveOpacity(style);
+            PaintBackground(box, style, buffer, opacity);
+            PaintImage(box, document, buffer, opacity);
+            PaintBorders(box, style, buffer, opacity);
+            PaintTextContent(box, style, buffer, opacity);
             if (wireframe) PaintWireframe(box, buffer);
 
             // Inline <svg> owns its subtree — rasterize its
@@ -118,11 +119,13 @@ public static class Painter
     /// nested elements; an inline-flow algorithm that splits
     /// text around inline children would be a much bigger
     /// slice.</summary>
-    private static void PaintTextContent(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
+    private static void PaintTextContent(
+        LayoutBox box, ComputedStyle style, RasterBuffer buffer, double opacity)
     {
         if (box.Element is null) return;
         var color = CssColor.Parse(style.GetPropertyValue("color"));
         if (color.IsTransparent) color = PaintColor.Black;
+        color = ApplyAlpha(color, opacity);
 
         // Concatenate direct Text children only — ignores
         // child elements (their text is painted when we
@@ -416,7 +419,8 @@ public static class Painter
             stroke, stroke, stroke, stroke);
     }
 
-    private static void PaintBackground(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
+    private static void PaintBackground(
+        LayoutBox box, ComputedStyle style, RasterBuffer buffer, double opacity)
     {
         var rect = box.BorderBoxRect;
         int rx = (int)Math.Round(rect.X);
@@ -436,7 +440,19 @@ public static class Painter
             var gradient = Gradient.TryParseLinear(gradientSrc);
             if (gradient is not null)
             {
-                Gradient.Paint(buffer, rx, ry, rw, rh, gradient);
+                // Minimum-viable opacity pass for gradients:
+                // when the element has opacity < 1, pre-scale
+                // every stop's alpha. Not quite spec-correct
+                // (real CSS opacity is a group composite) but
+                // avoids painting a full-alpha gradient over
+                // the existing canvas.
+                var paintedGrad = opacity < 1 ? gradient with
+                {
+                    Stops = gradient.Stops
+                        .Select(s => new GradientStop(ApplyAlpha(s.Color, opacity), s.Position))
+                        .ToList()
+                } : gradient;
+                Gradient.Paint(buffer, rx, ry, rw, rh, paintedGrad);
                 return;
             }
         }
@@ -449,7 +465,30 @@ public static class Painter
             color = ExtractColorFromShorthand(bgShorthand);
         }
         if (color.IsTransparent) return;
-        buffer.FillRect(rx, ry, rw, rh, color);
+        buffer.FillRect(rx, ry, rw, rh, ApplyAlpha(color, opacity));
+    }
+
+    /// <summary>Resolve the computed <c>opacity</c> to a
+    /// number in [0, 1]. Missing or unparseable value returns
+    /// 1 (fully opaque), matching the CSS initial value.</summary>
+    private static double ResolveOpacity(ComputedStyle style)
+    {
+        var raw = style.GetPropertyValue("opacity");
+        if (string.IsNullOrWhiteSpace(raw)) return 1;
+        if (!double.TryParse(raw.Trim(),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v)) return 1;
+        return Math.Clamp(v, 0, 1);
+    }
+
+    /// <summary>Multiply a color's alpha channel by
+    /// <paramref name="opacity"/>. Pre-multiplies at paint time
+    /// so the existing FillRect blend path handles the rest.</summary>
+    private static PaintColor ApplyAlpha(PaintColor c, double opacity)
+    {
+        if (opacity >= 1) return c;
+        if (opacity <= 0) return PaintColor.Transparent;
+        return new PaintColor(c.R, c.G, c.B, (byte)Math.Clamp(c.A * opacity, 0, 255));
     }
 
     /// <summary>Pick the first color-shaped token out of a
@@ -500,7 +539,8 @@ public static class Painter
     /// a real browser would do bilinear or better, but
     /// nearest is fast and visually fine for screenshot-
     /// scale images on a non-fonts-aware engine.</summary>
-    private static void PaintImage(LayoutBox box, Document document, RasterBuffer buffer)
+    private static void PaintImage(
+        LayoutBox box, Document document, RasterBuffer buffer, double opacity)
     {
         if (box.Element is null) return;
         if (box.Element.TagName != "img") return;
@@ -587,7 +627,8 @@ public static class Painter
         }
     }
 
-    private static void PaintBorders(LayoutBox box, ComputedStyle style, RasterBuffer buffer)
+    private static void PaintBorders(
+        LayoutBox box, ComputedStyle style, RasterBuffer buffer, double opacity)
     {
         // Resolve per-side colors with the standard CSS
         // fallback chain: side longhand → border-color
@@ -602,6 +643,14 @@ public static class Painter
         if (rightColor.IsTransparent) rightColor = fallback;
         if (bottomColor.IsTransparent) bottomColor = fallback;
         if (leftColor.IsTransparent) leftColor = fallback;
+
+        if (opacity < 1)
+        {
+            topColor = ApplyAlpha(topColor, opacity);
+            rightColor = ApplyAlpha(rightColor, opacity);
+            bottomColor = ApplyAlpha(bottomColor, opacity);
+            leftColor = ApplyAlpha(leftColor, opacity);
+        }
 
         var rect = box.BorderBoxRect;
         buffer.StrokeRect(

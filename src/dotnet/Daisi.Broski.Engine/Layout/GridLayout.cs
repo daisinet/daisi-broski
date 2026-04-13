@@ -83,6 +83,21 @@ internal static class GridLayout
             var (box, itemFontSize, itemRootFs, itemDeclaredHeight) = prepared.Value;
             container.Children.Add(box);
 
+            // Absolutely-positioned grid children skip cell
+            // placement — same treatment as block/flex flow.
+            var childStyle = resolver.Resolve(childEl);
+            var pos = childStyle.GetPropertyValue("position");
+            if (pos is "absolute" or "fixed")
+            {
+                LayoutTree.ResolveAbsolutePositionInternal(
+                    box, container, childStyle,
+                    itemFontSize, itemRootFs, viewport, pos == "fixed");
+                LayoutTree.LayChildrenAndResolveHeight(
+                    box, childEl, resolver, viewport,
+                    itemFontSize, itemRootFs, itemDeclaredHeight, container.Height);
+                continue;
+            }
+
             // Lay the child's own descendants in a temporary
             // (0, 0) position so the box.Height accumulates
             // from content. We re-position into the cell once
