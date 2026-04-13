@@ -272,6 +272,39 @@ internal static class FlexLayout
         {
             container.Width = Math.Max(container.Width, maxCross);
         }
+
+        // 7) Translate each item's descendants to follow the
+        // item's final position. Descendants were laid out in
+        // step 1 against a zero-origin parent because flex
+        // positioning hadn't happened yet — a nested block
+        // layout that does `box.X = parent.X + margin` ended
+        // up anchoring everything at absolute (0, 0).
+        // Without this shift every grandchild would be painted
+        // at the top-left of the document regardless of which
+        // flex item contains it.
+        foreach (var it in items)
+        {
+            double dx = it.Box.X;
+            double dy = it.Box.Y;
+            if (dx != 0 || dy != 0)
+            {
+                TranslateDescendants(it.Box, dx, dy);
+            }
+        }
+    }
+
+    /// <summary>Recursively shift every descendant of
+    /// <paramref name="box"/> by the given delta. Leaves the
+    /// box itself unchanged — its own position was already set
+    /// by the caller.</summary>
+    private static void TranslateDescendants(LayoutBox box, double dx, double dy)
+    {
+        foreach (var child in box.Children)
+        {
+            child.X += dx;
+            child.Y += dy;
+            TranslateDescendants(child, dx, dy);
+        }
     }
 
     private static double SumOuterMain(List<FlexItem> items, bool isRow) =>

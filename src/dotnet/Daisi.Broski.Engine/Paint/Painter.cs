@@ -352,12 +352,25 @@ public static class Painter
         if (box.Element.TagName != "img") return;
         if (document.Images is null) return;
         if (!document.Images.TryGetValue(box.Element, out var raw)) return;
-        if (raw is not RasterBuffer src) return;
 
         int dstX = (int)Math.Round(box.X);
         int dstY = (int)Math.Round(box.Y);
         int dstW = (int)Math.Round(box.Width);
         int dstH = (int)Math.Round(box.Height);
+
+        // SVG <img src="*.svg">: rasterize on demand at the
+        // box's computed size via the same renderer inline
+        // <svg> uses. No cached raster — the SVG re-rasterizes
+        // each paint, which is fine because screenshots are
+        // one-shot.
+        if (raw is Element svgRoot && svgRoot.TagName == "svg")
+        {
+            if (dstW <= 0 || dstH <= 0) return;
+            SvgRenderer.Render(svgRoot, dstX, dstY, dstW, dstH, buffer);
+            return;
+        }
+
+        if (raw is not RasterBuffer src) return;
         if (dstW <= 0 || dstH <= 0)
         {
             // Layout didn't size the image — fall back to

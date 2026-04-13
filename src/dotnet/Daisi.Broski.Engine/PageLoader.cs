@@ -183,15 +183,27 @@ public sealed class PageLoader : IDisposable
                 var result = await _fetcher.FetchAsync(pair.src, ct).ConfigureAwait(false);
                 if ((int)result.Status >= 200 && (int)result.Status < 300)
                 {
+                    // Dispatch on content type / URL suffix:
+                    // SVGs are parsed into a DOM subtree and
+                    // rendered by the painter at paint time;
+                    // PNGs go through the pixel decoder.
+                    if (LooksLikeSvg(result.ContentType, pair.src))
+                    {
+                        var svg = Daisi.Broski.Engine.Html.HtmlTreeBuilder.Parse(
+                            System.Text.Encoding.UTF8.GetString(result.Body));
+                        var root = FindSvgRoot(svg.DocumentElement);
+                        if (root is not null) return (pair.img, (object?)root);
+                        return (pair.img, (object?)null);
+                    }
                     var decoded = PngDecoder.TryDecode(result.Body);
-                    return (pair.img, decoded);
+                    return (pair.img, (object?)decoded);
                 }
             }
             catch
             {
                 // best-effort
             }
-            return (pair.img, (RasterBuffer?)null);
+            return (pair.img, (object?)null);
         }).ToList();
 
         var images = await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -202,6 +214,30 @@ public sealed class PageLoader : IDisposable
                 document.AttachImage(img, decoded);
             }
         }
+    }
+
+    private static bool LooksLikeSvg(string? contentType, Uri src)
+    {
+        if (!string.IsNullOrEmpty(contentType)
+            && contentType.Contains("svg", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        var path = src.AbsolutePath;
+        return path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Daisi.Broski.Engine.Dom.Element? FindSvgRoot(
+        Daisi.Broski.Engine.Dom.Element? root)
+    {
+        if (root is null) return null;
+        if (root.TagName == "svg") return root;
+        foreach (var child in root.Children)
+        {
+            var hit = FindSvgRoot(child);
+            if (hit is not null) return hit;
+        }
+        return null;
     }
 
     public void Dispose()

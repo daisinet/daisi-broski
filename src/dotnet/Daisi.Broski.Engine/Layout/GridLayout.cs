@@ -121,6 +121,11 @@ internal static class GridLayout
             fontSize, rootFontSize);
 
         // 5) Position each child into its now-known cell.
+        // Descendants were laid out against a zero-origin
+        // parent back in step 2, so after placing the child we
+        // also translate the child's whole subtree by the same
+        // delta — otherwise grandchildren stay anchored at
+        // (0, 0) of the document.
         foreach (var pc in pending)
         {
             double cellX = container.X + SumPrefix(columnSizes, pc.Column) + columnGap * pc.Column;
@@ -128,10 +133,18 @@ internal static class GridLayout
             double cellWidth = columnSizes[pc.Column];
             double cellHeight = rowSizes[pc.Row];
 
-            pc.Box.X = cellX
+            double finalX = cellX
                 + pc.Box.Margin.Left + pc.Box.Border.Left + pc.Box.Padding.Left;
-            pc.Box.Y = cellY
+            double finalY = cellY
                 + pc.Box.Margin.Top + pc.Box.Border.Top + pc.Box.Padding.Top;
+            double dx = finalX - pc.Box.X;
+            double dy = finalY - pc.Box.Y;
+            pc.Box.X = finalX;
+            pc.Box.Y = finalY;
+            if (dx != 0 || dy != 0)
+            {
+                TranslateDescendants(pc.Box, dx, dy);
+            }
 
             // Stretch the child to the cell when it didn't
             // declare its own dimensions (default align /
@@ -158,6 +171,16 @@ internal static class GridLayout
                 if (r > 0) total += rowGap;
             }
             container.Height = total;
+        }
+    }
+
+    private static void TranslateDescendants(LayoutBox box, double dx, double dy)
+    {
+        foreach (var child in box.Children)
+        {
+            child.X += dx;
+            child.Y += dy;
+            TranslateDescendants(child, dx, dy);
         }
     }
 

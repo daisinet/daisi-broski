@@ -298,10 +298,20 @@ public static class LayoutTree
             if (!len.IsNone) return len;
         }
         var doc = element.OwnerDocument;
-        if (doc?.Images is { } imgMap && imgMap.TryGetValue(element, out var raw)
-            && raw is Daisi.Broski.Engine.Paint.RasterBuffer img)
+        if (doc?.Images is { } imgMap && imgMap.TryGetValue(element, out var raw))
         {
-            return Length.Px(isHeight ? img.Height : img.Width);
+            if (raw is Daisi.Broski.Engine.Paint.RasterBuffer img)
+            {
+                return Length.Px(isHeight ? img.Height : img.Width);
+            }
+            // Fetched SVGs are stored as their root <svg>
+            // element. Derive the intrinsic size from the
+            // same attrs/viewBox chain inline <svg> uses.
+            if (raw is Element svgRoot && svgRoot.TagName == "svg")
+            {
+                var svgLen = ResolveSvgDimension(svgRoot, isHeight);
+                if (!svgLen.IsNone) return svgLen;
+            }
         }
         return Length.None;
     }
@@ -495,11 +505,29 @@ internal static class CompositeResolver
         {
             foreach (var rule in sheet.Rules)
             {
-                if (rule is StyleRule sr) AddIfMatches(element, sr, matches, ref sourceOrder);
+                if (rule is StyleRule sr)
+                {
+                    AddIfMatches(element, sr, matches, ref sourceOrder);
+                }
+                else if (rule is AtRule ar
+                    && ar.Name is "media" or "supports"
+                    && StyleResolver.MediaQueryMatchesPublic(ar, viewport))
+                {
+                    // @media / @supports blocks — walk nested
+                    // StyleRules when the query matches against
+                    // the layout viewport. Without this, Bootstrap
+                    // / Tailwind responsive breakpoints are
+                    // silently dropped and `.col-lg-8 { width:
+                    // 66.67% }` never applies.
+                    foreach (var nested in ar.Rules)
+                    {
+                        if (nested is StyleRule nsr)
+                        {
+                            AddIfMatches(element, nsr, matches, ref sourceOrder);
+                        }
+                    }
+                }
             }
-            // @media support omitted from the layout-side resolver;
-            // the public StyleResolver covers it. Layout typically
-            // wants the largest/representative viewport anyway.
         }
         matches.Sort((a, b) =>
         {

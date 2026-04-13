@@ -341,6 +341,13 @@ public static class StyleResolver
     /// matching, on the principle that emitting more rules
     /// is safer than dropping potentially relevant
     /// ones.</summary>
+    /// <summary>Internal passthrough for the layout-side
+    /// resolver, which otherwise can't see the private helper.
+    /// Not part of the public API — callers outside the engine
+    /// should use the cascade via <see cref="Resolve"/>.</summary>
+    internal static bool MediaQueryMatchesPublic(AtRule rule, Viewport viewport) =>
+        MediaQueryMatches(rule, viewport);
+
     private static bool MediaQueryMatches(AtRule rule, Viewport viewport)
     {
         if (rule.Name == "supports") return true; // permissive
