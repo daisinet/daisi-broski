@@ -231,4 +231,103 @@ public class LayoutTreeTests
             """, "#inner");
         Assert.Equal(200, deepest!.Width);
     }
+
+    [Fact]
+    public void Mixed_inline_and_block_children_wrap_inlines_in_anonymous_block()
+    {
+        // CSS 2.1 §9.2.1.1 — a block container whose
+        // children mix inline (or text) with block
+        // siblings must wrap each inline run in an
+        // anonymous block. Without this, the span below
+        // would have been laid out as a full-width block
+        // above the <p>, and the leading text "hello "
+        // would have been silently dropped (block flow
+        // only walked Element children).
+        var doc = HtmlTreeBuilder.Parse("""
+            <html><head><style>
+              body { margin: 0; }
+              #parent { width: 400px; }
+              #block { width: 200px; height: 50px; }
+            </style></head>
+            <body><div id="parent">hello <span id="pill">world</span>
+              <p id="block">paragraph</p>
+            </div></body></html>
+            """);
+        var root = LayoutTree.Build(doc);
+        var parent = LayoutTree.Find(root, doc.QuerySelector("#parent")!);
+        Assert.NotNull(parent);
+
+        // Parent should have two direct children: the
+        // anonymous wrapper around the inlines, then the
+        // <p> block. The wrapper has null Element; the
+        // block has the <p> element.
+        Assert.Equal(2, parent!.Children.Count);
+        var anon = parent.Children[0];
+        var block = parent.Children[1];
+        Assert.Null(anon.Element);
+        Assert.NotNull(block.Element);
+        Assert.Equal("p", block.Element!.TagName);
+
+        // The span lives inside the anonymous wrapper.
+        var span = LayoutTree.Find(root, doc.QuerySelector("#pill")!);
+        Assert.NotNull(span);
+        Assert.Contains(span!, anon.Descendants());
+
+        // Block sibling stacks below the anonymous
+        // wrapper — its Y should be at or past the
+        // wrapper's bottom.
+        Assert.True(block.Y >= anon.Y + anon.Height - 1,
+            $"block.Y={block.Y} anon bottom={anon.Y + anon.Height}");
+    }
+
+    [Fact]
+    public void Mixed_content_text_node_survives_as_anonymous_text_run()
+    {
+        // The leading "hello " text node would get dropped
+        // by the old block-flow loop (which only walked
+        // Element children). After the fix, an anonymous
+        // wrapper runs inline layout on the run and emits
+        // a TextRun-typed box for it.
+        var doc = HtmlTreeBuilder.Parse("""
+            <html><body><div id="p">hello <span>world</span><p>end</p></div></body></html>
+            """);
+        var root = LayoutTree.Build(doc);
+        var parent = LayoutTree.Find(root, doc.QuerySelector("#p")!);
+        Assert.NotNull(parent);
+        var anon = parent!.Children[0];
+        bool sawHello = false;
+        foreach (var d in anon.Descendants())
+        {
+            if (d.TextRun is not null && d.TextRun.Contains("hello"))
+            {
+                sawHello = true;
+                break;
+            }
+        }
+        Assert.True(sawHello, "anonymous wrapper should contain a text-run with the leading 'hello' text");
+    }
+
+    [Fact]
+    public void Pure_block_siblings_do_not_create_anonymous_wrappers()
+    {
+        // Whitespace-only text between block siblings
+        // collapses and should not generate an anonymous
+        // wrapper — otherwise every newline in source HTML
+        // would push real blocks down by a phantom line
+        // box. Regression guard: we want the two <div>s
+        // to be direct children with no anonymous sibling
+        // between them.
+        var doc = HtmlTreeBuilder.Parse("""
+            <html><body><div id="p">
+              <div id="a"></div>
+              <div id="b"></div>
+            </div></body></html>
+            """);
+        var root = LayoutTree.Build(doc);
+        var parent = LayoutTree.Find(root, doc.QuerySelector("#p")!);
+        Assert.NotNull(parent);
+        Assert.Equal(2, parent!.Children.Count);
+        Assert.NotNull(parent.Children[0].Element);
+        Assert.NotNull(parent.Children[1].Element);
+    }
 }

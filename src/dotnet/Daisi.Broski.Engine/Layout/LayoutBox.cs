@@ -142,4 +142,11 @@ public enum BoxDisplay
     /// (slice 6e). Minimum-viable single-cell-per-item only;
     /// span / explicit placement / named lines deferred.</summary>
     Grid,
+    /// <summary>Table container — children are row groups
+    /// (thead / tbody / tfoot), rows, and cells per CSS 2.1
+    /// §17. <see cref="TableLayout"/> handles colspan /
+    /// rowspan and two-pass column-width computation; rows
+    /// and cells within are positioned directly by it rather
+    /// than as standalone blocks.</summary>
+    Table,
 }

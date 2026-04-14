@@ -5,6 +5,12 @@
     <RootNamespace>Daisi.Broski.Engine.Tests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <!-- JPEG decoder fixture: a tiny 16×16 image generated once
+         via System.Drawing and committed so the test doesn't
+         depend on any runtime image encoder. -->
+    <EmbeddedResource Include="Paint\TestFixture.jpg" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="xunit.v3" Version="3.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />

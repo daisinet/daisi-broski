@@ -68,13 +68,32 @@ internal static class InlineLayout
         LayoutStyleResolver resolver, Viewport viewport,
         double fontSize, double rootFontSize)
     {
+        LayoutChildNodes(container, element.ChildNodes, resolver.Resolve(element),
+            resolver, viewport, fontSize, rootFontSize);
+    }
+
+    /// <summary>Inline-flow layout over an explicit subset of
+    /// child nodes with an explicit container style — the
+    /// shared kernel behind the element-based overload above.
+    /// Anonymous block wrappers generated for mixed
+    /// inline+block content (CSS 2.1 §9.2.1.1) call this
+    /// directly so the inlines inside the wrapper lay out the
+    /// same way they would inside a pure-inline parent,
+    /// inheriting style from the real block container instead
+    /// of from the (nonexistent) anonymous wrapper.</summary>
+    public static void LayoutChildNodes(
+        LayoutBox container, IEnumerable<Node> childNodes,
+        ComputedStyle containerStyle,
+        LayoutStyleResolver resolver, Viewport viewport,
+        double fontSize, double rootFontSize)
+    {
         // Container-level font metrics — used for shrink-to-
         // fit width measurement and as the minimum line
         // advance when no child forces something taller.
         int containerScale = BitmapFont.ScaleFor(fontSize);
         int containerCellW = BitmapFont.CellWidth * containerScale;
         double containerLineH = ResolveCssLineHeight(
-            resolver.Resolve(element), fontSize,
+            containerStyle, fontSize,
             BitmapFont.GlyphHeight * containerScale);
 
         double availWidth = container.Width;
@@ -85,8 +104,7 @@ internal static class InlineLayout
         double lineHeight = containerLineH;
         int layoutStartIndex = container.Children.Count;
 
-        var containerStyle = resolver.Resolve(element);
-        foreach (var child in element.ChildNodes)
+        foreach (var child in childNodes)
         {
             // Anonymous text runs — a Text node mixed in with
             // inline elements. We split the fragment at word

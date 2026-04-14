@@ -350,14 +350,38 @@ public static class LayoutTree
                 fontSize, rootFontSize);
             return;
         }
+        if (box.Display == BoxDisplay.Table)
+        {
+            if (!declaredHeight.IsNone && !declaredHeight.IsAuto)
+            {
+                box.Height = declaredHeight.Resolve(containingHeight, fontSize, rootFontSize);
+            }
+            var style = resolver.Resolve(element);
+            TableLayout.LayoutChildren(box, element, style, resolver, viewport,
+                fontSize, rootFontSize);
+            return;
+        }
 
         // Inline-flow dispatch: when every element child is
         // inline-display, lay them out side-by-side with
-        // line wrapping. Otherwise the default block-flow
-        // loop stacks each child as a full-width block.
+        // line wrapping. When the element has mixed
+        // inline+block children, CSS 2.1 §9.2.1.1 says to
+        // wrap each consecutive run of inline/text children
+        // in an anonymous block so the inlines still get
+        // line-break layout while the blocks stack normally.
+        // Without this, inlines mixed with blocks fall into
+        // the block-flow loop and each becomes a full-width
+        // block, and text nodes in the same parent get
+        // silently dropped (block flow only walks Element
+        // children).
         if (InlineLayout.ShouldUseInlineFlow(element, resolver))
         {
             InlineLayout.LayoutChildren(box, element, resolver, viewport,
+                fontSize, rootFontSize);
+        }
+        else if (HasMixedInlineAndBlock(element, resolver))
+        {
+            LayoutMixedChildren(box, element, resolver, viewport,
                 fontSize, rootFontSize);
         }
         else
@@ -409,6 +433,141 @@ public static class LayoutTree
             double mh = maxH.Resolve(containingHeight, fontSize, rootFontSize);
             if (box.Height > mh) box.Height = mh;
         }
+    }
+
+    /// <summary>Does this element have both inline-ish and
+    /// block-ish children? "Inline-ish" = a Text node with
+    /// non-whitespace content, or an Element whose resolved
+    /// display is inline / inline-block. "Block-ish" = an
+    /// Element with any other resolved display (block, flex,
+    /// grid, ...). Pure-whitespace Text between block
+    /// children collapses and doesn't count as inline-ish
+    /// — matches how real browsers ignore the newline
+    /// between two sibling <c>&lt;div&gt;</c>s.</summary>
+    private static bool HasMixedInlineAndBlock(
+        Element element, LayoutStyleResolver resolver)
+    {
+        bool hasInline = false;
+        bool hasBlock = false;
+        foreach (var c in element.ChildNodes)
+        {
+            if (c is Daisi.Broski.Engine.Dom.Text t)
+            {
+                if (!string.IsNullOrWhiteSpace(t.Data)) hasInline = true;
+            }
+            else if (c is Element childEl)
+            {
+                if (IsInlineChild(childEl, resolver)) hasInline = true;
+                else hasBlock = true;
+            }
+            if (hasInline && hasBlock) return true;
+        }
+        return false;
+    }
+
+    private static bool IsInlineChild(Element element, LayoutStyleResolver resolver)
+    {
+        var display = resolver.Resolve(element).GetPropertyValue("display");
+        if (display == "inline" || display == "inline-block") return true;
+        if (string.IsNullOrEmpty(display))
+        {
+            // Mirror the tag-default list in InlineLayout.
+            var t = element.TagName;
+            if (t is "span" or "a" or "em" or "strong" or "b" or "i" or "u" or "s"
+                or "small" or "big" or "sub" or "sup" or "code" or "kbd" or "samp"
+                or "var" or "cite" or "q" or "abbr" or "acronym" or "label"
+                or "button" or "input" or "select" or "textarea" or "time"
+                or "mark" or "ruby" or "rt" or "rp" or "bdi" or "bdo" or "wbr"
+                or "img" or "svg" or "picture" or "video" or "audio" or "canvas"
+                or "br")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Lay out a block container's children when
+    /// they mix inline/text with block-level siblings.
+    /// Groups consecutive inline/text children into anonymous
+    /// block wrapper boxes (per CSS 2.1 §9.2.1.1) and stacks
+    /// them vertically with the real block children. Each
+    /// anonymous wrapper runs
+    /// <see cref="InlineLayout.LayoutChildNodes"/> over its
+    /// run, inheriting style from the real parent so text-run
+    /// color / font-* / text-align behave as if the anonymous
+    /// wrapper weren't there.</summary>
+    private static void LayoutMixedChildren(
+        LayoutBox parent, Element element,
+        LayoutStyleResolver resolver, Viewport viewport,
+        double fontSize, double rootFontSize)
+    {
+        var parentStyle = resolver.Resolve(element);
+        var run = new List<Daisi.Broski.Engine.Dom.Node>();
+
+        void FlushRun()
+        {
+            if (run.Count == 0) return;
+            // Skip runs that are entirely collapsible
+            // whitespace — matches how ShouldUseInlineFlow's
+            // inverse (pure-whitespace Text between blocks)
+            // is treated. Without this check we'd emit a
+            // tiny anonymous block for every line break
+            // between sibling <div>s.
+            bool anyVisible = false;
+            foreach (var n in run)
+            {
+                if (n is Element) { anyVisible = true; break; }
+                if (n is Daisi.Broski.Engine.Dom.Text t
+                    && !string.IsNullOrWhiteSpace(t.Data))
+                {
+                    anyVisible = true; break;
+                }
+            }
+            if (!anyVisible) { run.Clear(); return; }
+
+            var anon = new LayoutBox
+            {
+                Element = null,
+                Display = BoxDisplay.Block,
+                InheritedStyle = parentStyle,
+            };
+            anon.Width = parent.Width;
+            anon.X = parent.X;
+            anon.Y = parent.Y + parent.Height;
+            parent.Children.Add(anon);
+
+            InlineLayout.LayoutChildNodes(
+                anon, run.ToArray(), parentStyle,
+                resolver, viewport, fontSize, rootFontSize);
+
+            // Grow the parent's content height by the
+            // anonymous wrapper's height so subsequent
+            // block siblings stack below.
+            parent.Height += anon.Height;
+            run.Clear();
+        }
+
+        foreach (var child in element.ChildNodes)
+        {
+            if (child is Element childEl)
+            {
+                if (IsInlineChild(childEl, resolver))
+                {
+                    run.Add(child);
+                }
+                else
+                {
+                    FlushRun();
+                    BuildAndLay(parent, childEl, resolver, viewport);
+                }
+            }
+            else if (child is Daisi.Broski.Engine.Dom.Text)
+            {
+                run.Add(child);
+            }
+        }
+        FlushRun();
     }
 
     /// <summary>Measure the vertical space needed to paint
@@ -595,6 +754,7 @@ public static class LayoutTree
                     or "p" or "h1" or "h2" or "h3" or "h4" or "h5" or "h6"
                     or "ul" or "ol" or "li" or "blockquote" or "pre"
                     => BoxDisplay.Block,
+                "table" => BoxDisplay.Table,
                 "head" or "script" or "style" or "link" or "meta" or "title"
                     => BoxDisplay.None,
                 _ => BoxDisplay.Inline,
@@ -605,8 +765,19 @@ public static class LayoutTree
             "none" => BoxDisplay.None,
             "flex" => BoxDisplay.Flex,
             "grid" => BoxDisplay.Grid,
+            "table" => BoxDisplay.Table,
+            // Internal table display values (table-row /
+            // table-cell / table-row-group) only participate
+            // in layout when their ancestor is an actual
+            // table container — TableLayout walks the DOM
+            // structure directly and ignores these. Outside
+            // a table, fall back to block so a stray <td>
+            // still renders.
             "block" or "list-item"
-                or "table" or "table-row" or "table-cell"
+                or "table-row" or "table-cell"
+                or "table-row-group" or "table-header-group"
+                or "table-footer-group" or "table-column"
+                or "table-column-group" or "table-caption"
                 => BoxDisplay.Block,
             "inline" => BoxDisplay.Inline,
             "inline-block" => BoxDisplay.InlineBlock,

@@ -227,7 +227,7 @@ public sealed class PageLoader : IDisposable
                         if (root is not null) return (pair.img, (object?)root);
                         return (pair.img, (object?)null);
                     }
-                    var decoded = PngDecoder.TryDecode(result.Body);
+                    var decoded = ImageDecoder.TryDecode(result.Body);
                     return (pair.img, (object?)decoded);
                 }
             }
@@ -447,7 +447,7 @@ public sealed class PageLoader : IDisposable
                 {
                     return (url, (RasterBuffer?)null);
                 }
-                return (url, PngDecoder.TryDecode(result.Body));
+                return (url, ImageDecoder.TryDecode(result.Body));
             }
             catch
             {

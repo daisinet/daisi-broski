@@ -153,6 +153,7 @@ public static class Painter
         {
             var style = StyleResolver.Resolve(box.Element, viewport);
             double opacity = ResolveOpacity(style);
+            ApplyBackdropFilter(box, style, buffer);
             PaintBackground(box, style, buffer, opacity);
             PaintImage(box, document, buffer, opacity);
             PaintBorders(box, style, buffer, opacity);
@@ -648,6 +649,83 @@ public static class Painter
             (int)Math.Round(rect.Width), (int)Math.Round(rect.Height),
             1, 1, 1, 1,
             stroke, stroke, stroke, stroke);
+    }
+
+    /// <summary>Apply CSS <c>backdrop-filter: blur(Npx)</c>
+    /// to the pixels already painted under
+    /// <paramref name="box"/>'s border-box. Runs BEFORE the
+    /// element's own background / borders / content so the
+    /// element renders cleanly on top of its blurred
+    /// backdrop — the glassmorphism pattern that modern
+    /// marketing pages use for translucent cards. Also
+    /// accepts the <c>-webkit-backdrop-filter</c> vendor
+    /// prefix since Safari ships that variant as the
+    /// canonical one and many sites set both.
+    ///
+    /// <para>
+    /// <c>filter: blur()</c> is intentionally NOT handled
+    /// here — per CSS Filter Effects, <c>filter</c> blurs
+    /// the element's own rendering, which requires painting
+    /// the subtree to a scratch buffer and compositing back.
+    /// That's the same offscreen-compositing infrastructure
+    /// needed for <c>opacity &lt; 1</c> stacking contexts
+    /// and will ship together in a future slice.
+    /// </para></summary>
+    private static void ApplyBackdropFilter(
+        LayoutBox box, ComputedStyle style, RasterBuffer buffer)
+    {
+        var raw = style.GetPropertyValue("backdrop-filter");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            raw = style.GetPropertyValue("-webkit-backdrop-filter");
+            if (string.IsNullOrWhiteSpace(raw)) return;
+        }
+        int radius = ParseBlurRadius(raw, ResolveFontSizePx(style));
+        if (radius <= 0) return;
+
+        var rect = box.BorderBoxRect;
+        int rx = (int)Math.Round(rect.X);
+        int ry = (int)Math.Round(rect.Y);
+        int rw = (int)Math.Round(rect.Width);
+        int rh = (int)Math.Round(rect.Height);
+        if (rw <= 0 || rh <= 0) return;
+
+        var radii = ParseBorderRadius(style, rw, rh, ResolveFontSizePx(style));
+        BoxBlur.BlurRegionMaskedRounded(buffer, rx, ry, rw, rh, radius,
+            radii.TopLeft, radii.TopRight, radii.BottomRight, radii.BottomLeft);
+    }
+
+    /// <summary>Pull the radius out of a filter-list value
+    /// like <c>blur(20px)</c> or
+    /// <c>blur(1rem) brightness(1.2)</c>. Only blur() is
+    /// honored; other filter functions are silently ignored
+    /// for now. Returns zero when no blur() is found.</summary>
+    private static int ParseBlurRadius(string filter, double fontSizePx)
+    {
+        // Find "blur(" — case-insensitive.
+        int idx = filter.IndexOf("blur(", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return 0;
+        int start = idx + 5;
+        int end = filter.IndexOf(')', start);
+        if (end < 0) return 0;
+        var arg = filter.Substring(start, end - start).Trim();
+        if (arg.Length == 0) return 0;
+        var len = Daisi.Broski.Engine.Layout.Length.Parse(arg);
+        if (len.IsNone) return 0;
+        // Resolve em/rem against the element's font size;
+        // px passes straight through. No viewport-relative
+        // units — a "blur(10vw)" on mobile would be
+        // pathological anyway.
+        double px = len.Resolve(0, fontSizePx, 16);
+        if (px < 0) return 0;
+        // CSS radius is a "Gaussian sigma" — our box blur
+        // kernel radius approximates that well enough at
+        // ~1× for moderate values. Cap to a reasonable max
+        // so a runaway `blur(1000px)` doesn't scan the
+        // entire canvas into one pixel's running sum.
+        int r = (int)Math.Round(px);
+        if (r > 64) r = 64;
+        return r;
     }
 
     private static void PaintBackground(
