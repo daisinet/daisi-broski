@@ -341,13 +341,8 @@ public static class LayoutTree
             // stacks on top, clipping the rendered letters.
             if (box.Height < 0.5)
             {
-                // Measure with the element's resolved font
-                // (not the bitmap approximation) so boxes
-                // sized to 1 line of text don't round up to 2
-                // lines' worth of vertical space.
-                var elStyle = resolver.Resolve(element);
                 double textH = MeasureDirectTextHeight(
-                    element, box.Width, fontSize, elStyle);
+                    element, box.Width, fontSize);
                 if (textH > 0) box.Height = textH;
             }
         }

@@ -550,43 +550,16 @@ internal static class FlexLayout
 
         if (isRow)
         {
-            // Use intrinsic text/image width when the item has
-            // laid-out content. Honor webfont metrics +
-            // text-transform + bold-synthesis so the measured
-            // size matches what the painter renders (prevents
-            // buttons with 'text-uppercase' shrinking below
-            // their actual rendered text width).
+            // Bitmap-based intrinsic gives conservatively wide
+            // boxes so text rendered via webfont has padding
+            // inside — that padding becomes the visible gap
+            // between flex items.
             int cellW = Daisi.Broski.Engine.Paint.BitmapFont.CellWidth
                 * Daisi.Broski.Engine.Paint.BitmapFont.ScaleFor(fontSize);
-            var doc = itemElement.OwnerDocument;
-            var webFont = doc is not null
-                ? Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
-                    doc, itemStyle.GetPropertyValue("font-family") ?? "",
-                    ParseWeightValue(itemStyle.GetPropertyValue("font-weight")),
-                    itemStyle.GetPropertyValue("font-style") ?? "normal", 'A')
-                : null;
-            var tt = (itemStyle.GetPropertyValue("text-transform") ?? "none")
-                .Trim().ToLowerInvariant();
-            bool bold = ParseWeightValue(itemStyle.GetPropertyValue("font-weight")) >= 600;
-            double intrinsic = MeasureIntrinsicMainSize(
-                itemElement, cellW, webFont, fontSize, tt, bold);
+            double intrinsic = MeasureIntrinsicMainSize(itemElement, cellW);
             if (intrinsic > 0) return Math.Min(intrinsic, container.Width);
         }
         return 0;
-    }
-
-    private static int ParseWeightValue(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return 400;
-        var t = value.Trim().ToLowerInvariant();
-        return t switch
-        {
-            "normal" => 400,
-            "bold" => 700,
-            "lighter" => 300,
-            "bolder" => 700,
-            _ => int.TryParse(t, out var n) ? n : 400,
-        };
     }
 
     /// <summary>Best-effort intrinsic width: sum of descendant

@@ -171,21 +171,16 @@ internal static class InlineLayout
                 // box.Width = parent.Width when auto, which is
                 // wrong for inline; recompute.
                 var declaredWidth = Length.Parse(childStyle.GetPropertyValue("width"));
-                // Use the child's actual webfont for intrinsic
-                // width when available, apply text-transform
-                // + bold-width adjustment before measuring so
-                // the box is sized to match what the painter
-                // will actually render.
-                var childWebFont = container.Element?.OwnerDocument is { } doc2
-                    ? ResolveWebFontForMeasure(doc2, childStyle, "X")
-                    : null;
-                var childTransform = (childStyle.GetPropertyValue("text-transform") ?? "none")
-                    .Trim().ToLowerInvariant();
-                bool childBold = ParseWeightValue(childStyle.GetPropertyValue("font-weight")) >= 600;
+                // Bitmap cellWidth slightly over-estimates
+                // real text width (webfont chars are typically
+                // narrower than our 12px cell at scale 2), but
+                // the headroom becomes padding inside each
+                // inline box — which is what preserves visible
+                // spacing between nav items / chips / badges
+                // when text-transform bumps rendered width.
                 double width = !declaredWidth.IsNone && !declaredWidth.IsAuto
                     ? declaredWidth.Resolve(availWidth, itemFs, itemRs)
-                    : MeasureIntrinsicWidth(childEl, childCellW,
-                        childWebFont, itemFs, childTransform, childBold);
+                    : MeasureIntrinsicWidth(childEl, childCellW);
                 // Cap width to the line so it never overflows;
                 // text inside will wrap separately when painted.
                 width = Math.Min(width, availWidth
