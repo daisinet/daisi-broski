@@ -44,6 +44,7 @@ public static class Skimmer
             {
                 ScriptingEnabled = options.ScriptingEnabled,
                 Fetcher = options.Fetcher,
+                StoragePath = options.StoragePath,
             },
             ct).ConfigureAwait(false);
 
@@ -69,4 +70,11 @@ public sealed class SkimmerOptions
     /// <summary>HTTP fetcher options forwarded to
     /// <see cref="BroskiOptions.Fetcher"/>.</summary>
     public HttpFetcherOptions? Fetcher { get; init; }
+
+    /// <summary>Forwarded to <see cref="BroskiOptions.StoragePath"/>.
+    /// When set, <c>localStorage</c> persists as a JSON file under
+    /// this directory. Useful when skimming authenticated pages
+    /// that read their session state from localStorage on the
+    /// client bootstrap.</summary>
+    public string? StoragePath { get; init; }
 }

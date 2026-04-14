@@ -12,15 +12,26 @@ public sealed class Text : Node
 
     public override string NodeName => "#text";
 
-    public string Data { get; set; }
+    private string _data;
 
-    public override string TextContent => Data;
+    public string Data
+    {
+        get => _data;
+        set
+        {
+            var old = _data;
+            _data = value ?? "";
+            NotifyCharacterDataMutation(old);
+        }
+    }
 
-    public int Length => Data.Length;
+    public override string TextContent => _data;
+
+    public int Length => _data.Length;
 
     internal Text(string data)
     {
-        Data = data;
+        _data = data ?? "";
     }
 
     /// <summary>Append to the existing data. Faster than replacing the
@@ -29,6 +40,16 @@ public sealed class Text : Node
     public void AppendData(string chunk)
     {
         if (string.IsNullOrEmpty(chunk)) return;
-        Data += chunk;
+        var old = _data;
+        _data += chunk;
+        NotifyCharacterDataMutation(old);
+    }
+
+    private void NotifyCharacterDataMutation(string oldValue)
+    {
+        if (OwnerDocument is { HasMutationObservers: true } doc)
+        {
+            doc.MutationDispatcher.NotifyCharacterData(this, oldValue);
+        }
     }
 }

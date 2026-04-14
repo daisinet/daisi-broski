@@ -1,3 +1,5 @@
+using Daisi.Broski.Engine.Css;
+
 namespace Daisi.Broski.Engine.Dom;
 
 /// <summary>
@@ -19,6 +21,201 @@ public sealed class Document : Node
     public Document()
     {
         OwnerDocument = this;
+    }
+
+    /// <summary>Per-document mutation fan-out. Lazily allocated
+    /// on first access, so documents that never have a
+    /// MutationObserver attached pay zero cost. Mutations on any
+    /// node in this document's tree route through this
+    /// dispatcher when it exists; ignore otherwise.</summary>
+    public MutationDispatcher MutationDispatcher
+    {
+        get
+        {
+            _mutationDispatcher ??= new MutationDispatcher();
+            return _mutationDispatcher;
+        }
+    }
+    private MutationDispatcher? _mutationDispatcher;
+
+    /// <summary>True when at least one MutationObserver is
+    /// registered against any node in this document. Mutation
+    /// methods consult this before doing the (cheap) walk into
+    /// the dispatcher so the no-observers case is just one
+    /// boolean test.</summary>
+    internal bool HasMutationObservers =>
+        _mutationDispatcher is { RegistrationCount: > 0 };
+
+    /// <summary>Parsed stylesheets attached to this document.
+    /// Populated lazily by <see cref="StyleSheets"/> on first
+    /// access — walks every <c>&lt;style&gt;</c> descendant
+    /// once and caches the result. Calling
+    /// <see cref="InvalidateStyleSheets"/> after a script-side
+    /// mutation forces a re-parse on the next read.</summary>
+    public IReadOnlyList<Stylesheet> StyleSheets
+    {
+        get
+        {
+            if (_styleSheets is null) RecomputeStyleSheets();
+            return _styleSheets!;
+        }
+    }
+    private IReadOnlyList<Stylesheet>? _styleSheets;
+
+    /// <summary>Drop the cached <see cref="StyleSheets"/> so
+    /// the next read re-parses every <c>&lt;style&gt;</c> in
+    /// the tree. Cheap; the cache is per-document and the
+    /// per-style-block parse is itself fast.</summary>
+    public void InvalidateStyleSheets()
+    {
+        _styleSheets = null;
+        _styleCache?.Clear();
+    }
+
+    /// <summary>Per-document memoization of resolved
+    /// computed-style results, keyed by (element, viewport
+    /// width, viewport height). The cascade is expensive —
+    /// each Resolve walks every rule in every stylesheet
+    /// and recursively resolves ancestors for inheritance —
+    /// so without this cache a layout pass re-runs the
+    /// cascade O(depth^2) times per element. Cleared on
+    /// stylesheet invalidation.</summary>
+    public Dictionary<(Element Element, int W, int H), object>? StyleCache
+    {
+        get => _styleCache;
+        set => _styleCache = value;
+    }
+    private Dictionary<(Element, int, int), object>? _styleCache;
+
+    /// <summary>Get-or-create the style cache. Lazy because
+    /// engines that never run the cascade (parse-only
+    /// callers) shouldn't pay the dictionary allocation.</summary>
+    internal Dictionary<(Element, int, int), object> EnsureStyleCache() =>
+        _styleCache ??= new Dictionary<(Element, int, int), object>();
+
+    /// <summary>Decoded raster pixel buffers for every
+    /// <c>&lt;img src&gt;</c> the page loader successfully
+    /// fetched + decoded. Keyed by the <c>&lt;img&gt;</c>
+    /// element so the painter can look up "the picture for
+    /// this element" directly. Untouched <c>&lt;img&gt;</c>
+    /// elements (broken URL, unsupported format) just don't
+    /// have an entry — paint falls back to the placeholder
+    /// rect.</summary>
+    public Dictionary<Element, object>? Images
+    {
+        get => _images;
+        set => _images = value;
+    }
+    private Dictionary<Element, object>? _images;
+
+    public void AttachImage(Element imgElement, object decoded)
+    {
+        ArgumentNullException.ThrowIfNull(imgElement);
+        ArgumentNullException.ThrowIfNull(decoded);
+        _images ??= new Dictionary<Element, object>(ReferenceEqualityComparer.Instance);
+        _images[imgElement] = decoded;
+    }
+
+    /// <summary>Stylesheets fetched ahead of time from
+    /// <c>&lt;link rel="stylesheet"&gt;</c> by
+    /// <c>PageLoader</c>. Inserted into <see cref="StyleSheets"/>
+    /// at their corresponding source-order positions
+    /// (interleaved with inline <c>&lt;style&gt;</c> blocks)
+    /// so the cascade respects HTML document order. The
+    /// keys are the <c>&lt;link&gt;</c> elements, so the
+    /// insertion order preserves their tree order.</summary>
+    private Dictionary<Element, Stylesheet>? _externalStylesheets;
+
+    /// <summary>Attach a stylesheet that was fetched by the
+    /// host (typically from a <c>&lt;link rel="stylesheet"&gt;</c>
+    /// element) so the cascade picks it up alongside inline
+    /// <c>&lt;style&gt;</c> blocks. The <paramref name="link"/>
+    /// element identifies the source so source-order
+    /// interleaving is exact. Calling this invalidates the
+    /// cached stylesheet list.</summary>
+    public void AttachExternalStylesheet(Element link, Stylesheet sheet)
+    {
+        ArgumentNullException.ThrowIfNull(link);
+        ArgumentNullException.ThrowIfNull(sheet);
+        _externalStylesheets ??= new Dictionary<Element, Stylesheet>(
+            ReferenceEqualityComparer.Instance);
+        _externalStylesheets[link] = sheet;
+        _styleSheets = null;
+    }
+
+    /// <summary>Web fonts fetched from <c>@font-face</c>
+    /// rules during page load. Painter looks up the best
+    /// match for a text run's <c>font-family</c> and renders
+    /// glyphs from the first font it can parse; anything
+    /// else falls back to the bundled bitmap font. Keyed by
+    /// family name (case-insensitive) so multiple weights /
+    /// styles of the same family can coexist.</summary>
+    private Dictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>? _fonts;
+
+    public IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>> Fonts =>
+        (IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>?)_fonts
+            ?? EmptyFonts;
+
+    private static readonly IReadOnlyDictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>> EmptyFonts =
+        new Dictionary<string, List<Daisi.Broski.Engine.Fonts.WebFont>>(StringComparer.OrdinalIgnoreCase);
+
+    public void AttachFont(Daisi.Broski.Engine.Fonts.WebFont font)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        _fonts ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!_fonts.TryGetValue(font.Family, out var list))
+        {
+            list = new List<Daisi.Broski.Engine.Fonts.WebFont>();
+            _fonts[font.Family] = list;
+        }
+        list.Add(font);
+    }
+
+    /// <summary>CSS-referenced background images
+    /// (<c>background-image: url(...)</c>), fetched and
+    /// decoded by PageLoader. Keyed by the element the rule
+    /// matches, so the painter can blit the image as a
+    /// layer over the element's background color.</summary>
+    private Dictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>? _backgroundImages;
+
+    public IReadOnlyDictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>? BackgroundImages =>
+        _backgroundImages;
+
+    public void AttachBackgroundImage(
+        Element element, Daisi.Broski.Engine.Paint.RasterBuffer decoded)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(decoded);
+        _backgroundImages ??= new Dictionary<Element, Daisi.Broski.Engine.Paint.RasterBuffer>(
+            ReferenceEqualityComparer.Instance);
+        _backgroundImages[element] = decoded;
+    }
+
+    private void RecomputeStyleSheets()
+    {
+        var list = new List<Stylesheet>();
+        foreach (var el in DescendantElements())
+        {
+            if (el.TagName == "style")
+            {
+                var css = el.TextContent;
+                if (!string.IsNullOrEmpty(css))
+                {
+                    list.Add(CssParser.Parse(css));
+                }
+            }
+            else if (el.TagName == "link" && _externalStylesheets is { } externals
+                && externals.TryGetValue(el, out var external))
+            {
+                // Source-order interleaving: the <link> sits
+                // wherever the parser placed it; we insert
+                // its fetched sheet at the same point in the
+                // list so author rules cascade in the same
+                // order browsers see.
+                list.Add(external);
+            }
+        }
+        _styleSheets = list;
     }
 
     /// <summary>

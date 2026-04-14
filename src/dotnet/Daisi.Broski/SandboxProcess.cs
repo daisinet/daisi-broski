@@ -54,14 +54,27 @@ public sealed class SandboxProcess : IAsyncDisposable
         // Without this, the child's stderr fills the pipe and the child
         // blocks on its next write — and we get a confusing "pipe closed"
         // error with no explanation.
-        _process.ErrorDataReceived += (_, e) =>
+        //
+        // Only attached when the Process was started with stderr
+        // redirection. The atomic-launch path (native CreateProcess)
+        // inherits the parent's stderr handle instead; we lose the
+        // capture there but gain the closed race window in exchange.
+        try
         {
-            if (e.Data is not null)
+            _process.ErrorDataReceived += (_, e) =>
             {
-                lock (_childStderr) _childStderr.AppendLine(e.Data);
-            }
-        };
-        _process.BeginErrorReadLine();
+                if (e.Data is not null)
+                {
+                    lock (_childStderr) _childStderr.AppendLine(e.Data);
+                }
+            };
+            _process.BeginErrorReadLine();
+        }
+        catch (InvalidOperationException)
+        {
+            // Process wasn't started with RedirectStandardError —
+            // that's expected for the atomic-launch path.
+        }
     }
 
     private string CapturedStderr()

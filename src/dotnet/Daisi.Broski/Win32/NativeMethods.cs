@@ -58,6 +58,97 @@ internal static partial class NativeMethods
     [LibraryImport(Kernel32, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CloseHandle(IntPtr hObject);
+
+    // -------------------------------------------------------------
+    // CreateProcess — atomic launch path
+    // -------------------------------------------------------------
+
+    /// <summary>
+    /// <c>CreateProcessW</c> — used in suspended mode so the caller
+    /// can assign the child to a Job Object before the first
+    /// instruction runs, closing the ~few-ms race window the
+    /// managed <c>Process.Start</c> path leaves open.
+    /// </summary>
+    [LibraryImport(Kernel32, EntryPoint = "CreateProcessW", SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CreateProcess(
+        string? lpApplicationName,
+        [MarshalAs(UnmanagedType.LPWStr)] string lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool bInheritHandles,
+        ProcessCreationFlags dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        in StartupInfo lpStartupInfo,
+        out ProcessInformation lpProcessInformation);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    internal static partial uint ResumeThread(IntPtr hThread);
+
+    [LibraryImport(Kernel32, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+}
+
+/// <summary>
+/// <c>STARTUPINFOW</c> — passed to <see cref="NativeMethods.CreateProcess"/>.
+/// We use the baseline shape (no custom stdio redirection); the
+/// child's handle inheritance is configured via the
+/// <c>bInheritHandles</c> parameter on CreateProcess.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct StartupInfo
+{
+    public uint cb;
+    public IntPtr lpReserved;
+    public IntPtr lpDesktop;
+    public IntPtr lpTitle;
+    public uint dwX;
+    public uint dwY;
+    public uint dwXSize;
+    public uint dwYSize;
+    public uint dwXCountChars;
+    public uint dwYCountChars;
+    public uint dwFillAttribute;
+    public StartupInfoFlags dwFlags;
+    public ushort wShowWindow;
+    public ushort cbReserved2;
+    public IntPtr lpReserved2;
+    public IntPtr hStdInput;
+    public IntPtr hStdOutput;
+    public IntPtr hStdError;
+}
+
+[Flags]
+internal enum StartupInfoFlags : uint
+{
+    None = 0,
+    UseShowWindow = 0x00000001,
+    UseStdHandles = 0x00000100,
+}
+
+/// <summary>
+/// <c>PROCESS_INFORMATION</c> — returned by CreateProcess. Both the
+/// process and the (single) thread handles need to be closed by
+/// the caller after the child is assigned and resumed.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct ProcessInformation
+{
+    public IntPtr hProcess;
+    public IntPtr hThread;
+    public uint dwProcessId;
+    public uint dwThreadId;
+}
+
+[Flags]
+internal enum ProcessCreationFlags : uint
+{
+    None = 0,
+    CreateSuspended = 0x00000004,
+    CreateNoWindow = 0x08000000,
 }
 
 /// <summary>

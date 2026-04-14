@@ -52,11 +52,14 @@ public class Element : Node
         {
             if (_attributes[i].Key == name)
             {
+                var oldValue = _attributes[i].Value;
                 _attributes[i] = new KeyValuePair<string, string>(name, value);
+                NotifyAttributeMutation(name, oldValue);
                 return;
             }
         }
         _attributes.Add(new KeyValuePair<string, string>(name, value));
+        NotifyAttributeMutation(name, oldValue: null);
     }
 
     public bool HasAttribute(string name) => GetAttribute(name) is not null;
@@ -67,11 +70,25 @@ public class Element : Node
         {
             if (_attributes[i].Key == name)
             {
+                var oldValue = _attributes[i].Value;
                 _attributes.RemoveAt(i);
+                NotifyAttributeMutation(name, oldValue);
                 return true;
             }
         }
         return false;
+    }
+
+    /// <summary>Route an attribute change through this
+    /// element's owner document's
+    /// <see cref="Document.MutationDispatcher"/>, when one
+    /// exists. Cheap no-op when no observer is registered.</summary>
+    private void NotifyAttributeMutation(string name, string? oldValue)
+    {
+        if (OwnerDocument is { HasMutationObservers: true } doc)
+        {
+            doc.MutationDispatcher.NotifyAttribute(this, name, oldValue);
+        }
     }
 
     /// <summary>Convenience: the <c>id</c> attribute, or empty string

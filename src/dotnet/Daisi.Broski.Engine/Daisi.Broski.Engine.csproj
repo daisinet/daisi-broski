@@ -6,4 +6,13 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Default sans-serif font used when no @font-face
+         match is available — Roboto Regular (Apache 2.0).
+         Embedded so renders from arbitrary sites have real
+         typography instead of falling all the way down to
+         the bundled 5x7 bitmap. -->
+    <EmbeddedResource Include="Fonts/EmbeddedFont.ttf"
+                      LogicalName="Daisi.Broski.Engine.Fonts.EmbeddedFont.ttf" />
+  </ItemGroup>
 </Project>

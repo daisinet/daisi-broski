@@ -34,12 +34,29 @@ public static class PageScripts
     /// scripts. When null, a fresh <see cref="HttpFetcher"/> with
     /// default options is used per call. Pass an existing fetcher
     /// to share its cookie jar with the page fetch.</param>
-    public static PageScriptsResult RunAll(LoadedPage page, HttpFetcher? scriptFetcher = null)
+    /// <param name="storagePath">Optional root directory for
+    /// persisted <c>localStorage</c>. When <c>null</c> (default),
+    /// <c>localStorage</c> is transient. Pass
+    /// <see cref="Broski.DefaultStoragePath"/> for a sensible
+    /// per-user location.</param>
+    public static PageScriptsResult RunAll(
+        LoadedPage page,
+        HttpFetcher? scriptFetcher = null,
+        string? storagePath = null)
     {
         ArgumentNullException.ThrowIfNull(page);
 
         var doc = page.Document;
         var engine = new JsEngine();
+        // Install the storage backend *before* AttachDocument so
+        // the initial origin-load hits the file-backed backend
+        // instead of the transient default.
+        if (!string.IsNullOrEmpty(storagePath))
+        {
+            engine.SetStorageBackend(new FileStorageBackend(storagePath));
+            engine.IndexedDbBackend = new FileIndexedDbBackend(
+                Path.Combine(storagePath, "indexeddb"));
+        }
         engine.AttachDocument(doc, page.FinalUrl);
 
         bool ownsFetcher = scriptFetcher is null;

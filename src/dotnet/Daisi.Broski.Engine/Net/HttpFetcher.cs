@@ -59,7 +59,17 @@ public sealed class HttpFetcher : IDisposable
     /// <exception cref="HttpRequestException">
     /// Transport-level failure (DNS, TLS, connection refused, etc.).
     /// </exception>
-    public async Task<FetchResult> FetchAsync(Uri url, CancellationToken ct = default)
+    public Task<FetchResult> FetchAsync(Uri url, CancellationToken ct = default) =>
+        FetchAsync(url, userAgentOverride: null, ct);
+
+    /// <summary>Fetch with a per-request User-Agent override.
+    /// Used by the font loader to coax Google Fonts into
+    /// returning TTF instead of WOFF2 — the font service
+    /// dispatches on UA, and a fresh modern UA gets WOFF2
+    /// (which we don't yet decompress). An IE9-era UA gets
+    /// plain TrueType tables our parser can read directly.</summary>
+    public async Task<FetchResult> FetchAsync(
+        Uri url, string? userAgentOverride, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(url);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -70,7 +80,30 @@ public sealed class HttpFetcher : IDisposable
 
         while (true)
         {
+            // Give the host-supplied interceptor a chance to
+            // short-circuit before we hit the wire. Runs on
+            // every hop in the redirect chain so a synthetic
+            // response can replace any link in the chain
+            // (useful for pinning a 302 → mock-200 path).
+            if (_options.Interceptor is { } intercept)
+            {
+                var synthetic = intercept(new InterceptedRequest
+                {
+                    Url = current,
+                    Method = "GET",
+                });
+                if (synthetic is not null)
+                {
+                    return BuildSyntheticResult(url, current, chain, synthetic);
+                }
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            if (userAgentOverride is not null)
+            {
+                request.Headers.UserAgent.Clear();
+                request.Headers.UserAgent.ParseAdd(userAgentOverride);
+            }
             using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
@@ -144,6 +177,41 @@ public sealed class HttpFetcher : IDisposable
         }
 
         return buffer.ToArray();
+    }
+
+    /// <summary>Build a <see cref="FetchResult"/> from a host-
+    /// supplied <see cref="InterceptedResponse"/>. Mirrors the
+    /// shape of the real-network path so callers can't tell
+    /// the difference. The <c>Content-Type</c> header gets
+    /// added if the interceptor set one explicitly and didn't
+    /// also set the headers map.</summary>
+    private static FetchResult BuildSyntheticResult(
+        Uri requestUrl, Uri finalUrl, List<Uri> chain,
+        InterceptedResponse synthetic)
+    {
+        var headers = synthetic.Headers
+            ?? new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        if (synthetic.ContentType is { } ct
+            && synthetic.Headers is null)
+        {
+            // Promote the explicit content-type into the
+            // headers map so consumers that read through the
+            // headers (the JS-side fetch path does this) see
+            // the same value.
+            var dict = new Dictionary<string, IReadOnlyList<string>>(
+                StringComparer.OrdinalIgnoreCase) { [ "content-type" ] = new[] { ct } };
+            headers = dict;
+        }
+        return new FetchResult
+        {
+            RequestUrl = requestUrl,
+            FinalUrl = finalUrl,
+            Status = (System.Net.HttpStatusCode)synthetic.Status,
+            Body = synthetic.Body ?? Array.Empty<byte>(),
+            ContentType = synthetic.ContentType,
+            RedirectChain = chain,
+            Headers = headers,
+        };
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<string>> SnapshotHeaders(

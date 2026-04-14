@@ -55,6 +55,8 @@ public static class Program
         {
             "fetch" => await FetchCommand(args[1..]),
             "run" => await RunCommand(args[1..]),
+            "screenshot" => await ScreenshotCommand(args[1..]),
+            "probe" => ProbePixels.Run(args[1..]),
             _ => UsageError($"Unknown command '{args[0]}'"),
         };
     }
@@ -73,6 +75,7 @@ public static class Program
         string? userAgent = null;
         int maxRedirects = 20;
         bool quiet = false;
+        bool noSandbox = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -95,6 +98,9 @@ public static class Program
                 case "--quiet":
                     quiet = true;
                     break;
+                case "--no-sandbox":
+                    noSandbox = true;
+                    break;
                 default:
                     if (a.StartsWith('-'))
                         return UsageError($"Unknown option '{a}'");
@@ -110,6 +116,22 @@ public static class Program
             (url.Scheme != "http" && url.Scheme != "https"))
         {
             return UsageError($"'{urlArg}' is not an absolute http(s) URL");
+        }
+
+        // Default to the sandboxed path — the JS engine now runs in
+        // the child process, so `run` gets the same kernel-enforced
+        // memory cap / UI lockdown that `fetch` already has.
+        // --no-sandbox keeps the old in-process path, which is the
+        // one with detailed per-script error reporting.
+        bool useSandbox = !noSandbox && OperatingSystem.IsWindows();
+        if (!noSandbox && !OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine(
+                "daisi-broski: sandbox mode is Windows-only; running in-process.");
+        }
+        if (useSandbox && OperatingSystem.IsWindows())
+        {
+            return await RunInSandbox(url, select, userAgent, maxRedirects, quiet);
         }
 
         var options = new HttpFetcherOptions
@@ -601,6 +623,61 @@ public static class Program
         }
     }
 
+    // -------- sandboxed `run` --------
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static async Task<int> RunInSandbox(
+        Uri url, string? select, string? userAgent, int maxRedirects, bool quiet)
+    {
+        try
+        {
+            await using var session = BrowserSession.Create();
+            var resp = await session.RunAsync(
+                url,
+                scriptingEnabled: true,
+                select: select,
+                includeHtml: false,
+                userAgent: userAgent,
+                maxRedirects: maxRedirects);
+
+            if (!quiet)
+            {
+                Console.Error.WriteLine(
+                    $"{resp.Status} {resp.FinalUrl} " +
+                    $"(scripts {resp.ScriptsRan}/{resp.ScriptsTotal}, " +
+                    $"elements {resp.ElementCount})");
+            }
+
+            if (select is not null)
+            {
+                foreach (var m in resp.Matches)
+                {
+                    Console.Out.WriteLine(NormalizeWhitespace(m.TextContent));
+                }
+                if (!quiet)
+                    Console.Error.WriteLine($"{resp.Matches.Count} match(es)");
+                return 0;
+            }
+
+            Console.Out.WriteLine($"title: {resp.Title ?? "(no title)"}");
+            Console.Out.WriteLine(
+                $"scripts:     {resp.ScriptsTotal} total, " +
+                $"{resp.ScriptsRan} ran, {resp.ScriptsErrored} errored");
+            Console.Out.WriteLine($"elements:    {resp.ElementCount}");
+            return 0;
+        }
+        catch (SandboxException ex)
+        {
+            Console.Error.WriteLine($"sandbox error: {ex.Message}");
+            return 2;
+        }
+        catch (FileNotFoundException ex)
+        {
+            Console.Error.WriteLine($"sandbox error: {ex.Message}");
+            return 2;
+        }
+    }
+
     // -------- in-process path (legacy) --------
 
     private static async Task<int> FetchInProcess(
@@ -723,5 +800,143 @@ public static class Program
         Console.Error.WriteLine($"daisi-broski: {message}");
         Console.Error.WriteLine("Run 'daisi-broski --help' for usage.");
         return 3;
+    }
+
+    private static IEnumerable<Daisi.Broski.Engine.Layout.LayoutBox> WalkBoxes(Daisi.Broski.Engine.Layout.LayoutBox root)
+    {
+        var stack = new Stack<Daisi.Broski.Engine.Layout.LayoutBox>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var box = stack.Pop();
+            yield return box;
+            for (int i = box.Children.Count - 1; i >= 0; i--)
+            {
+                stack.Push(box.Children[i]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// `daisi-broski screenshot &lt;url&gt; --out &lt;path&gt;
+    /// [--width N] [--height N]` — fetch + render the page,
+    /// write the resulting PNG to disk. Backgrounds + borders
+    /// only (text rendering deferred). Always uses the
+    /// sandbox child.
+    /// </summary>
+    private static async Task<int> ScreenshotCommand(string[] args)
+    {
+        if (args.Length == 0) return UsageError("screenshot requires a URL");
+        string urlArg = args[0];
+        string? outPath = null;
+        int width = 1280;
+        int height = 800;
+        bool wireframe = false;
+        bool dumpStyles = false;
+
+        for (int i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--out":
+                case "-o":
+                    if (i + 1 >= args.Length) return UsageError("--out needs a path");
+                    outPath = args[++i];
+                    break;
+                case "--width":
+                    if (i + 1 >= args.Length) return UsageError("--width needs a number");
+                    if (!int.TryParse(args[++i], out width)) return UsageError("bad --width");
+                    break;
+                case "--height":
+                    if (i + 1 >= args.Length) return UsageError("--height needs a number");
+                    if (!int.TryParse(args[++i], out height)) return UsageError("bad --height");
+                    break;
+                case "--wireframe":
+                    wireframe = true;
+                    break;
+                case "--dump-styles":
+                    dumpStyles = true;
+                    break;
+                default:
+                    return UsageError($"unknown screenshot flag '{args[i]}'");
+            }
+        }
+
+        if (outPath is null) return UsageError("--out <path> is required");
+        if (!Uri.TryCreate(urlArg, UriKind.Absolute, out var url) ||
+            (url.Scheme != "http" && url.Scheme != "https"))
+        {
+            return UsageError($"'{urlArg}' is not an absolute http(s) URL");
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine("daisi-broski: screenshot is Windows-only until phase 5.");
+            return 2;
+        }
+
+        try
+        {
+            if (dumpStyles)
+            {
+                // In-process debug: load, lay out, walk the layout
+                // tree, and print each box's computed color + size.
+                var page = await Daisi.Broski.Engine.Broski.LoadAsync(url,
+                    new Daisi.Broski.Engine.BroskiOptions { ScriptingEnabled = true });
+                var vp = new Daisi.Broski.Engine.Css.Viewport { Width = width, Height = height };
+                // Print font-fetch stats before the layout dump
+                // so we can see whether @font-face came through
+                // without waking through the full tree output.
+                int fontFiles = 0;
+                foreach (var fam in page.Document.Fonts.Values) fontFiles += fam.Count;
+                Console.Out.WriteLine($"fonts: {page.Document.Fonts.Count} families, "
+                    + $"{fontFiles} files");
+                int bgImageCount = page.Document.BackgroundImages?.Count ?? 0;
+                Console.Out.WriteLine($"bg-images: {bgImageCount} attached");
+                foreach (var (family, files) in page.Document.Fonts)
+                {
+                    long bytes = 0;
+                    foreach (var f in files) bytes += f.Bytes.Length;
+                    Console.Out.WriteLine($"  {family} — {files.Count} file(s), {bytes} bytes");
+                }
+                var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(page.Document, vp);
+                int n = 0;
+                foreach (var box in WalkBoxes(root))
+                {
+                    if (box.Element is null) continue;
+                    var style = Daisi.Broski.Engine.Css.StyleResolver.Resolve(box.Element, vp);
+                    var bg = style.GetPropertyValue("background-color");
+                    var bs = style.GetPropertyValue("background");
+                    var color = style.GetPropertyValue("color");
+                    var display = style.GetPropertyValue("display");
+                    Console.Out.WriteLine(
+                        $"<{box.Element.TagName}>#{box.Element.Id} .{box.Element.ClassName}  " +
+                        $"rect=({box.X:F0},{box.Y:F0},{box.Width:F0}x{box.Height:F0})  " +
+                        $"display={display}  bg-color='{bg}'  bg='{bs}'  color='{color}'");
+                    if (++n > 40) { Console.Out.WriteLine("  ... truncated ..."); break; }
+                }
+                return 0;
+            }
+
+            // In-process screenshot — avoids the sandbox so
+            // Console.Error from engine code surfaces directly.
+            {
+                var page = await Daisi.Broski.Engine.Broski.LoadAsync(url,
+                    new Daisi.Broski.Engine.BroskiOptions { ScriptingEnabled = true });
+                var vp = new Daisi.Broski.Engine.Css.Viewport { Width = width, Height = height };
+                var root = Daisi.Broski.Engine.Layout.LayoutTree.Build(page.Document, vp);
+                var buf = Daisi.Broski.Engine.Paint.Painter.Paint(
+                    root, page.Document, vp, wireframe);
+                var png = Daisi.Broski.Engine.Paint.PngEncoder.Encode(buf);
+                await File.WriteAllBytesAsync(outPath, png);
+                Console.Out.WriteLine($"wrote {png.Length} bytes ({buf.Width}x{buf.Height}) → {outPath}");
+                return 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"daisi-broski: screenshot failed: {ex.Message}");
+            return 1;
+        }
     }
 }

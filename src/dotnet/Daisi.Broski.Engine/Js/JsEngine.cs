@@ -180,6 +180,14 @@ public sealed class JsEngine
     /// </summary>
     public FetchHandler? FetchHandler { get; set; }
 
+    /// <summary>Pluggable factory for <c>WebSocket</c>
+    /// transports. The default (when this is <c>null</c>) hits
+    /// <c>System.Net.WebSockets.ClientWebSocket</c>; tests
+    /// install a stub factory that returns an in-memory
+    /// channel. Receives one (url, protocols) call per
+    /// <c>new WebSocket(...)</c> invocation.</summary>
+    public Func<string, IReadOnlyList<string>, IWebSocketChannel>? WebSocketHandler { get; set; }
+
     /// <summary>
     /// Persistent VM owned by this engine. Reused across every
     /// <see cref="Evaluate"/> call and every event-loop task
@@ -196,6 +204,43 @@ public sealed class JsEngine
     /// at the point that makes sense for their application.
     /// </summary>
     public JsEventLoop EventLoop { get; }
+
+    /// <summary>
+    /// Persistence strategy for <c>localStorage</c>. Defaults to
+    /// <see cref="Js.NullStorageBackend"/> (transient,
+    /// in-memory only). Call <see cref="SetStorageBackend"/> to
+    /// opt into file-backed persistence — the backend is asked to
+    /// <c>Load</c> for every origin the engine attaches to and
+    /// <c>Save</c> after every successful <c>setItem</c> /
+    /// <c>removeItem</c> / <c>clear</c>.
+    /// </summary>
+    public Js.IStorageBackend StorageBackend { get; private set; } =
+        Js.NullStorageBackend.Instance;
+
+    /// <summary>Manager that wires the two <see cref="Js.JsStorage"/>
+    /// instances to the current <see cref="StorageBackend"/>.
+    /// Installed by <c>BuiltinBrowserHost</c> on construction.</summary>
+    internal Js.JsStorageManager? StorageManager { get; set; }
+
+    /// <summary>Swap in a new <see cref="IStorageBackend"/>. If
+    /// the engine has already attached a document, localStorage
+    /// is reloaded from the new backend so the current page
+    /// sees its own persisted state.</summary>
+    public void SetStorageBackend(Js.IStorageBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        StorageBackend = backend;
+        StorageManager?.OnBackendChanged();
+    }
+
+    /// <summary>Persistence strategy for IndexedDB. Defaults to
+    /// <see cref="Js.NullIndexedDbBackend"/> (transient — the
+    /// in-memory snapshot inside <see cref="Js.JsIDBDatabase"/>
+    /// still keeps data alive for the engine's lifetime). Set a
+    /// <see cref="Js.FileIndexedDbBackend"/> to persist
+    /// databases as JSON files under a chosen directory.</summary>
+    public Js.IIndexedDbBackend IndexedDbBackend { get; set; } =
+        Js.NullIndexedDbBackend.Instance;
 
     /// <summary>
     /// Collected <c>console.log</c> / <c>warn</c> / <c>error</c>
@@ -328,6 +373,11 @@ public sealed class JsEngine
         {
             loc.OnPageLoaded(pageUrl);
         }
+
+        // Rehydrate localStorage for the new origin. Writes
+        // pending on the previous origin are persisted first so
+        // a cross-origin navigate doesn't lose them.
+        StorageManager?.OnPageLoaded(pageUrl);
 
         // `window` is the global object in a browser. We
         // expose a minimal shim: reads and writes go through

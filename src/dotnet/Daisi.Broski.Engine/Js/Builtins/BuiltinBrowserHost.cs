@@ -233,29 +233,11 @@ internal static class BuiltinBrowserHost
             return stream;
         });
 
-        // XMLHttpRequest — the legacy XHR API. SolidJS and
-        // other frameworks check for its existence. Install
-        // a stub that accepts open/send calls as no-ops.
-        engine.Globals["XMLHttpRequest"] = new JsFunction("XMLHttpRequest", (t, a) =>
-        {
-            var xhr = new JsObject { Prototype = engine.ObjectPrototype };
-            xhr.Set("readyState", 0.0);
-            xhr.Set("status", 0.0);
-            xhr.Set("responseText", "");
-            xhr.Set("response", "");
-            xhr.Set("onload", JsValue.Null);
-            xhr.Set("onerror", JsValue.Null);
-            xhr.Set("onreadystatechange", JsValue.Null);
-            xhr.SetNonEnumerable("open", new JsFunction("open", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("send", new JsFunction("send", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("setRequestHeader", new JsFunction("setRequestHeader", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("getResponseHeader", new JsFunction("getResponseHeader", (tt, aa) => JsValue.Null));
-            xhr.SetNonEnumerable("getAllResponseHeaders", new JsFunction("getAllResponseHeaders", (tt, aa) => ""));
-            xhr.SetNonEnumerable("abort", new JsFunction("abort", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("addEventListener", new JsFunction("addEventListener", (tt, aa) => JsValue.Undefined));
-            xhr.SetNonEnumerable("removeEventListener", new JsFunction("removeEventListener", (tt, aa) => JsValue.Undefined));
-            return xhr;
-        });
+        // XMLHttpRequest installs as a real implementation
+        // backed by the engine's FetchHandler — the same path
+        // fetch() uses, so XHR shares the cookie jar, redirect
+        // rules, and test-time stubs. See BuiltinXhr.
+        BuiltinXhr.Install(engine);
 
         InstallStorage(engine);
         InstallNavigator(engine);
@@ -283,6 +265,131 @@ internal static class BuiltinBrowserHost
         });
     }
 
+    /// <summary>Wrap a <see cref="Daisi.Broski.Engine.Css.ComputedStyle"/>
+    /// in the script-shaped CSSStyleDeclaration surface
+    /// (<c>length</c>, indexed <c>item(i)</c>,
+    /// <c>getPropertyValue</c>, plus a getter per kebab /
+    /// camel property name). Read-only — writes are accepted
+    /// but ignored, matching what spec'd
+    /// <c>getComputedStyle</c> returns.</summary>
+    private static JsObject BuildComputedStyleObject(
+        JsEngine engine, Daisi.Broski.Engine.Css.ComputedStyle computed)
+    {
+        var obj = new ComputedStyleProxy(computed)
+        { Prototype = engine.ObjectPrototype };
+        obj.SetNonEnumerable("getPropertyValue",
+            new JsFunction("getPropertyValue", (t, a) =>
+            {
+                if (a.Count == 0) return "";
+                return computed.GetPropertyValue(JsValue.ToJsString(a[0]));
+            }));
+        obj.SetNonEnumerable("getPropertyPriority",
+            new JsFunction("getPropertyPriority", (t, a) => ""));
+        obj.SetNonEnumerable("setProperty",
+            new JsFunction("setProperty", (t, a) => JsValue.Undefined));
+        obj.SetNonEnumerable("removeProperty",
+            new JsFunction("removeProperty", (t, a) => ""));
+        obj.SetNonEnumerable("item", new JsFunction("item", (t, a) =>
+        {
+            int idx = a.Count > 0 ? (int)JsValue.ToNumber(a[0]) : 0;
+            int i = 0;
+            foreach (var kv in computed.Entries())
+            {
+                if (i++ == idx) return kv.Key;
+            }
+            return "";
+        }));
+        return obj;
+    }
+
+    /// <summary>JsObject subclass that surfaces computed-style
+    /// values via Get without copying the dictionary into the
+    /// JsObject's own property bag. Honors both kebab-case
+    /// and camelCase reads (so <c>style.color</c> and
+    /// <c>style.backgroundColor</c> both work) plus the
+    /// <c>length</c> shortcut.</summary>
+    private sealed class ComputedStyleProxy : JsObject
+    {
+        private readonly Daisi.Broski.Engine.Css.ComputedStyle _computed;
+        public ComputedStyleProxy(Daisi.Broski.Engine.Css.ComputedStyle computed)
+        {
+            _computed = computed;
+        }
+
+        public override object? Get(string key)
+        {
+            if (key == "length") return (double)_computed.Length;
+            // Try direct (kebab-case) and camelCase → kebab
+            // conversion. Properties on this set come from the
+            // resolver (which lowercases) so OrdinalIgnoreCase
+            // matches camelCase too.
+            if (_computed.TryGet(key, out var v)) return v;
+            var kebab = CamelToKebab(key);
+            if (_computed.TryGet(kebab, out var v2)) return v2;
+            // Resolve own properties (the installed prototype
+            // methods like getPropertyValue) BEFORE the
+            // CSS-property fallback so we don't shadow them
+            // with the empty-string default.
+            var baseValue = base.Get(key);
+            if (baseValue is not JsUndefined) return baseValue;
+            // For anything that looks like a CSS property name,
+            // honor the spec's "always return a string, never
+            // undefined" rule — unset values come back as "".
+            if (LooksLikeCssProperty(key)) return "";
+            return baseValue;
+        }
+
+        private static bool LooksLikeCssProperty(string key)
+        {
+            if (key.Length == 0) return false;
+            if (key.Contains('-')) return true;
+            if (!char.IsLower(key[0])) return false;
+            // camelCase: lowercase first char + at least one
+            // uppercase later — assume CSS shape.
+            for (int i = 1; i < key.Length; i++)
+            {
+                if (char.IsUpper(key[i])) return true;
+            }
+            // Single-word lowercase: the common CSS property
+            // names that real scripts read off getComputedStyle
+            // without going through getPropertyValue. Conservative
+            // list — better to occasionally return undefined
+            // for an obscure single-word property than to
+            // intercept a non-CSS field.
+            return key is "color" or "display" or "width" or "height"
+                or "margin" or "padding" or "position" or "top"
+                or "left" or "right" or "bottom" or "overflow"
+                or "opacity" or "visibility" or "cursor" or "float"
+                or "clear" or "content" or "border" or "outline"
+                or "background" or "font" or "transform"
+                or "transition" or "animation" or "flex" or "grid"
+                or "gap" or "order" or "direction" or "quotes";
+        }
+
+        public override bool Has(string key) =>
+            key == "length" || _computed.TryGet(key, out _) ||
+            _computed.TryGet(CamelToKebab(key), out _) || base.Has(key);
+
+        private static string CamelToKebab(string name)
+        {
+            if (name.Contains('-')) return name;
+            var sb = new System.Text.StringBuilder(name.Length + 4);
+            foreach (var c in name)
+            {
+                if (char.IsUpper(c))
+                {
+                    if (sb.Length > 0) sb.Append('-');
+                    sb.Append(char.ToLowerInvariant(c));
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
+        }
+    }
+
     // =======================================================
     // Storage (localStorage / sessionStorage)
     // =======================================================
@@ -304,6 +411,7 @@ internal static class BuiltinBrowserHost
             var s = RequireStorage(thisVal, "Storage.prototype.setItem");
             if (args.Count < 2) return JsValue.Undefined;
             s.Items[JsValue.ToJsString(args[0])] = JsValue.ToJsString(args[1]);
+            s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
@@ -311,14 +419,16 @@ internal static class BuiltinBrowserHost
         {
             var s = RequireStorage(thisVal, "Storage.prototype.removeItem");
             if (args.Count == 0) return JsValue.Undefined;
-            s.Items.Remove(JsValue.ToJsString(args[0]));
+            if (s.Items.Remove(JsValue.ToJsString(args[0]))) s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
         proto.SetNonEnumerable("clear", new JsFunction("clear", (thisVal, args) =>
         {
             var s = RequireStorage(thisVal, "Storage.prototype.clear");
+            if (s.Items.Count == 0) return JsValue.Undefined;
             s.Items.Clear();
+            s.NotifyChanged();
             return JsValue.Undefined;
         }));
 
@@ -336,10 +446,23 @@ internal static class BuiltinBrowserHost
 
         // localStorage and sessionStorage are separate instances
         // so scripts that write to one don't pollute the other,
-        // matching browser behavior even though we don't yet
-        // persist either across engine lifetimes.
-        engine.Globals["localStorage"] = new JsStorage { Prototype = proto };
-        engine.Globals["sessionStorage"] = new JsStorage { Prototype = proto };
+        // matching browser behavior. Per phase-5a, localStorage
+        // is file-backed when the engine carries a non-null
+        // <see cref="IStorageBackend"/>; sessionStorage
+        // is always transient (browser semantics: session storage
+        // does not outlive the hosting engine).
+        var localStorage = new JsStorage { Prototype = proto };
+        var sessionStorage = new JsStorage { Prototype = proto };
+        engine.Globals["localStorage"] = localStorage;
+        engine.Globals["sessionStorage"] = sessionStorage;
+
+        // The manager is wired up even when the engine currently
+        // holds the default NullStorageBackend — the engine lets
+        // the embedder swap in a real backend later via
+        // <see cref="JsEngine.SetStorageBackend"/>, and the
+        // manager handles that transition.
+        engine.StorageManager = new JsStorageManager(
+            localStorage, sessionStorage, engine);
     }
 
     private static JsStorage RequireStorage(object? thisVal, string name)
@@ -494,26 +617,30 @@ internal static class BuiltinBrowserHost
         engine.Globals["scrollBy"] = new JsFunction("scrollBy", (t, a) => JsValue.Undefined);
         engine.Globals["scroll"] = new JsFunction("scroll", (t, a) => JsValue.Undefined);
 
-        // getComputedStyle — returns the element's inline style
-        // object (which is the best we can do without a real
-        // cascade / layout). Scripts that check
-        // getComputedStyle(el).display get the inline-set
-        // value back, which covers the common "did my
-        // script-side style change take effect?" pattern.
+        // getComputedStyle — runs the phase-6b cascade
+        // resolver against the element's owner document,
+        // returning a read-only style object that includes
+        // matched author rules, inline declarations, and
+        // inherited values from ancestors. Falls back to an
+        // empty stub when the argument isn't a wrapped DOM
+        // element so feature-detection paths
+        // (`getComputedStyle(window).whatever`) still don't
+        // crash.
         engine.Globals["getComputedStyle"] = new JsFunction("getComputedStyle", (thisVal, args) =>
         {
             if (args.Count == 0 || args[0] is not Daisi.Broski.Engine.Js.Dom.JsDomElement el)
             {
-                // Return a stub with empty getPropertyValue
-                // so script code that blindly calls
-                // getComputedStyle(nonElement) doesn't crash.
                 var stub = new JsObject { Prototype = engine.ObjectPrototype };
                 stub.SetNonEnumerable("getPropertyValue",
                     new JsFunction("getPropertyValue", (t, a) => ""));
                 return stub;
             }
-            // Delegate to the element's own style object.
-            return el.Get("style");
+            if (el.BackingNode is not Daisi.Broski.Engine.Dom.Element backing)
+            {
+                return new JsObject { Prototype = engine.ObjectPrototype };
+            }
+            var computed = Daisi.Broski.Engine.Css.StyleResolver.Resolve(backing);
+            return BuildComputedStyleObject(engine, computed);
         });
 
         // matchMedia returns a MediaQueryList-shaped object.
@@ -734,7 +861,9 @@ internal static class BuiltinBrowserHost
         // just don't receive any notifications.
         engine.Globals["IntersectionObserver"] = MakeObserverCtor(engine, "IntersectionObserver");
         engine.Globals["ResizeObserver"] = MakeObserverCtor(engine, "ResizeObserver");
-        engine.Globals["MutationObserver"] = MakeObserverCtor(engine, "MutationObserver");
+        // Real implementation — replaces the stub now that the
+        // engine has a per-document MutationDispatcher.
+        BuiltinMutationObserver.Install(engine);
         engine.Globals["PerformanceObserver"] = MakeObserverCtor(engine, "PerformanceObserver");
 
         // Common DOM-API constants + namespaces real sites poke at
@@ -1026,10 +1155,27 @@ internal readonly struct JsHistoryEntry
 /// <c>sessionStorage</c>. A flat insertion-order-preserving
 /// dictionary of string → string, with a <c>length</c>
 /// getter intercepted in <see cref="Get"/>.
+///
+/// <para>
+/// Phase 5a: each successful write fires <see cref="Changed"/>
+/// so an embedder-supplied storage backend can persist the
+/// updated snapshot. <see cref="JsStorageManager"/> subscribes
+/// to this hook to route localStorage writes through the
+/// configured <see cref="IStorageBackend"/>;
+/// sessionStorage subscribes to nothing and stays transient.
+/// </para>
 /// </summary>
 public sealed class JsStorage : JsObject
 {
     public Dictionary<string, string> Items { get; } = new();
+
+    /// <summary>Fired after <c>setItem</c> / <c>removeItem</c>
+    /// (when the item existed) / <c>clear</c> (when there was
+    /// something to clear). Read-only mutations — <c>getItem</c>,
+    /// <c>key</c>, <c>length</c> — do not fire this event.</summary>
+    public event Action? Changed;
+
+    internal void NotifyChanged() => Changed?.Invoke();
 
     /// <inheritdoc />
     public override object? Get(string key)

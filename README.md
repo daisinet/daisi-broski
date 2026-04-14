@@ -54,7 +54,9 @@ eng.RunScript(@"
 
 The JS surface covers every ES5 primitive operator, `var` hoisting, the full ES5 statement set, object and array literals with full member access, the `in` / `instanceof` operators, function declarations and expressions with full hoisting, nested functions, closures with captured environments, method calls with `this` binding, `new` with prototype chains, `arguments`, host-installed native functions, catchable internal errors, the **complete ES5 built-in library** (`Array.prototype` including callback methods, `String.prototype`, `Object`, `Math`, `Error` hierarchy with VM-originated `instanceof`, `JSON.parse`/`stringify`, `Function.prototype.call`/`apply`/`bind`, `Number`/`Boolean` + prototypes, `Date`), and a host-side event loop exposing `console.log`/`warn`/`error`/`info`/`debug`, `setTimeout`/`clearTimeout`, `setInterval`/`clearInterval`, and `queueMicrotask`. Call `engine.RunScript(source)` to run a script and drain the event loop in one step, or `engine.Evaluate(source)` + `engine.DrainEventLoop()` if you want to inspect state between.
 
-**Not yet:** JavaScript execution, full CSS cascade / `getComputedStyle`, event dispatch, layout, rendering, screenshots, `localStorage` / `IndexedDB` / `WebSocket`. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
+**Phases 0–6 are shipped.** JavaScript (full ES5 + ES2020+ sugar), CSS cascade with `getComputedStyle` + `var()` substitution, event dispatch, block / flex / grid / inline-flow layout, paint (with alpha-blended backgrounds + per-side borders + linear gradients), BCL-only PNG and baseline-JFIF JPEG decoders (with a shared `ImageDecoder.TryDecode` dispatcher), image fetching, inline SVG rendering (path / rect / circle / ellipse / polygon with viewBox scaling), text rendering via a bundled 5×7 bitmap font plus an embedded Roboto TTF for CSS-font fallback, and the full web-primitive surface (`localStorage` / `IndexedDB` / `WebSocket` / `XMLHttpRequest` / `MutationObserver` / `FileReader` / request interception) all land before or during phase 6. The `daisi-broski screenshot <url>` CLI produces a real PNG of what the engine rendered.
+
+**Not yet:** full font metrics (system fonts — we ship a bitmap font and an embedded Roboto fallback instead), WebP decode, progressive JPEG, radial / conic gradients, transforms, opacity, border-radius, filters / shadows, stroke-to-path for thick strokes, explicit grid placement. See [docs/roadmap.md](docs/roadmap.md) for the phased plan.
 
 ### `daisi-broski-skim` — main-content extraction
 
@@ -102,7 +104,7 @@ dotnet run --project src/dotnet/Daisi.Broski.Surfer
 
 Windows-only on the first ship — adding Android / iOS / MacCatalyst heads is a matter of dropping the right `Platforms/*` folders in and extending the `<TargetFrameworks>` list. Runs unpackaged (no MSIX bundle), so any user can launch it without a Microsoft Store install.
 
-**Combined test suite: 1669/1669 passing.** Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set, and the new **`Daisi.Broski.Skimmer`** main-content extractor + JSON / Markdown formatters). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
+**Combined test suite: 1934/1934 passing.** Phase 4 is fully closed — the sandboxed child now runs the full phase-3 engine + the Skimmer; `BrowserSession.RunAsync` + `SkimAsync` expose the new capabilities as typed async methods; the child launches via `CreateProcessW(CREATE_SUSPENDED)` so Job Object assignment is atomic with process birth; mid-operation child crashes trigger a single-retry respawn; the **live handle table** lets the host hold references to JS / DOM objects inside the sandbox and drive interactive operations (`EvaluateAsync<T>`, `QuerySelectorHandleAsync`, `ElementHandle.ClickAsync` / `SetAttributeAsync`, `JsHandle.CallMethodAsync<T>`) across the IPC boundary. **Phase 5a shipped** — `localStorage` is now file-backed per origin via `BroskiOptions.StoragePath` (opt-in for embedded use) and default-on for sandbox runs; same-origin reloads see their own persisted state without re-running logins, and cross-origin navigation saves-then-reloads atomically. **Phase 5b shipped** — `Blob` / `File` / `FileReader` / `FormData` foundational binary-data types are in place, plus `Response.prototype.blob()`; `FileReader` schedules its `load` / `loadend` / `error` / `abort` events through the engine's event loop in spec order. **Phase 5c shipped** — `XMLHttpRequest` is now a real implementation backed by `JsEngine.FetchHandler` (shared with `fetch`), with full readyState transitions, `responseType` switching (`text` / `json` / `arraybuffer` / `blob`), and `multipart/form-data` encoding when a `FormData` body is sent. **Phase 5d shipped** — `MutationObserver` now fires real records via a per-`Document` `MutationDispatcher` hooked into every DOM mutation point; `childList` / `attributes` / `characterData` / `subtree` / `attributeFilter` / `attributeOldValue` / `characterDataOldValue` all honored, with records batched into one callback per microtask drain. **Phase 5e shipped** — `WebSocket` is backed by `System.Net.WebSockets.ClientWebSocket` through a pluggable `IWebSocketChannel` abstraction (host-side `JsEngine.WebSocketHandler` for stubs); cross-thread receives post back to the engine via the new thread-safe `JsEventLoop.PostFromBackground`, preserving the VM's single-threaded execution. **Phase 5f shipped** — minimum-viable `indexedDB` (open + version upgrade, object stores, put/add/get/delete/clear/count/getAll, transactions with `oncomplete`); persistence is JSON-per-database under `{StoragePath}/indexeddb/`, default-enabled for sandboxed runs. **Phase 5g shipped** — host-side `RequestInterceptor` on `HttpFetcherOptions` (and surfaced via `BroskiOptions.Interceptor`); intercepts every HTTP path the engine takes — page navigation, script tags, `fetch`, `XHR` — at one point. Returning a synthetic `InterceptedResponse` short-circuits the wire call (test mocks, ad blocking, offline replay); throwing surfaces as a hard exception (block-with-error semantics). **Phase 5h shipped** — fuzzing harness against the four parsers (HTML tokenizer, HTML tree builder, CSS selector parser, CSS selector matcher) and the IPC codec, ~12,000 random inputs per run from a fixed seed; failure means an unexpected exception type, an infinite loop, or unbounded allocation. Phase 3 is feature-complete plus a thick set of real-web shims (regex literals, two rounds of host APIs, ES2015+ prototype methods, DOM mixin methods, `Function` constructor, `self` / `globalThis` aliases, real-accessor RegExp prototype, recursion guard, Unicode identifiers + escapes, `new.target`, `for await`, async generator methods, ES2022 static blocks, NodeFilter / CSS globals, 25-class DOM-interface stub set, and the new **`Daisi.Broski.Skimmer`** main-content extractor + JSON / Markdown formatters). **Phase 3 ship gate met on the modern web**: the engine runs **100% of inline scripts cleanly** on svelte.dev (6/6), react.dev (3/3), nextjs.org (50/50), tailwindcss.com (185/185), nodejs.org (118/118), typescriptlang.org (5/5), vitejs.dev, preactjs.com, nuxt.com, remix.run, htmx.org, rust-lang.org, MDN, and more. Total: ~375 inline scripts executing across 13 real sites with zero runtime errors on the scripts we actually run. Heavyweight bundle sites partially run (Stripe 44/68, Anthropic 18/24, Figma 89/108, Linear 71/114, Cloudflare 21/24). All engine, DOM, selector, and JS tests run in under a few seconds; the sandbox and CLI integration tests spawn real child processes against a local `HttpListener` fixture.
 
 ## Design goals
 
@@ -208,6 +210,29 @@ foreach (var link in links)
 ```
 
 `BrowserSession.Create()` spawns `Daisi.Broski.Sandbox.exe` under a fresh Win32 Job Object; the session's `DisposeAsync` closes the pipes and the job, which terminates the child through `KILL_ON_JOB_CLOSE`.
+
+**Interactive scripting via live handles:**
+
+```csharp
+await using var session = BrowserSession.Create();
+await session.RunAsync(new Uri("https://example.com"), scriptingEnabled: true);
+
+// Evaluate primitives directly.
+var title = await session.EvaluateAsync<string>("document.title");
+
+// Hold a live reference to a DOM element; mutations go through the
+// real JS call path (listeners fire, observers run).
+await using var btn = await session.QuerySelectorHandleAsync("button#go");
+await btn!.SetAttributeAsync("data-state", "running");
+await btn.ClickAsync();
+
+// Or call any JS function on any reachable object.
+await using var adder = await session.EvaluateHandleAsync("window.adder");
+var sum = await adder!.CallMethodAsync<double>("add",
+    new[] { IpcValue.Of(7.0), IpcValue.Of(35.0) });
+```
+
+Handles are opaque `long` ids minted by the sandbox and released on `DisposeAsync` (or on the next `NavigateAsync` / `RunAsync`, which clears the table wholesale).
 
 ## Run the tests
 

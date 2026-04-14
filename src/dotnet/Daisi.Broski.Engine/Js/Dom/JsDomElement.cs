@@ -109,6 +109,61 @@ public class JsDomElement : JsDomNode
             var match = _element.Closest(selector);
             return (object?)Bridge.WrapOrNull(match) ?? JsValue.Null;
         }));
+
+        // Phase-6c layout integration. Each call rebuilds the
+        // layout tree from scratch — for a headless engine
+        // that's typically run once per scrape this is the
+        // simplest correct thing. Long-lived hosts that need
+        // many getBoundingClientRect calls per page should
+        // cache the tree at the call site.
+        SetNonEnumerable("getBoundingClientRect", new JsFunction(
+            "getBoundingClientRect", (thisVal, args) =>
+        {
+            return BuildClientRect(MeasureBorderBox());
+        }));
+        SetNonEnumerable("getClientRects", new JsFunction(
+            "getClientRects", (thisVal, args) =>
+        {
+            // Phase 6c collapses every element to a single
+            // rect (no inline line-box splitting yet), so
+            // getClientRects returns a one-element list.
+            var arr = new JsArray { Prototype = Bridge.Engine.ArrayPrototype };
+            arr.Elements.Add(BuildClientRect(MeasureBorderBox()));
+            return arr;
+        }));
+    }
+
+    /// <summary>Lay out the document and pull the
+    /// border-box rect for this element. Returns the
+    /// engine's zero rect when the element isn't part of any
+    /// document (orphan node) or when layout chose to skip
+    /// it (display: none).</summary>
+    private Layout.LayoutRect MeasureBorderBox()
+    {
+        var doc = _element.OwnerDocument;
+        if (doc is null) return new Layout.LayoutRect(0, 0, 0, 0);
+        var root = Layout.LayoutTree.Build(doc);
+        var box = Layout.LayoutTree.Find(root, _element);
+        return box?.BorderBoxRect ?? new Layout.LayoutRect(0, 0, 0, 0);
+    }
+
+    /// <summary>Build the WHATWG <c>DOMRect</c>-shaped
+    /// object real scripts pattern-match against:
+    /// <c>{ x, y, width, height, top, left, right, bottom }</c>
+    /// plus a <c>toJSON()</c> that round-trips the same
+    /// fields.</summary>
+    private JsObject BuildClientRect(Layout.LayoutRect rect)
+    {
+        var o = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
+        o.Set("x", rect.X);
+        o.Set("y", rect.Y);
+        o.Set("width", rect.Width);
+        o.Set("height", rect.Height);
+        o.Set("top", rect.Top);
+        o.Set("right", rect.Right);
+        o.Set("bottom", rect.Bottom);
+        o.Set("left", rect.Left);
+        return o;
     }
 
     /// <inheritdoc />
@@ -152,31 +207,11 @@ public class JsDomElement : JsDomNode
             case "offsetParent":
                 return JsValue.Null;
         }
-        // Lazy accessor-ish support for getBoundingClientRect
-        // etc. — we install these as properties once on first
-        // read so they look like methods without eager setup
-        // for every element.
-        if (key == "getBoundingClientRect")
-        {
-            return new JsFunction("getBoundingClientRect", (thisVal, args) =>
-            {
-                var rect = new JsObject { Prototype = Bridge.Engine.ObjectPrototype };
-                rect.Set("x", 0.0);
-                rect.Set("y", 0.0);
-                rect.Set("width", 0.0);
-                rect.Set("height", 0.0);
-                rect.Set("top", 0.0);
-                rect.Set("right", 0.0);
-                rect.Set("bottom", 0.0);
-                rect.Set("left", 0.0);
-                return rect;
-            });
-        }
-        if (key == "getClientRects")
-        {
-            return new JsFunction("getClientRects", (thisVal, args) =>
-                new JsArray { Prototype = Bridge.Engine.ArrayPrototype });
-        }
+        // getBoundingClientRect / getClientRects used to be
+        // returned as zero-rect stubs from this Get override.
+        // Phase 6c installs real implementations via
+        // SetNonEnumerable in InstallElementMethods; the
+        // stubs were removed so the property bag entry wins.
         if (key == "scrollIntoView")
         {
             return new JsFunction("scrollIntoView", (thisVal, args) => JsValue.Undefined);
