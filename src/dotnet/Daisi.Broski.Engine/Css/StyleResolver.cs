@@ -84,6 +84,14 @@ public static class StyleResolver
 
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        // 0) Presentation-hint attributes (HTML 4 leftovers
+        // like bgcolor / width / height / align on table /
+        // tr / td / body / font). Browsers map them into the
+        // cascade with author-stylesheet-but-lower priority
+        // — author CSS rules win — but we apply them as
+        // initial values so later cascade steps override.
+        ApplyPresentationHints(element, values);
+
         // 1) Author rules — collect every (declaration,
         // specificity, source-order, important) tuple that
         // matches, then sort and apply.
@@ -119,6 +127,114 @@ public static class StyleResolver
         var result = new ComputedStyle(values);
         cache[key] = result;
         return result;
+    }
+
+    /// <summary>Map legacy HTML presentational attributes
+    /// (<c>bgcolor</c>, <c>width</c>, <c>height</c>,
+    /// <c>color</c>, <c>align</c>) into CSS values per the
+    /// HTML spec's "presentational hints" rules. Author CSS
+    /// overrides them; without this Hacker News, Wikipedia,
+    /// and any other site still using <c>&lt;table bgcolor=
+    /// "#f6f6ef"&gt;</c> renders without their styling.</summary>
+    /// <summary>Internal passthrough for the layout-side
+    /// resolver, which otherwise can't see the private
+    /// helper.</summary>
+    internal static void ApplyPresentationHintsPublic(
+        Element element, Dictionary<string, string> values) =>
+        ApplyPresentationHints(element, values);
+
+    private static void ApplyPresentationHints(
+        Element element, Dictionary<string, string> values)
+    {
+        string tag = element.TagName;
+        // bgcolor → background-color (table, tr, td, th, body)
+        if (tag is "table" or "tr" or "td" or "th" or "body" or "marquee")
+        {
+            var bg = element.GetAttribute("bgcolor");
+            if (!string.IsNullOrWhiteSpace(bg))
+            {
+                values["background-color"] = bg;
+            }
+        }
+        // width / height as bare numbers / px on table / td /
+        // img / iframe / hr / canvas — treat as px when the
+        // attribute is a plain number, pass through otherwise.
+        if (tag is "table" or "td" or "th" or "img" or "iframe"
+            or "hr" or "canvas" or "video" or "embed" or "object")
+        {
+            var w = element.GetAttribute("width");
+            if (!string.IsNullOrWhiteSpace(w))
+            {
+                values["width"] = LooksNumeric(w) ? $"{w}px" : w;
+            }
+            var h = element.GetAttribute("height");
+            if (!string.IsNullOrWhiteSpace(h))
+            {
+                values["height"] = LooksNumeric(h) ? $"{h}px" : h;
+            }
+        }
+        // <font color="..."> / <body text="...">
+        if (tag == "font")
+        {
+            var c = element.GetAttribute("color");
+            if (!string.IsNullOrWhiteSpace(c)) values["color"] = c;
+            var face = element.GetAttribute("face");
+            if (!string.IsNullOrWhiteSpace(face)) values["font-family"] = face;
+            var size = element.GetAttribute("size");
+            if (!string.IsNullOrWhiteSpace(size))
+            {
+                // 1..7 maps to small to xx-large; 3 ≈ 1em.
+                if (int.TryParse(size, out var n))
+                {
+                    values["font-size"] = n switch
+                    {
+                        <= 1 => "0.7em",
+                        2 => "0.85em",
+                        3 => "1em",
+                        4 => "1.15em",
+                        5 => "1.3em",
+                        6 => "1.6em",
+                        _ => "2em",
+                    };
+                }
+            }
+        }
+        if (tag == "body")
+        {
+            var text = element.GetAttribute("text");
+            if (!string.IsNullOrWhiteSpace(text)) values["color"] = text;
+            var link = element.GetAttribute("link");
+            if (!string.IsNullOrWhiteSpace(link)) { /* would need :link selector */ }
+        }
+        // align → text-align on block-ish elements.
+        if (tag is "p" or "div" or "h1" or "h2" or "h3" or "h4" or "h5" or "h6"
+            or "td" or "th" or "tr" or "table" or "caption")
+        {
+            var align = element.GetAttribute("align");
+            if (!string.IsNullOrWhiteSpace(align))
+            {
+                values["text-align"] = align;
+            }
+        }
+        // <hr noshade> / <hr color> etc.
+        if (tag == "hr")
+        {
+            var c = element.GetAttribute("color");
+            if (!string.IsNullOrWhiteSpace(c))
+            {
+                values["color"] = c;
+                values["background-color"] = c;
+            }
+        }
+    }
+
+    private static bool LooksNumeric(string s)
+    {
+        foreach (var c in s)
+        {
+            if (!char.IsDigit(c) && c != '.') return false;
+        }
+        return s.Length > 0;
     }
 
     /// <summary>Pull every custom property (any property

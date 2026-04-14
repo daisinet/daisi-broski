@@ -812,6 +812,11 @@ internal static class CompositeResolver
         // duplication is small enough not to be worth a
         // shared internal method right now.
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // Apply HTML presentation hints (bgcolor, width,
+        // height, color, align) before author rules so any
+        // matching CSS overrides them — same precedence as
+        // the public StyleResolver.
+        StyleResolver.ApplyPresentationHintsPublic(element, values);
         var matches = new List<(string Property, string Value, bool Important, Specificity Spec, int Order)>();
         int sourceOrder = 0;
         foreach (var sheet in sheets)
