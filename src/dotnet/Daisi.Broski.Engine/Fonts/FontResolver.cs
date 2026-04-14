@@ -36,8 +36,15 @@ public static class FontResolver
         Document document, string fontFamily, int weight, string style,
         int sampleChar = 'A')
     {
-        if (document.Fonts.Count == 0) return null;
-        if (string.IsNullOrWhiteSpace(fontFamily)) return null;
+        // Always have something to fall back to so sites that
+        // use system fonts (Verdana / Helvetica / Segoe) still
+        // get real typography instead of the bitmap font.
+        var defaultFallback = DefaultFont.Get();
+        if (document.Fonts.Count == 0)
+        {
+            return defaultFallback;
+        }
+        if (string.IsNullOrWhiteSpace(fontFamily)) return defaultFallback;
         var cache = _caches.GetOrCreateValue(document);
 
         foreach (var rawName in SplitFamilyStack(fontFamily))
@@ -80,7 +87,10 @@ public static class FontResolver
             }
             if (reader is not null) return reader;
         }
-        return null;
+        // No requested family matched; fall back to the
+        // bundled Roboto so the painter still has real
+        // glyphs to draw with.
+        return defaultFallback;
     }
 
     private static IEnumerable<string> SplitFamilyStack(string value)

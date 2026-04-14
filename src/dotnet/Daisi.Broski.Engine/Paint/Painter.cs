@@ -382,12 +382,15 @@ public static class Painter
     private static Daisi.Broski.Engine.Fonts.TtfReader? ResolveWebFont(
         Document? doc, ComputedStyle? style, int sampleChar = 'A')
     {
-        if (doc is null || style is null || doc.Fonts.Count == 0) return null;
-        var family = style.GetPropertyValue("font-family");
-        if (string.IsNullOrWhiteSpace(family)) return null;
+        if (doc is null || style is null) return null;
+        var family = style.GetPropertyValue("font-family") ?? "";
         int weight = ParseWeight(style.GetPropertyValue("font-weight"));
         var styleKw = style.GetPropertyValue("font-style");
         if (string.IsNullOrEmpty(styleKw)) styleKw = "normal";
+        // FontResolver returns the embedded Roboto fallback
+        // when no @font-face match is found, so even pages
+        // that load zero web fonts get real typography
+        // instead of the bundled bitmap.
         return Daisi.Broski.Engine.Fonts.FontResolver.Resolve(
             doc, family, weight, styleKw, sampleChar);
     }
