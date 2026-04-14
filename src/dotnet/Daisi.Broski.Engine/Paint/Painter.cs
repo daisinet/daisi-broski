@@ -38,8 +38,29 @@ public static class Painter
     public static RasterBuffer Paint(LayoutBox root, Document document, Viewport viewport,
         bool wireframe = false)
     {
+        return Paint(root, document, viewport, viewport.Width, viewport.Height, wireframe);
+    }
+
+    /// <summary>Variant that paints into a buffer whose
+    /// dimensions differ from the layout viewport — used
+    /// for full-page snapshots, where layout math should
+    /// still reflect a real ~1280×800 browser viewport
+    /// (so <c>vh</c>, <c>@media</c>, fixed-position math
+    /// resolves the way the page's CSS expects) but the
+    /// output canvas needs to be tall enough to capture
+    /// the whole document.
+    ///
+    /// <para>
+    /// Anything painted past <paramref name="bufferHeight"/>
+    /// is silently clipped by the raster buffer's bounds
+    /// guards — matching how browsers drop out-of-viewport
+    /// pixels that would never be visible.
+    /// </para></summary>
+    public static RasterBuffer Paint(LayoutBox root, Document document, Viewport viewport,
+        int bufferWidth, int bufferHeight, bool wireframe = false)
+    {
         ArgumentNullException.ThrowIfNull(root);
-        var buffer = new RasterBuffer(viewport.Width, viewport.Height,
+        var buffer = new RasterBuffer(bufferWidth, bufferHeight,
             ResolveCanvasBackground(document, viewport));
 
         // CSS 2.1 §E paint-order summary — within each

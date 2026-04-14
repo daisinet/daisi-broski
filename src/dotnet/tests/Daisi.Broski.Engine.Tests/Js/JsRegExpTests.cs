@@ -361,4 +361,67 @@ public class JsRegExpTests
                 indices.join(',');
             "));
     }
+
+    // -------- Named capture groups (ES2018) --------
+    // Regression guard for the Blazor-breaker: Blazor Web's
+    // comment-marker discovery parses
+    //   /^\s*Blazor:[^{]*(?<descriptor>.*)$/
+    // and reads match.groups.descriptor. Before this fix,
+    // BuildMatchArray set match[1] but never populated the
+    // `groups` object, so Blazor silently saw no markers
+    // and never started the server circuit.
+
+    [Fact]
+    public void Named_group_populates_groups_object_on_exec_match()
+    {
+        Assert.Equal("hello", Eval(@"
+            var r = /^(?<greeting>\w+)/;
+            var m = r.exec('hello world');
+            m.groups.greeting;
+        "));
+    }
+
+    [Fact]
+    public void Named_group_blazor_descriptor_pattern()
+    {
+        Assert.Equal(@"{""type"":""server""}", Eval(@"
+            var Mt = /^\s*Blazor:[^{]*(?<descriptor>.*)$/;
+            var m = Mt.exec('Blazor:{""type"":""server""}');
+            m.groups.descriptor;
+        "));
+    }
+
+    [Fact]
+    public void Multiple_named_groups_all_populate()
+    {
+        Assert.Equal("2026-04-14", Eval(@"
+            var r = /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/;
+            var m = r.exec('date is 2026-04-14 today');
+            m.groups.year + '-' + m.groups.month + '-' + m.groups.day;
+        "));
+    }
+
+    [Fact]
+    public void No_named_groups_leaves_groups_undefined()
+    {
+        // Per ES2018 spec: match.groups is undefined when
+        // the pattern has no named groups (not {} or null).
+        Assert.Equal("undefined", Eval(@"
+            var r = /(\w+)/;
+            var m = r.exec('abc');
+            typeof m.groups;
+        "));
+    }
+
+    [Fact]
+    public void Named_group_via_string_match()
+    {
+        // str.match(regex) returns the same match-array
+        // shape as regex.exec — groups should populate
+        // there too.
+        Assert.Equal("abc", Eval(@"
+            var m = 'hello abc world'.match(/(?<word>abc)/);
+            m.groups.word;
+        "));
+    }
 }

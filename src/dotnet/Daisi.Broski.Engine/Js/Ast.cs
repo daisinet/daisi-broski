@@ -204,7 +204,16 @@ public sealed class Property : JsNode
     public Expression Key { get; }
     public Expression Value { get; }
     public PropertyKind Kind { get; }
-    public bool Computed { get; } // ES5: always false; reserved for phase 3b
+    /// <summary><c>true</c> when the key was written as
+    /// <c>[expr]</c> in the source — the key's value is
+    /// produced at runtime, so the compiler must emit
+    /// <c>SetPropertyComputed</c> rather than resolving the
+    /// key to a static name. Mis-setting this to false for a
+    /// computed key silently stores the value under the
+    /// TEXT of the expression (e.g. <c>{[d]: v}</c> stored
+    /// under the literal string <c>"d"</c>), which was the
+    /// Blazor-breaker bug before phase 6av.</summary>
+    public bool Computed { get; }
     /// <summary>
     /// <c>true</c> for an ES2018 <c>{ ...source }</c> spread
     /// entry. When set, <see cref="Value"/> is the source
@@ -213,12 +222,12 @@ public sealed class Property : JsNode
     /// </summary>
     public bool IsSpread { get; }
 
-    public Property(int start, int end, Expression key, Expression value, PropertyKind kind, bool isSpread = false) : base(start, end)
+    public Property(int start, int end, Expression key, Expression value, PropertyKind kind, bool isSpread = false, bool computed = false) : base(start, end)
     {
         Key = key;
         Value = value;
         Kind = kind;
-        Computed = false;
+        Computed = computed;
         IsSpread = isSpread;
     }
 }

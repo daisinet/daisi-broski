@@ -381,4 +381,46 @@ public class JsDestructuringTests
     {
         Assert.Throws<JsParseException>(() => Eval("let [a];"));
     }
+
+    // -------- destructuring-assignment to member targets --------
+    // Regression guard for the Blazor-breaker: before 6av the
+    // compiler rejected MemberExpression as a destructuring
+    // target and blazor.web.js (which uses this pattern for its
+    // DotNet/JS import table) failed to compile before any
+    // Blazor bootstrap could run.
+
+    [Fact]
+    public void Assignment_destructuring_into_member_dot_access()
+    {
+        Assert.Equal(3.0, Eval(
+            "var obj = {}; ({a: obj.x, b: obj.y} = {a: 1, b: 2}); obj.x + obj.y;"));
+    }
+
+    [Fact]
+    public void Assignment_destructuring_into_computed_member()
+    {
+        Assert.Equal(30.0, Eval(
+            "var arr = []; [arr[0], arr[1]] = [10, 20]; arr[0] + arr[1];"));
+    }
+
+    [Fact]
+    public void Assignment_destructuring_mixes_members_and_identifiers()
+    {
+        Assert.Equal("alice:30", Eval(@"
+            var obj = {};
+            var age;
+            ({name: obj.n, age} = {name: 'alice', age: 30});
+            obj.n + ':' + age;
+        "));
+    }
+
+    [Fact]
+    public void Assignment_destructuring_with_nested_member_patterns()
+    {
+        Assert.Equal(42.0, Eval(@"
+            var out = {inner: {}};
+            ({a: {b: out.inner.c}} = {a: {b: 42}});
+            out.inner.c;
+        "));
+    }
 }
