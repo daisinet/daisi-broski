@@ -28,10 +28,16 @@ internal static class UserAgentStyles
     private const string Css = @"
         html, body, div, section, article, aside, header, footer, nav, main,
         h1, h2, h3, h4, h5, h6, p, ol, ul, li, dl, dt, dd, figure, figcaption,
-        hr, blockquote, pre, table, tbody, thead, tfoot, tr, td, th,
+        hr, blockquote, pre, table, tbody, thead, tfoot,
         form, fieldset, legend, address {
             display: block;
         }
+        /* Table rows lay out their cells horizontally — we
+           model that as flex row since real table-row layout
+           is a separate spec we haven't implemented. Cells
+           are flex items so they sit side-by-side. */
+        tr { display: flex; flex-direction: row; }
+        td, th { display: block; flex: 1 1 auto; }
         head, script, style, link, meta, title, noscript { display: none; }
         span, a, em, strong, b, i, u, s, small, big, sub, sup, code, kbd,
         samp, var, cite, q, abbr, acronym, label, button, input, select,

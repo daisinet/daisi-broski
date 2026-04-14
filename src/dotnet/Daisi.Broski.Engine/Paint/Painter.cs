@@ -104,18 +104,20 @@ public static class Painter
     private static PaintColor ResolveCanvasBackground(Document document, Viewport viewport)
     {
         // Per CSS 2.1 §14.2: if html has no background, use
-        // body's; if neither sets one, default white. We
-        // resolve through the cascade so user-agent defaults
-        // (transparent) and author rules combine naturally.
+        // body's; if neither sets one, default white. The
+        // body declares its bg via the longhand OR the
+        // shorthand (`background: #eee`), so we have to
+        // check both — extracting the color token from the
+        // shorthand the same way PaintBackground does.
         var html = document.DocumentElement;
         if (html is null) return PaintColor.White;
         var htmlStyle = StyleResolver.Resolve(html, viewport);
-        var htmlBg = CssColor.Parse(htmlStyle.GetPropertyValue("background-color"));
+        var htmlBg = ExtractBackgroundColor(htmlStyle);
         if (!htmlBg.IsTransparent) return htmlBg;
         var body = document.Body;
         if (body is null) return PaintColor.White;
         var bodyStyle = StyleResolver.Resolve(body, viewport);
-        var bodyBg = CssColor.Parse(bodyStyle.GetPropertyValue("background-color"));
+        var bodyBg = ExtractBackgroundColor(bodyStyle);
         return bodyBg.IsTransparent ? PaintColor.White : bodyBg;
     }
 
@@ -896,6 +898,19 @@ public static class Painter
         if (opacity >= 1) return c;
         if (opacity <= 0) return PaintColor.Transparent;
         return new PaintColor(c.R, c.G, c.B, (byte)Math.Clamp(c.A * opacity, 0, 255));
+    }
+
+    /// <summary>Resolve the background color by checking
+    /// both the <c>background-color</c> longhand and the
+    /// <c>background</c> shorthand. Returns the first
+    /// non-transparent value found.</summary>
+    private static PaintColor ExtractBackgroundColor(ComputedStyle style)
+    {
+        var direct = CssColor.Parse(style.GetPropertyValue("background-color"));
+        if (!direct.IsTransparent) return direct;
+        var shorthand = style.GetPropertyValue("background");
+        if (string.IsNullOrWhiteSpace(shorthand)) return PaintColor.Transparent;
+        return ExtractColorFromShorthand(shorthand);
     }
 
     /// <summary>Pick the first color-shaped token out of a
