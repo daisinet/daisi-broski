@@ -41,6 +41,14 @@ public sealed class JsVM
     private IReadOnlyList<object?> _constants;
     private IReadOnlyList<string> _names;
     private int _ip;
+    // Breadcrumb used to enrich "undefined is not a function"
+    // errors. Tracks the property name resolved by the most
+    // recent GetProperty / GetPropertyComputed — if the very
+    // next thing is a Call that fails because the callee was
+    // undefined, we can say "undefined (foo.bar) is not a
+    // function" instead of the generic phrasing. Blazor's
+    // minified code is impossible to debug without this.
+    private string? _lastGetName;
 
     // Current lexical environment and `this` binding. Also saved/
     // restored via the call frame stack.
@@ -1798,6 +1806,7 @@ public sealed class JsVM
                 case OpCode.GetProperty:
                     {
                         var name = _names[ReadU16()];
+                        _lastGetName = name;
                         var target = _stack[_sp - 1];
                         // Accessor getter takes priority over a
                         // data-property lookup: `class { get x() {} }`
@@ -1824,6 +1833,9 @@ public sealed class JsVM
                 case OpCode.GetPropertyComputed:
                     {
                         var key = Pop();
+                        _lastGetName = key is null ? "null"
+                            : key is string ks ? ks
+                            : JsValue.ToJsString(key);
                         var target = _stack[_sp - 1];
                         if (key is JsSymbol sym)
                         {
@@ -2389,8 +2401,16 @@ public sealed class JsVM
 
         if (calleeValue is not JsFunction fn)
         {
-            RaiseError("TypeError",
-                $"{JsValue.ToJsString(calleeValue)} is not a function");
+            // If the caller read the function out of an
+            // object (the common `foo.bar()` shape), the
+            // breadcrumb holds the property name — include
+            // it in the error so minified scripts are
+            // debuggable without a source map.
+            var valStr = JsValue.ToJsString(calleeValue);
+            var hint = _lastGetName is { Length: > 0 } n
+                ? $"{valStr} ({n}) is not a function"
+                : $"{valStr} is not a function";
+            RaiseError("TypeError", hint);
             return;
         }
 

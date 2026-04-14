@@ -2680,7 +2680,7 @@ public sealed class JsParser
             Consume(); // skip '*'
         }
 
-        var key = ParsePropertyName(keywordsAllowed: true);
+        var key = ParsePropertyName(keywordsAllowed: true, out bool isComputed);
 
         // ES2015 shorthand method: `{ foo() {} }` is sugar
         // for `{ foo: function foo() {} }`. Detected when the
@@ -2697,12 +2697,12 @@ public sealed class JsParser
                 paramList, body,
                 isGenerator: isGenerator,
                 isAsync: isAsync);
-            return new Property(start, body.End, key, fn, PropertyKind.Init);
+            return new Property(start, body.End, key, fn, PropertyKind.Init, computed: isComputed);
         }
 
         Expect(JsTokenKind.Colon, "object property");
         var value = ParseAssignmentExpression(allowIn: true);
-        return new Property(start, value.End, key, value, PropertyKind.Init);
+        return new Property(start, value.End, key, value, PropertyKind.Init, computed: isComputed);
     }
 
     private Property ParseAccessorProperty()
@@ -2710,7 +2710,7 @@ public sealed class JsParser
         int start = Current.Start;
         var kind = Current.StringValue == "get" ? PropertyKind.Get : PropertyKind.Set;
         Consume(); // get / set
-        var key = ParsePropertyName(keywordsAllowed: true);
+        var key = ParsePropertyName(keywordsAllowed: true, out bool isComputed);
         var paramList = ParseFormalParameters();
         var body = ParseFunctionBody();
 
@@ -2718,7 +2718,7 @@ public sealed class JsParser
         // compiler knows getters/setters have fixed arity (0 for
         // get, 1 for set) and will validate there.
         var fn = new FunctionExpression(start, body.End, id: null, paramList, body);
-        return new Property(start, body.End, key, fn, kind);
+        return new Property(start, body.End, key, fn, kind, computed: isComputed);
     }
 
     /// <summary>
@@ -2728,6 +2728,12 @@ public sealed class JsParser
     /// </summary>
     private Expression ParsePropertyName(bool keywordsAllowed)
     {
+        return ParsePropertyName(keywordsAllowed, out _);
+    }
+
+    private Expression ParsePropertyName(bool keywordsAllowed, out bool computed)
+    {
+        computed = false;
         var tok = Current;
         if (tok.Kind == JsTokenKind.Identifier)
         {
@@ -2763,12 +2769,17 @@ public sealed class JsParser
             var text = _source.Substring(tok.Start, tok.Length);
             return new Identifier(tok.Start, tok.End, text);
         }
-        // Computed property names: `{ [expr]: value }` — ES2015
+        // Computed property names: `{ [expr]: value }` — ES2015.
+        // Flag the out-param so the caller can mark the resulting
+        // Property/method as computed — otherwise the compiler
+        // would treat the bracket-wrapped Identifier as a static
+        // key with that name.
         if (tok.Kind == JsTokenKind.LeftBracket)
         {
             Consume();
             var expr = ParseAssignmentExpression(allowIn: true);
             Expect(JsTokenKind.RightBracket, "computed property name");
+            computed = true;
             return expr;
         }
         throw new JsParseException(

@@ -19,17 +19,49 @@
     <div class="format-toggle">
         @foreach (var f in Formats)
         {
-            <button class="@(f == _format ? "active" : "")" @onclick="@(() => _format = f)">
+            <button class="@(f == _format ? "active" : "")" @onclick="@(() => SetFormat(f))">
                 @f
             </button>
         }
     </div>
 
-    <label class="js-toggle" title="Run page scripts before extracting (slower; needed for SPAs)">
-        <input type="checkbox" checked="@Session.ScriptingEnabled"
-               @onchange="OnScriptingToggle" />
-        JS
-    </label>
+    <div class="overflow-menu-wrap">
+        <button class="overflow-btn" @onclick="ToggleMenu"
+                title="More settings" aria-haspopup="true"
+                aria-expanded="@_menuOpen.ToString().ToLowerInvariant()">⋮</button>
+        @if (_menuOpen)
+        {
+            <div class="overflow-backdrop" @onclick="CloseMenu"></div>
+            <div class="overflow-menu" @onclick:stopPropagation="true">
+                <div class="menu-group">
+                    <div class="menu-label @(IsReaderFormat ? "" : "dim")">
+                        Reader width
+                        @if (!IsReaderFormat)
+                        {
+                            <span class="menu-hint">(Reader only)</span>
+                        }
+                    </div>
+                    <div class="menu-segmented">
+                        <button class="@(!_wideReader ? "active" : "")"
+                                disabled="@(!IsReaderFormat)"
+                                @onclick="@(() => SetWideReader(false))"
+                                title="Narrow reading column (~740px)">Narrow</button>
+                        <button class="@(_wideReader ? "active" : "")"
+                                disabled="@(!IsReaderFormat)"
+                                @onclick="@(() => SetWideReader(true))"
+                                title="Wide reading column (~1200px)">Wide</button>
+                    </div>
+                </div>
+                <div class="menu-sep"></div>
+                <label class="menu-check"
+                       title="Run page scripts before extracting (slower; needed for SPAs)">
+                    <input type="checkbox" checked="@Session.ScriptingEnabled"
+                           @onchange="OnScriptingToggle" />
+                    Run page scripts (JS)
+                </label>
+            </div>
+        }
+    </div>
 </div>
 
 @if (Session.Error is not null)
@@ -57,7 +89,14 @@ else if (Session.Current is { } article)
             {
                 <span class="date">· @article.PublishedAt</span>
             }
-            @if (!string.IsNullOrWhiteSpace(article.SiteName))
+            @if (OriginUrl is { } origin)
+            {
+                <span class="site">·
+                    <button class="link-nav origin-link" title="Go to @origin"
+                            @onclick="@(() => Navigate(origin))">@OriginLabel</button>
+                </span>
+            }
+            else if (!string.IsNullOrWhiteSpace(article.SiteName))
             {
                 <span class="site">· @article.SiteName</span>
             }
@@ -68,7 +107,7 @@ else if (Session.Current is { } article)
     @switch (_format)
     {
         case "Reader":
-            <div class="content reader">
+            <div class="content reader @(_wideReader ? "wide" : "")">
                 @if (!string.IsNullOrWhiteSpace(article.HeroImage))
                 {
                     <img class="hero" src="@article.HeroImage" alt="" />
@@ -80,6 +119,38 @@ else if (Session.Current is { } article)
                 <div class="reader-body" @ref="_readerBody">
                     @((MarkupString)HtmlFormatter.Format(article))
                 </div>
+            </div>
+            break;
+        case "Snapshot":
+            <div class="content snapshot">
+                @if (Session.IsSnapshotting)
+                {
+                    <div class="snapshot-status">Rendering through Broski engine…</div>
+                }
+                else if (Session.SnapshotError is { } err)
+                {
+                    <div class="snapshot-status error-inline">
+                        Snapshot failed: @err
+                        <button class="link-nav" @onclick="RenderSnapshotAgain">Try again</button>
+                    </div>
+                }
+                else if (Session.SnapshotPng is { Length: > 0 } pngBytes)
+                {
+                    <div class="snapshot-toolbar">
+                        <span class="snapshot-hint">
+                            Rendered via the Broski engine — real HTML → layout → paint
+                        </span>
+                        <button class="link-nav" @onclick="RenderSnapshotAgain"
+                                title="Re-render through the engine">Re-render</button>
+                    </div>
+                    <img class="snapshot-img"
+                         src="@($"data:image/png;base64,{Convert.ToBase64String(pngBytes)}")"
+                         alt="Snapshot of @OriginUrl" />
+                }
+                else
+                {
+                    <div class="snapshot-status">Preparing snapshot…</div>
+                }
             </div>
             break;
         case "Markdown":
@@ -126,14 +197,105 @@ else
 }
 
 @code {
-    private static readonly string[] Formats = { "Reader", "Markdown", "JSON", "Links" };
+    private static readonly string[] Formats = { "Reader", "Snapshot", "Markdown", "JSON", "Links" };
 
     private string _urlInput = "";
-    private string _format = "Reader";
+    // Seed from persisted preferences so the UI opens in
+    // whatever state the user last closed it in. A narrow
+    // Reader on JS-on is the default on first launch;
+    // subsequent launches honor what they chose.
+    private string _format = SurferSettings.Format;
+    private bool _wideReader = SurferSettings.WideReader;
+    private bool _menuOpen;
+    // Cross-format scroll-sync: when the user switches from
+    // Reader (or any format) to Snapshot (or any other
+    // format), remember how far down the old tab was scrolled
+    // and restore the same percentage in the new tab after
+    // render. Null = no pending sync. Set in SetFormat,
+    // consumed in OnAfterRenderAsync.
+    private double? _pendingScrollPercent;
     private ElementReference _readerBody;
     private ElementReference _urlInputRef;
     private DotNetObjectReference<Home>? _selfRef;
     private bool _interceptInstalled;
+
+    private bool IsReaderFormat => _format == "Reader";
+
+    /// <summary>Homepage URL for the site the current article
+    /// lives on — scheme + host only. "https://daisi.ai/learn"
+    /// yields "https://daisi.ai". We resolve against the
+    /// Skimmer's post-redirect URL on the article (what we
+    /// actually loaded) so redirected/canonicalized hosts
+    /// resolve correctly; falls back to the user's typed URL
+    /// while the first skim is still in flight.</summary>
+    private string? OriginUrl
+    {
+        get
+        {
+            var src = Session.Current?.Url?.AbsoluteUri
+                ?? Session.CurrentRequestUrl;
+            if (string.IsNullOrWhiteSpace(src)) return null;
+            if (!Uri.TryCreate(src, UriKind.Absolute, out var u)) return null;
+            // GetLeftPart(Authority) gives
+            //   "https://daisi.ai" (no trailing slash, no path)
+            // which is exactly the homepage root we want.
+            return u.GetLeftPart(UriPartial.Authority);
+        }
+    }
+
+    /// <summary>Label shown on the origin link — just the
+    /// host (e.g. "daisi.ai"). Matches what the user typed
+    /// and is short enough to fit in the meta strip without
+    /// dominating it.</summary>
+    private string? OriginLabel
+    {
+        get
+        {
+            var src = Session.Current?.Url?.AbsoluteUri
+                ?? Session.CurrentRequestUrl;
+            if (string.IsNullOrWhiteSpace(src)) return null;
+            if (!Uri.TryCreate(src, UriKind.Absolute, out var u)) return null;
+            return u.Host;
+        }
+    }
+
+    private void ToggleMenu() => _menuOpen = !_menuOpen;
+    private void CloseMenu() => _menuOpen = false;
+
+    /// <summary>Switch the active format tab and persist the
+    /// choice. Captures the outgoing tab's scroll percentage
+    /// so the incoming tab can restore the same relative
+    /// position — reading halfway down the Reader and
+    /// clicking Snapshot lands you halfway down the snapshot.
+    /// The restore itself happens in
+    /// <see cref="OnAfterRenderAsync"/> after the new tab's
+    /// DOM has laid out.</summary>
+    private async Task SetFormat(string f)
+    {
+        if (f == _format) return;
+        try
+        {
+            var pct = await JS.InvokeAsync<double?>("surferGetScrollPct");
+            _pendingScrollPercent = pct;
+        }
+        catch
+        {
+            _pendingScrollPercent = null;
+        }
+        _format = f;
+        SurferSettings.Format = f;
+    }
+
+    /// <summary>Switch the Reader column width and persist
+    /// the choice. Only meaningful when
+    /// <see cref="IsReaderFormat"/>, but we save
+    /// unconditionally so flipping formats doesn't forget
+    /// the width preference.</summary>
+    private void SetWideReader(bool wide)
+    {
+        _wideReader = wide;
+        SurferSettings.WideReader = wide;
+    }
 
     /// <summary>
     /// Default page loaded on first launch. Sets the Surfer's
@@ -177,6 +339,12 @@ else
                     "el.addEventListener('click',function(){this.select();});" +
                     "};");
                 await JS.InvokeVoidAsync("surferBindAddressBar", _urlInputRef);
+                // Scroll-percent helpers used by format-
+                // switching to preserve relative position
+                // across tabs. Idempotent via the ||=
+                // pattern so repeated firstRender (from
+                // re-mounts) doesn't stack handlers.
+                await JS.InvokeVoidAsync("eval", ScrollSyncScript);
             }
             catch { /* binder is idempotent JS-side; no retry needed */ }
         }
@@ -186,6 +354,104 @@ else
             return;
         }
         await InstallReaderInterceptorIfNeeded();
+        await EnsureSnapshotIfVisibleAsync();
+        await ApplyPendingScrollPercentAsync();
+    }
+
+    /// <summary>If a format-switch stashed a scroll
+    /// percentage, restore it on the newly-mounted
+    /// <c>.content</c> element. The JS helper waits on
+    /// <c>img.snapshot-img.onload</c> when present, so
+    /// switching INTO Snapshot mode sets the scroll AFTER
+    /// the PNG finishes decoding — without that wait, the
+    /// scrollHeight would still reflect the empty
+    /// placeholder and we'd land at the top.</summary>
+    private async Task ApplyPendingScrollPercentAsync()
+    {
+        if (_pendingScrollPercent is not { } pct) return;
+        // Don't apply while a snapshot is still rendering —
+        // we'd scroll to the "Rendering…" placeholder's
+        // tiny scrollable range, then the image would load
+        // and replace it. Wait for a later render pass.
+        if (_format == "Snapshot" && Session.IsSnapshotting) return;
+        _pendingScrollPercent = null;
+        try
+        {
+            await JS.InvokeVoidAsync("surferSetScrollPct", pct);
+        }
+        catch
+        {
+            // Non-fatal — if the JS bridge is mid-teardown,
+            // a failed scroll is just a cosmetic miss.
+        }
+    }
+
+    /// <summary>JS installed once on first render. Two
+    /// helpers that both target the single
+    /// <c>.content</c> scroll container:
+    /// <c>surferGetScrollPct</c> returns
+    /// <c>scrollTop / (scrollHeight - clientHeight)</c>
+    /// clamped to [0,1], and <c>surferSetScrollPct</c>
+    /// writes it back — waiting on a pending
+    /// <c>img.snapshot-img.load</c> first so the
+    /// scrollHeight reflects the decoded PNG's natural
+    /// size before we seek into it.</summary>
+    private const string ScrollSyncScript =
+        "window.surferGetScrollPct=window.surferGetScrollPct||function(){" +
+        "var el=document.querySelector('.content');" +
+        "if(!el)return null;" +
+        "var m=el.scrollHeight-el.clientHeight;" +
+        "return m<=0?0:el.scrollTop/m;" +
+        "};" +
+        "window.surferSetScrollPct=window.surferSetScrollPct||function(pct){" +
+        "if(pct==null)return;" +
+        "var pctN=Math.max(0,Math.min(1,pct));" +
+        "var apply=function(){" +
+        "var el=document.querySelector('.content');" +
+        "if(!el)return;" +
+        "var m=el.scrollHeight-el.clientHeight;" +
+        "if(m<=0)return;" +
+        "el.scrollTop=pctN*m;" +
+        "};" +
+        "var el=document.querySelector('.content');" +
+        "if(!el){requestAnimationFrame(function(){window.surferSetScrollPct(pct);});return;}" +
+        "var img=el.querySelector('img.snapshot-img');" +
+        "if(img&&!img.complete){" +
+        "img.addEventListener('load',apply,{once:true});" +
+        "return;" +
+        "}" +
+        "requestAnimationFrame(apply);" +
+        "};";
+
+    /// <summary>Kick off the snapshot render the first time
+    /// the Snapshot tab is visible for a given URL. The
+    /// session caches by URL, so re-opening the tab without
+    /// navigating is instant — only a new navigation (which
+    /// invalidates SnapshotUrl) triggers another render.
+    /// Invoked post-render so the "Rendering…" status has
+    /// painted before the heavyweight engine work starts.</summary>
+    private async Task EnsureSnapshotIfVisibleAsync()
+    {
+        if (_format != "Snapshot") return;
+        if (Session.Current is null) return;
+        if (Session.IsSnapshotting) return;
+        // Cache hit — nothing to do.
+        if (Session.SnapshotPng is not null &&
+            Session.SnapshotUrl == Session.CurrentRequestUrl)
+        {
+            return;
+        }
+        await Session.EnsureSnapshotAsync();
+    }
+
+    private async Task RenderSnapshotAgain()
+    {
+        // Force-invalidate the cache so EnsureSnapshotAsync
+        // re-runs on the same URL. Useful when the first
+        // render picked up fonts / bg-images late, or the
+        // page changed under us.
+        Session.InvalidateSnapshot();
+        await Session.EnsureSnapshotAsync();
     }
 
     /// <summary>Install the anchor-click interceptor on the reader

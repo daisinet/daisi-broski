@@ -461,16 +461,34 @@ internal static class BuiltinTypedArrays
     {
         var proto = new JsObject { Prototype = engine.ObjectPrototype };
 
+        // Bounds-checking helper — spec-compliant accesses
+        // that fall outside [0, byteLength - byteCount] must
+        // raise a RangeError, not leak a .NET
+        // IndexOutOfRangeException. Blazor's minified runtime
+        // probes DataView shape with speculative offsets and
+        // relies on the RangeError to fall through to a
+        // fallback path.
+        static void CheckRange(JsDataView dv, int off, int bytes, string name)
+        {
+            if (off < 0 || off + bytes > dv.ByteLength)
+            {
+                JsThrow.RangeError(
+                    $"DataView.prototype.{name} offset {off} is out of bounds");
+            }
+        }
+
         proto.SetNonEnumerable("getInt8", new JsFunction("getInt8", (thisVal, args) =>
         {
             var dv = RequireDataView(thisVal, "getInt8");
             int off = (int)JsValue.ToNumber(args.Count > 0 ? args[0] : 0.0);
+            CheckRange(dv, off, 1, "getInt8");
             return (double)(sbyte)dv.Buffer.Data[dv.ByteOffset + off];
         }));
         proto.SetNonEnumerable("setInt8", new JsFunction("setInt8", (thisVal, args) =>
         {
             var dv = RequireDataView(thisVal, "setInt8");
             int off = (int)JsValue.ToNumber(args.Count > 0 ? args[0] : 0.0);
+            CheckRange(dv, off, 1, "setInt8");
             int v = JsValue.ToInt32(args.Count > 1 ? args[1] : 0.0);
             dv.Buffer.Data[dv.ByteOffset + off] = unchecked((byte)(sbyte)v);
             return JsValue.Undefined;
@@ -479,12 +497,14 @@ internal static class BuiltinTypedArrays
         {
             var dv = RequireDataView(thisVal, "getUint8");
             int off = (int)JsValue.ToNumber(args.Count > 0 ? args[0] : 0.0);
+            CheckRange(dv, off, 1, "getUint8");
             return (double)dv.Buffer.Data[dv.ByteOffset + off];
         }));
         proto.SetNonEnumerable("setUint8", new JsFunction("setUint8", (thisVal, args) =>
         {
             var dv = RequireDataView(thisVal, "setUint8");
             int off = (int)JsValue.ToNumber(args.Count > 0 ? args[0] : 0.0);
+            CheckRange(dv, off, 1, "setUint8");
             uint v = (uint)JsValue.ToUint32(args.Count > 1 ? args[1] : 0.0);
             dv.Buffer.Data[dv.ByteOffset + off] = (byte)v;
             return JsValue.Undefined;

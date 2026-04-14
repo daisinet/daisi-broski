@@ -29,6 +29,60 @@ public sealed class JsDomDocument : JsDomNode
             var name = args.Count > 0 ? JsValue.ToJsString(args[0]).ToLowerInvariant() : "div";
             return Bridge.Wrap(_document.CreateElement(name));
         }));
+        // createElementNS(namespaceURI, qualifiedName) —
+        // namespaced element creation (SVG, MathML, custom
+        // elements). Our DOM doesn't carry namespace info on
+        // Element, so we drop the namespace and create a
+        // plain element with the qualified name. Blazor uses
+        // this to create its comment-bracketed component
+        // regions; without it the runtime dies at first
+        // render with "undefined is not a function".
+        SetNonEnumerable("createElementNS", new JsFunction("createElementNS", (thisVal, args) =>
+        {
+            var name = args.Count > 1
+                ? JsValue.ToJsString(args[1]).ToLowerInvariant()
+                : "div";
+            return Bridge.Wrap(_document.CreateElement(name));
+        }));
+        // createDocumentFragment() — a DocumentFragment is a
+        // lightweight document root you can hang children off
+        // before inserting them en-masse. We model it as a
+        // plain Element with tag "#fragment"; real browsers
+        // differ in that inserting a fragment moves its
+        // children and leaves the fragment empty, but
+        // Blazor's render batches don't depend on that
+        // subtlety.
+        SetNonEnumerable("createDocumentFragment",
+            new JsFunction("createDocumentFragment", (thisVal, args) =>
+        {
+            return Bridge.Wrap(_document.CreateElement("#fragment"));
+        }));
+        // createNodeIterator(root, whatToShow, filter) —
+        // the DOM Traversal API Blazor Web uses to find its
+        // "<!--Blazor:{...}-->" circuit markers. Without
+        // this the server-mode auto-start scans return
+        // empty, Blazor decides no circuit is needed, and
+        // blazor.server.js never gets imported. Minimum-
+        // viable: depth-first walk returning nodes whose
+        // type matches the whatToShow bitmask. The filter
+        // callback (if provided) is invoked with the
+        // candidate node and must return
+        // NodeFilter.FILTER_ACCEPT (1) to keep it.
+        SetNonEnumerable("createNodeIterator",
+            new JsFunction("createNodeIterator", (thisVal, args) =>
+        {
+            var rootArg = args.Count > 0 ? args[0] : null;
+            if (rootArg is not JsDomNode jdn)
+            {
+                JsThrow.TypeError("createNodeIterator: root must be a Node");
+                return JsValue.Null;
+            }
+            long whatToShow = args.Count > 1
+                ? (long)JsValue.ToNumber(args[1])
+                : unchecked((long)0xFFFFFFFFu); // SHOW_ALL
+            JsFunction? filter = args.Count > 2 && args[2] is JsFunction f ? f : null;
+            return new JsNodeIterator(Bridge, jdn.BackingNode, whatToShow, filter);
+        }));
         SetNonEnumerable("createTextNode", new JsFunction("createTextNode", (thisVal, args) =>
         {
             var data = args.Count > 0 ? JsValue.ToJsString(args[0]) : "";
@@ -104,10 +158,48 @@ public sealed class JsDomDocument : JsDomNode
                 return _cookieJar;
             case "URL":
             case "documentURI":
-            case "baseURI":
-                // Matches the location.href default — will
-                // read through once navigation is wired.
+                // Canonical document URL — what the server
+                // actually served. Reads through location.href
+                // which AttachDocument seeds from the loader's
+                // post-redirect URL. Blazor uses this to
+                // build module specifier URLs; leaving it as
+                // "about:blank" made `new URL('./_framework/…',
+                // document.baseURI)` resolve to an invalid
+                // base and silently fail the server-circuit
+                // import.
+                if (Bridge.Engine.Globals.TryGetValue("location", out var locForUrl)
+                    && locForUrl is JsObject loVal)
+                {
+                    var h = loVal.Get("href");
+                    if (h is string hs && hs.Length > 0) return hs;
+                }
                 return "about:blank";
+            case "baseURI":
+                // The HTML spec's document base URL: the
+                // <base href> value resolved against the
+                // page URL, or the page URL itself when no
+                // <base> is set. Blazor Web's dynamic-
+                // import path composes specifiers with
+                //   new URL('./_framework/blazor.server.js',
+                //           document.baseURI)
+                // so if this returned 'about:blank' the
+                // composed URL was invalid and the server-
+                // circuit import silently failed.
+                {
+                    var page = _document.DocumentElement is null
+                        ? null
+                        : Bridge.Engine.Globals.TryGetValue("location", out var lb)
+                          && lb is JsObject loc
+                          && loc.Get("href") is string href
+                          ? href : null;
+                    if (page is null) return "about:blank";
+                    if (!Uri.TryCreate(page, UriKind.Absolute, out var pageUri))
+                    {
+                        return page;
+                    }
+                    var eb = UrlResolver.EffectiveBase(_document, pageUri);
+                    return eb.AbsoluteUri;
+                }
             case "referrer":
                 return "";
             case "currentScript":

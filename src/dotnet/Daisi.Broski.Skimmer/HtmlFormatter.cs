@@ -181,7 +181,22 @@ public static class HtmlFormatter
         {
             if (child is Text t)
             {
-                if (string.IsNullOrWhiteSpace(t.Data)) continue;
+                if (string.IsNullOrWhiteSpace(t.Data))
+                {
+                    // Whitespace-only text between two inline
+                    // siblings collapses to a single space per
+                    // HTML rendering rules. Dropping it
+                    // entirely (the previous behavior) glued
+                    // adjacent anchors together — the classic
+                    // "Join The RebellionDonate Your GPU"
+                    // bug in nav strips that put each link on
+                    // its own source line. Only emit the space
+                    // when the paragraph is already open;
+                    // leading indentation before the first
+                    // inline child should still be dropped.
+                    if (inlineOpen) ctx.Output.Append(' ');
+                    continue;
+                }
                 OpenInline();
                 AppendEscapedText(t.Data, ctx.Output);
                 continue;

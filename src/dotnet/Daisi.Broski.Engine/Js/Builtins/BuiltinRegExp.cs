@@ -185,6 +185,31 @@ internal static class BuiltinRegExp
         }
         arr.Set("index", (double)match.Index);
         arr.Set("input", input);
+        // ES2018 named-capture groups: expose them via the
+        // `groups` object on the match array. A regex with
+        // no named groups gets `groups: undefined` per spec.
+        // Without this, patterns like
+        //   /^\s*Blazor:[^{]*(?<descriptor>.*)$/
+        // ran but calling code reading `m.groups.descriptor`
+        // got `undefined.descriptor` (TypeError) or
+        // silently missed the group. Blazor Web's marker
+        // discovery used exactly this pattern — without
+        // this fix the server-mode circuit never started.
+        JsObject? groupsObj = null;
+        foreach (var name in match.Groups.Keys)
+        {
+            // .NET returns numeric group names as strings
+            // ("0", "1", ...) for unnamed groups; only
+            // non-numeric names are JS "named groups".
+            if (int.TryParse(name, out _)) continue;
+            groupsObj ??= new JsObject { Prototype = null };
+            var g = match.Groups[name];
+            groupsObj.Set(name, g.Success ? g.Value : (object?)JsValue.Undefined);
+        }
+        if (groupsObj is not null)
+        {
+            arr.Set("groups", groupsObj);
+        }
         return arr;
     }
 

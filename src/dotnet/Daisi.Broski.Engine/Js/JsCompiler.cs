@@ -1198,11 +1198,45 @@ public sealed class JsCompiler
             case ArrayPattern ap:
                 CompileArrayPatternBinding(ap);
                 return;
+            case MemberExpression me:
+                CompileMemberPatternBinding(me);
+                return;
             default:
                 throw new JsCompileException(
                     $"Unsupported binding target: {target.GetType().Name}",
                     target.Start);
         }
+    }
+
+    /// <summary>Destructure-assignment target is a
+    /// <c>MemberExpression</c> — e.g.
+    /// <c>({a: obj.x} = src)</c>. Stack on entry is
+    /// <c>[…, val]</c>; this helper consumes <c>val</c> and
+    /// stores it into the member, leaving the stack net -1
+    /// just like the identifier / pattern cases. Uses
+    /// StoreScratch so we can compile the member target's
+    /// object and property expressions without shuffling the
+    /// incoming value around — the scratch slot is released
+    /// immediately after the store.</summary>
+    private void CompileMemberPatternBinding(MemberExpression m)
+    {
+        _chunk.Emit(OpCode.StoreScratch);          // [...] ; scratch=val
+        if (m.Computed)
+        {
+            CompileExpression(m.Object);           // [..., obj]
+            CompileExpression(m.Property);         // [..., obj, key]
+            _chunk.Emit(OpCode.LoadScratch);       // [..., obj, key, val]
+            _chunk.Emit(OpCode.SetPropertyComputed); // [..., val]
+        }
+        else
+        {
+            var name = ((Identifier)m.Property).Name;
+            int nameIdx = _chunk.AddName(name);
+            CompileExpression(m.Object);           // [..., obj]
+            _chunk.Emit(OpCode.LoadScratch);       // [..., obj, val]
+            _chunk.EmitWithU16(OpCode.SetProperty, nameIdx); // [..., val]
+        }
+        _chunk.Emit(OpCode.Pop);                   // [...]
     }
 
     private void CompileObjectPatternBinding(ObjectPattern pattern)
@@ -1992,6 +2026,17 @@ public sealed class JsCompiler
         Identifier id => id,
         ObjectExpression oe => ConvertObjectExpressionToPattern(oe),
         ArrayExpression ae => ConvertArrayExpressionToPattern(ae),
+        // Member expressions are valid destructuring
+        // assignment targets per ECMAScript — you can write
+        //   ({a: obj.x, b: arr[i]} = src)
+        // and each property of src lands directly on the
+        // named member. Blazor's minified runtime uses this
+        // pattern heavily for its DotNet/JS dispatch setup
+        // (properties feed directly into an import table
+        // object), and without this case it died with
+        // "Invalid destructuring assignment target" before
+        // anything Blazor-related could bootstrap.
+        MemberExpression me => me,
         _ => throw new JsCompileException(
             "Invalid destructuring assignment target",
             expr.Start),
@@ -2332,11 +2377,11 @@ public sealed class JsCompiler
                 // Getter / setter in object literal — stored
                 // as a regular property for now.
                 CompileExpression(prop.Value);
-                EmitPropertyInit(prop.Key);
+                EmitPropertyInit(prop.Key, prop.Computed);
                 continue;
             }
             CompileExpression(prop.Value);
-            EmitPropertyInit(prop.Key);
+            EmitPropertyInit(prop.Key, prop.Computed);
         }
     }
 
@@ -3297,26 +3342,46 @@ public sealed class JsCompiler
     /// the key expression and use
     /// <see cref="OpCode.SetPropertyComputed"/>.
     /// </summary>
-    private void EmitPropertyInit(Expression key)
+    private void EmitPropertyInit(Expression key, bool computed = false)
     {
-        var staticName = TryPropertyKeyToName(key);
+        // Computed keys (source-level `[expr]:`) always need
+        // the runtime path even when `expr` happens to be a
+        // bare Identifier. Without this guard a literal like
+        //   const d = 0; const u = {[d]: 42};
+        // was being stored as `u["d"]` instead of `u["0"]`
+        // because TryPropertyKeyToName resolved the Identifier
+        // `d` to the literal static name "d".
+        var staticName = computed ? null : TryPropertyKeyToName(key);
         if (staticName is not null)
         {
+            // InitProperty: [obj, value] → [obj] (keeps obj
+            // on the stack so the next property init in the
+            // literal can operate on it).
             int nameIdx = _chunk.AddName(staticName);
             _chunk.EmitWithU16(OpCode.InitProperty, nameIdx);
         }
         else
         {
-            // Stack: [..., obj, value]. We need [..., obj, key, value].
-            // Swap to get [..., obj, value] → [..., value, obj],
-            // compile the key → [..., value, obj, key], swap again
-            // → [..., value, key, obj]... this gets messy. Simpler:
-            // use StoreScratch to park the value, compile the key,
-            // LoadScratch, then SetPropertyComputed.
-            _chunk.Emit(OpCode.StoreScratch); // park value
-            CompileExpression(key);           // push key
-            _chunk.Emit(OpCode.LoadScratch);  // push value
+            // SetPropertyComputed has assignment-expression
+            // semantics: [obj, key, value] → [value] (consumes
+            // obj). For an object-literal init we must keep
+            // obj on the stack instead, so we Dup it before
+            // the set and Pop the leftover value after.
+            //
+            // Stack walk:
+            //   [..., obj, value]
+            //   StoreScratch     → [..., obj]            (scratch=value)
+            //   Dup              → [..., obj, obj]
+            //   <compile key>    → [..., obj, obj, key]
+            //   LoadScratch      → [..., obj, obj, key, value]
+            //   SetPropComputed  → [..., obj, value]
+            //   Pop              → [..., obj]
+            _chunk.Emit(OpCode.StoreScratch);
+            _chunk.Emit(OpCode.Dup);
+            CompileExpression(key);
+            _chunk.Emit(OpCode.LoadScratch);
             _chunk.Emit(OpCode.SetPropertyComputed);
+            _chunk.Emit(OpCode.Pop);
         }
     }
 

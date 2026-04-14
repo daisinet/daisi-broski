@@ -14,6 +14,28 @@ html, body {
     line-height: 1.55;
 }
 
+/* ---------- Scrollbars ----------
+   Override the 16-18px default WebView2 scrollbar with a
+   minimal 6px track. Firefox-style (scrollbar-width) kept
+   alongside the -webkit- form so any future non-Chromium
+   head degrades gracefully. Not setting the track color
+   — default transparent track blends with whatever the
+   scrolling element's background is. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(140, 149, 159, 0.5) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+    background: rgba(140, 149, 159, 0.45);
+    border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(87, 96, 106, 0.65);
+}
+*::-webkit-scrollbar-corner { background: transparent; }
+
 .surfer-shell {
     display: flex;
     flex-direction: column;
@@ -82,21 +104,110 @@ html, body {
 .format-toggle button:last-child  { border-radius: 0 6px 6px 0; border-right-width: 1px; }
 .format-toggle button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 
-.js-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: 8px;
-    padding: 6px 8px;
+/* ---------- Overflow (⋮) menu ---------- */
+
+/* Wrap keeps the dropdown positioned against the button
+   instead of against the viewport — important when the
+   address bar grows. */
+.overflow-menu-wrap {
+    position: relative;
+    margin-left: 4px;
+}
+
+.overflow-btn {
+    padding: 4px 8px;
     border: 1px solid #d0d7de;
     border-radius: 6px;
     background: #ffffff;
-    font-size: 12px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
     color: #57606a;
+}
+.overflow-btn:hover { background: #eef2f6; }
+
+/* Transparent click-catcher behind the menu so a click
+   anywhere else in the window closes the dropdown without
+   us needing a JS document-level handler. Low z-index so
+   the menu itself still renders on top. */
+.overflow-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+}
+.overflow-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 101;
+    min-width: 220px;
+    padding: 8px 10px;
+    background: #ffffff;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(31, 35, 40, 0.12);
+    font-size: 13px;
+    color: #1f2328;
+}
+.overflow-menu .menu-group { padding: 4px 2px; }
+.overflow-menu .menu-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #57606a;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+.overflow-menu .menu-label.dim { color: #9aa4af; font-weight: 500; }
+.overflow-menu .menu-hint {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 10px;
+    margin-left: 4px;
+    color: #9aa4af;
+}
+.overflow-menu .menu-sep {
+    height: 1px;
+    background: #eaeef2;
+    margin: 6px -10px;
+}
+/* Segmented-style two-button picker — matches the format
+   toggle look so narrow/wide feels like a peer control. */
+.overflow-menu .menu-segmented {
+    display: flex;
+}
+.overflow-menu .menu-segmented button {
+    flex: 1 1 0;
+    padding: 6px 10px;
+    border: 1px solid #d0d7de;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 13px;
+    color: #1f2328;
+    border-right-width: 0;
+    font-family: inherit;
+}
+.overflow-menu .menu-segmented button:first-child { border-radius: 6px 0 0 6px; }
+.overflow-menu .menu-segmented button:last-child  { border-radius: 0 6px 6px 0; border-right-width: 1px; }
+.overflow-menu .menu-segmented button.active {
+    background: #1f6feb;
+    color: #fff;
+    border-color: #1f6feb;
+}
+.overflow-menu .menu-segmented button[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.overflow-menu .menu-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 2px;
     cursor: pointer;
     user-select: none;
 }
-.js-toggle input { margin: 0; cursor: pointer; }
+.overflow-menu .menu-check input { margin: 0; cursor: pointer; }
 
 /* ---------- Status / error banners ---------- */
 
@@ -131,6 +242,67 @@ html, body {
     color: #57606a;
 }
 .meta-strip .meta-line span { margin-right: 4px; }
+.meta-strip .meta-line .origin-link {
+    /* link-nav gives the blue underlined treatment; this
+       overlay just inherits the meta-line's font-size so
+       the domain link reads as a peer of the other
+       small-print metadata, not as a call-to-action
+       heading. */
+    font-size: inherit;
+    font-family: inherit;
+    font-weight: 500;
+}
+
+/* ---------- Snapshot tab ---------- */
+
+.content.snapshot {
+    padding: 16px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+.content.snapshot .snapshot-toolbar {
+    width: 100%;
+    max-width: 1280px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #57606a;
+    margin-bottom: 12px;
+}
+.content.snapshot .snapshot-hint {
+    font-style: italic;
+}
+.content.snapshot .snapshot-img {
+    max-width: 100%;
+    width: 1280px;
+    height: auto;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(31, 35, 40, 0.06);
+    background: #ffffff;
+    /* Crisp edges — the engine's pixel grid is 1:1 with
+       the snapshot, so browser smoothing would blur the
+       outlines we worked to rasterize sharply. */
+    image-rendering: -webkit-optimize-contrast;
+}
+.content.snapshot .snapshot-status {
+    padding: 32px;
+    color: #57606a;
+    font-style: italic;
+}
+.content.snapshot .snapshot-status.error-inline {
+    color: #82071e;
+    font-style: normal;
+    background: #ffebe9;
+    border: 1px solid #ffc1ba;
+    border-radius: 6px;
+    padding: 12px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
 
 /* ---------- Content area ---------- */
 
@@ -143,6 +315,17 @@ html, body {
 .content.reader {
     max-width: 740px;
     margin: 0 auto;
+}
+/* Wide-column reader variant — toggled from the overflow
+   menu. Drops the max-width cap and the auto-margin so the
+   column stretches edge to edge, but keeps a small 15px
+   inside gutter so text doesn't butt up against the
+   window chrome. Vertical padding stays bigger so the
+   first line breathes under the meta strip. */
+.content.reader.wide {
+    max-width: none;
+    margin: 0;
+    padding: 24px 15px;
 }
 .content.reader img.hero {
     width: 100%;

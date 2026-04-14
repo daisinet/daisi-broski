@@ -57,6 +57,7 @@ public static class Program
             "run" => await RunCommand(args[1..]),
             "screenshot" => await ScreenshotCommand(args[1..]),
             "probe" => ProbePixels.Run(args[1..]),
+            "probe-scripts" => await ProbePageScripts.Run(args[1..]),
             _ => UsageError($"Unknown command '{args[0]}'"),
         };
     }
@@ -188,9 +189,6 @@ public static class Program
             int externalFetchErrors = 0;
             int skippedTypeCount = 0;
             var scriptErrors = new List<string>();
-            // Deferred scripts: collected during the blocking pass
-            // and executed after all blocking scripts finish, in
-            // document order. Matches the browser's defer semantics.
             var deferredScripts = new List<(Daisi.Broski.Engine.Dom.Element script, int idx)>();
             int scriptIdx = 0;
             foreach (var script in doc.QuerySelectorAll("script"))
@@ -225,17 +223,20 @@ public static class Program
                 {
                     externalCount++;
                     var src = script.GetAttribute("src")!;
-                    // Resolve relative URLs against the page.
-                    Uri scriptUri;
-                    try
-                    {
-                        scriptUri = new Uri(page.FinalUrl, src);
-                    }
-                    catch
+                    // Resolve relative URLs against the
+                    // document's effective base — honors
+                    // <base href="/"> so Blazor / SPA pages
+                    // served from a sub-path fetch their
+                    // framework scripts from the site root
+                    // instead of the current path's directory.
+                    Uri? scriptUriTry = Daisi.Broski.Engine.Dom.UrlResolver
+                        .Resolve(doc, page.FinalUrl, src);
+                    if (scriptUriTry is null)
                     {
                         externalFetchErrors++;
                         continue;
                     }
+                    var scriptUri = scriptUriTry;
                     // Fetch the script source.
                     try
                     {

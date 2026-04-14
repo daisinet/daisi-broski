@@ -131,7 +131,8 @@ public sealed class PageLoader : IDisposable
             }
             var hrefRaw = el.GetAttribute("href");
             if (string.IsNullOrEmpty(hrefRaw)) continue;
-            if (!Uri.TryCreate(baseUrl, hrefRaw, out var href)) continue;
+            var href = Dom.UrlResolver.Resolve(document, baseUrl, hrefRaw);
+            if (href is null) continue;
             if (href.Scheme is not ("http" or "https")) continue;
             links.Add((el, href));
         }
@@ -194,7 +195,8 @@ public sealed class PageLoader : IDisposable
             if (string.IsNullOrEmpty(srcRaw)) continue;
             // Skip data: URIs and other non-http schemes for
             // now — they'd need their own decoder paths.
-            if (!Uri.TryCreate(baseUrl, srcRaw, out var src)) continue;
+            var src = Dom.UrlResolver.Resolve(document, baseUrl, srcRaw);
+            if (src is null) continue;
             if (src.Scheme is not ("http" or "https")) continue;
             imgs.Add((el, src));
         }
@@ -366,7 +368,8 @@ public sealed class PageLoader : IDisposable
         var unique = new List<(Daisi.Broski.Engine.Fonts.FontFaceParser.Candidate c, Uri url)>();
         foreach (var c in candidates)
         {
-            if (!Uri.TryCreate(baseUrl, c.Src, out var uri)) continue;
+            var uri = Dom.UrlResolver.Resolve(document, baseUrl, c.Src);
+            if (uri is null) continue;
             if (uri.Scheme is not ("http" or "https")) continue;
             if (!seen.Add(uri.AbsoluteUri)) continue;
             unique.Add((c, uri));
@@ -486,7 +489,8 @@ public sealed class PageLoader : IDisposable
                 }
             }
             if (urlStr is null) return;
-            if (!Uri.TryCreate(baseUri, urlStr, out var absUrl)) return;
+            var absUrl = Dom.UrlResolver.Resolve(document, baseUri, urlStr);
+            if (absUrl is null) return;
             if (absUrl.Scheme is not ("http" or "https")) return;
             uniqueUrls.Add(absUrl);
             if (sr.Selectors is null) return;

@@ -105,6 +105,62 @@ internal static class BuiltinBrowserHost
         engine.Globals["removeEventListener"] = new JsFunction("removeEventListener", (t, a) => JsValue.Undefined);
         engine.Globals["dispatchEvent"] = new JsFunction("dispatchEvent", (t, a) => true);
 
+        // customElements — the Web Components v1 registry.
+        // We don't render custom elements differently from
+        // unknown HTML tags, but scripts commonly feature-
+        // detect via `typeof customElements` or call
+        // `customElements.define()` / `.get()` /
+        // `.whenDefined()` during bootstrap (Blazor, Lit,
+        // Stencil, lit-html). Install a stub registry that
+        // accepts definitions, remembers them by name, and
+        // resolves whenDefined() promises immediately so
+        // scripts waiting on a definition to complete move
+        // on instead of hanging.
+        {
+            var registry = new JsObject { Prototype = engine.ObjectPrototype };
+            var defined = new System.Collections.Generic.Dictionary<string, object?>();
+            registry.SetNonEnumerable("define", new JsFunction("define", (t, a) =>
+            {
+                if (a.Count < 2) return JsValue.Undefined;
+                var name = JsValue.ToJsString(a[0]);
+                defined[name] = a[1];
+                return JsValue.Undefined;
+            }));
+            registry.SetNonEnumerable("get", new JsFunction("get", (t, a) =>
+            {
+                if (a.Count == 0) return JsValue.Undefined;
+                var name = JsValue.ToJsString(a[0]);
+                return defined.TryGetValue(name, out var ctor) ? ctor : JsValue.Undefined;
+            }));
+            registry.SetNonEnumerable("whenDefined", new JsFunction("whenDefined", (t, a) =>
+            {
+                // Return an already-resolved promise when the
+                // name is (or later becomes) defined. Sites
+                // await this before upgrading elements, and
+                // hanging the promise would wedge them.
+                var ctor = engine.PromisePrototype;
+                var p = new JsPromise(engine);
+                if (a.Count > 0 && defined.TryGetValue(JsValue.ToJsString(a[0]), out var def))
+                {
+                    p.Resolve(def);
+                }
+                else
+                {
+                    // Unknown name — resolve with undefined
+                    // rather than never resolving. That's a
+                    // behavioral deviation from spec, but in
+                    // practice sites that await whenDefined
+                    // expect it to either resolve soon or be
+                    // a test for existence; the stub matches
+                    // the latter.
+                    p.Resolve(JsValue.Undefined);
+                }
+                return p;
+            }));
+            registry.SetNonEnumerable("upgrade", new JsFunction("upgrade", (t, a) => JsValue.Undefined));
+            engine.Globals["customElements"] = registry;
+        }
+
         // XPathEvaluator — htmx and other DOM libraries check
         // for its existence as a feature-detection signal.
         // Install a minimal stub that creates evaluator
