@@ -27,6 +27,24 @@ public readonly struct Length
     public static Length Percent(double v) => new(LengthUnit.Percent, v);
     public static Length Em(double v) => new(LengthUnit.Em, v);
     public static Length Rem(double v) => new(LengthUnit.Rem, v);
+    public static Length Vw(double v) => new(LengthUnit.Vw, v);
+    public static Length Vh(double v) => new(LengthUnit.Vh, v);
+    public static Length Vmin(double v) => new(LengthUnit.Vmin, v);
+    public static Length Vmax(double v) => new(LengthUnit.Vmax, v);
+
+    /// <summary>Per-thread viewport snapshot — set at the
+    /// top of <c>LayoutTree.Build</c> so <c>vw</c> / <c>vh</c>
+    /// resolve against the current viewport without having to
+    /// thread it through every Length.Resolve callsite.</summary>
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Init() { }
+    [ThreadStatic] private static double _viewportW;
+    [ThreadStatic] private static double _viewportH;
+    public static void SetViewport(double w, double h)
+    {
+        _viewportW = w;
+        _viewportH = h;
+    }
 
     /// <summary>Parse a CSS length string. Recognized:
     /// <c>"auto"</c>, plain numbers (treated as px), and
@@ -61,6 +79,13 @@ public readonly struct Length
             "em" => Em(value),
             "rem" => Rem(value),
             "pt" => Px(value * 1.333),
+            "vw" => Vw(value),
+            "vh" => Vh(value),
+            "vmin" => Vmin(value),
+            "vmax" => Vmax(value),
+            "cm" => Px(value * 37.795),
+            "mm" => Px(value * 3.7795),
+            "in" => Px(value * 96),
             _ => None,
         };
     }
@@ -80,6 +105,10 @@ public readonly struct Length
             LengthUnit.Percent => containingSize * Value / 100.0,
             LengthUnit.Em => Value * fontSize,
             LengthUnit.Rem => Value * rootFontSize,
+            LengthUnit.Vw => _viewportW * Value / 100.0,
+            LengthUnit.Vh => _viewportH * Value / 100.0,
+            LengthUnit.Vmin => Math.Min(_viewportW, _viewportH) * Value / 100.0,
+            LengthUnit.Vmax => Math.Max(_viewportW, _viewportH) * Value / 100.0,
             _ => fallback,
         };
     }
@@ -97,4 +126,8 @@ public enum LengthUnit
     Percent,
     Em,
     Rem,
+    Vw,
+    Vh,
+    Vmin,
+    Vmax,
 }

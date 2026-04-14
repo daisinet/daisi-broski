@@ -46,6 +46,11 @@ public static class LayoutTree
     {
         ArgumentNullException.ThrowIfNull(document);
         viewport ??= Viewport.Default;
+        // Wire viewport into Length so vw / vh / vmin / vmax
+        // resolve correctly. Per-thread so concurrent layout
+        // builds (rare today, but no surprises later) don't
+        // step on each other.
+        Length.SetViewport(viewport.Width, viewport.Height);
         var resolver = new LayoutStyleResolver(document, viewport);
 
         var root = new LayoutBox
@@ -111,11 +116,47 @@ public static class LayoutTree
             return;
         }
 
+        // Auto-margin centering: when a block element has a
+        // declared width AND both margin-left and margin-right
+        // are 'auto', distribute the parent's free horizontal
+        // space equally to both margins (CSS 2.1 §10.3.3) —
+        // this is what `margin: 0 auto` does for the classic
+        // centered card pattern.
+        var ml = style.GetPropertyValue("margin-left");
+        var mr = style.GetPropertyValue("margin-right");
+        bool autoL = (ml ?? "").Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
+        bool autoR = (mr ?? "").Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
+        if (!autoL || !autoR)
+        {
+            // Fall back to the shorthand for sides we didn't
+            // see explicitly.
+            var shorthand = style.GetPropertyValue("margin");
+            if (!string.IsNullOrWhiteSpace(shorthand))
+            {
+                var parts = ShorthandSides.Parse(shorthand);
+                if (!autoL) autoL = parts.Left.IsAuto;
+                if (!autoR) autoR = parts.Right.IsAuto;
+            }
+        }
+        double outerWidth = box.Width
+            + box.Padding.Left + box.Padding.Right
+            + box.Border.Left + box.Border.Right;
+        double freeH = parent.Width - outerWidth - box.Margin.Left - box.Margin.Right;
+        double leftMargin = box.Margin.Left;
+        if (autoL && autoR && freeH > 0)
+        {
+            leftMargin = box.Margin.Left + freeH / 2;
+        }
+        else if (autoL && freeH > 0)
+        {
+            leftMargin = box.Margin.Left + freeH;
+        }
+
         // Position the box at the parent's current cursor —
         // the parent's height (so far) plus this box's top
         // outer edge. The X is parent.X + outer-left edges
         // so the content area sits inside padding/border.
-        box.X = parent.X + box.Margin.Left + box.Border.Left + box.Padding.Left;
+        box.X = parent.X + leftMargin + box.Border.Left + box.Padding.Left;
         box.Y = parent.Y + parent.Height
             + box.Margin.Top + box.Border.Top + box.Padding.Top;
 
