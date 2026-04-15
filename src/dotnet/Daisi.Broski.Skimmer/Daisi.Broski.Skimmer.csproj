@@ -4,6 +4,9 @@
     <RootNamespace>Daisi.Broski.Skimmer</RootNamespace>
     <AssemblyName>daisi-broski-skim</AssemblyName>
   </PropertyGroup>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('windows'))">
+    <DefineConstants>$(DefineConstants);WINDOWS_BUILD</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
     <ProjectReference Include="..\Daisi.Broski.Ipc\Daisi.Broski.Ipc.csproj" />
