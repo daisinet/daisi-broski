@@ -68,6 +68,20 @@ $ daisi-broski-skim https://daisi.ai --format json --quiet | head -8
 
 The library API is `ContentExtractor.Extract(document, url) → ArticleContent` plus `JsonFormatter.Format(article)` / `MarkdownFormatter.Format(article)`. Run `daisi-broski-skim --help` for the full CLI.
 
+**Non-HTML inputs.** The skimmer also handles direct links to Word (`.docx`), Excel (`.xlsx`), and PDF (`.pdf`) documents. Detection is three-tiered: the response's Content-Type header wins, falling back to the body's magic bytes, and finally the URL's file extension. A match routes the bytes through a format-specific converter (`Daisi.Broski.Docs`) that emits a synthetic article-shaped HTML string; that HTML then flows through the exact same `HtmlTreeBuilder → ContentExtractor → JsonFormatter / MarkdownFormatter` pipeline the regular Web-page path uses. The two paths share a single formatter — a docx skim produces the same output shape as a scraped blog post.
+
+```
+$ daisi-broski-skim https://example.com/report.docx --format md --quiet
+# Report.docx
+
+Regular prose from the document shows up here, with **bold** and _italic_ runs preserved and `<a>` hyperlinks inlined. Lists, tables, and headings all translate cleanly.
+
+$ daisi-broski-skim https://example.com/budget.xlsx --format json --quiet
+$ daisi-broski-skim https://example.com/whitepaper.pdf --format md --quiet
+```
+
+Everything runs BCL-only — no third-party NuGet packages. OOXML (docx, xlsx) unpacks via `System.IO.Compression.ZipArchive` + `System.Xml.XmlReader`. PDF parsing is a from-scratch implementation of the PDF 1.7 spec §7 — a hand-rolled lexer, indirect-object parser, traditional + PDF 1.5+ cross-reference-stream readers, object-stream (`/Type /ObjStm`) expansion, five filters (`FlateDecode` with PNG-predictor support, `ASCIIHexDecode`, `ASCII85Decode`, `LZWDecode`, `RunLengthDecode`), a full `/ToUnicode` CMap parser (codespaceranges, bfchar, bfrange), and a content-stream interpreter for the text-showing operator set (`BT`/`ET`/`Tf`/`Tj`/`TJ`/`'`/`"`/`Td`/`TD`/`Tm`/`T*`) with CTM (`q`/`Q`/`cm`) tracking so every run's position is captured in a single consistent user-space frame. Font decoding covers both simple fonts (Type1/TrueType with `StandardEncoding` / `WinAnsiEncoding` / `MacRomanEncoding` + `/Differences` overlays, routed through an Adobe Glyph List table to Unicode) and composite Type 0 / CID fonts with 2-byte codes driven by the embedded `/ToUnicode` CMap. **Encryption** support handles the Adobe Standard Security Handler in V1 (RC4-40), V2 (RC4-128), and V4 (AES-128 via `/CFM /AESV2`) — the empty-user-password case, which is what Office, Adobe, and most enterprise doc-management systems produce by default when an author sets permissions without a real password. RC4 is inlined; AES uses the BCL. **Layout reconstruction**: positioned text runs flow through a layout analyzer (`PdfLayoutAnalyzer`) that clusters by y into rows, 1-D-linkage-clusters x-positions into column anchors, and emits markdown tables when it finds a rectangular grid of ≥3 rows / ≥2 columns with substantive content. This covers what Word 2016+, Chrome's PDF printer, LaTeX (including CJK content via CID fonts), Google Docs, and password-"protected" Office exports actually emit. **Known limitations:** tight-column two-column "actor : role" lists may fall inside our cluster tolerance and render as paragraphs instead of tables; composite fonts that rely on a predefined CMap (e.g., `GBK-EUC-H`) without shipping their own `/ToUnicode` produce empty text for their runs; and non-empty-password encryption needs a user-provided password which isn't yet wired through the CLI. See [docs/roadmap.md](docs/roadmap.md) for remaining work and [docs/design-decisions.md §DD-06](docs/design-decisions.md#dd-06--doc-conversion-representation-and-bcl-only-pdf) for the architecture.
+
 ### `daisi-broski-surfer` — MAUI Blazor Hybrid reader app
 
 A native Windows desktop app (`Daisi.Broski.Surfer`, .NET MAUI Blazor Hybrid, target `net10.0-windows10.0.19041.0`) wraps the Skimmer in a UI: address bar at the top, four content views (Reader / Markdown / JSON / Links) toggleable on the right, back button that walks the visit history. Type a URL, hit Enter — the Surfer fetches it through the local broski engine, runs `ContentExtractor.Extract`, and renders the chosen view in a `BlazorWebView`. The Links view turns every extracted outbound link into a one-click in-app navigation.
@@ -108,6 +122,7 @@ daisi-broski/
 │   ├── Daisi.Broski/                ✅ Host library: JobObject, SandboxLauncher, BrowserSession
 │   ├── Daisi.Broski.Sandbox/        ✅ Child process: SandboxRuntime, IPC dispatch loop
 │   ├── Daisi.Broski.Cli/            ✅ Command-line driver: daisi-broski fetch
+│   ├── Daisi.Broski.Docs/           ✅ docx / xlsx converters + dispatch (PDF stub, parser WIP)
 │   ├── Daisi.Broski.Skimmer/        ✅ daisi-broski-skim: article extractor (JSON / Markdown)
 │   ├── Daisi.Broski.Surfer/         ✅ daisi-broski-surfer: MAUI Blazor Hybrid reader app (Windows)
 │   ├── Daisi.Broski.slnx            Solution file

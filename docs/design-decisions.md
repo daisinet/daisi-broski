@@ -10,6 +10,7 @@
 
 - [DD-01 — Regex engine](#dd-01--regex-engine)
 - [DD-05 — JS heap and GC strategy](#dd-05--js-heap-and-gc-strategy)
+- [DD-06 — Doc conversion: representation and BCL-only PDF](#dd-06--doc-conversion-representation-and-bcl-only-pdf)
 
 Numbering matches the architecture.md open-question list; gaps are intentional and will fill in as the other questions get write-ups.
 
@@ -206,3 +207,77 @@ A three-step progression:
 - Mid-task GC pauses (not between-task, but during script execution) become user-visible in integration tests.
 - A specific site (React 18, Vue 3, something that allocates aggressively) runs 5x+ slower than expected and profiling points at allocation, not interpretation.
 - We commit to phase 6 (layout + render) and the combined working-set budget no longer fits under the Job Object cap.
+
+---
+
+## DD-06 — Doc conversion: representation and BCL-only PDF
+
+**Status:** decided — milestone 1 (docx + xlsx + dispatch) shipped. PDF is phased (milestones 2–4).
+**Affects:** `Daisi.Broski.Docs` (new project), `PageLoader.LoadAsync` dispatch seam, `Daisi.Broski.Skimmer` behavior for non-HTML URLs.
+
+### What's at stake
+
+Plenty of real-world URLs — research papers, government publications, SharePoint Office attachments, vendor whitepapers — return binary docs rather than HTML. Before this change, the Skimmer treated those bytes as if they were HTML: the encoding sniffer ran, the HTML tree builder parsed garbage, and the article extractor returned nothing. The task: detect doc content, convert it, and surface extracted text through the same JSON / Markdown / HTML formatter output the Web-page path produces.
+
+Two choices had to be made together: (1) how do converters communicate their results to the rest of the Skimmer pipeline, and (2) how deep does PDF support go, given the BCL-only constraint?
+
+### Options considered
+
+#### Representation A — Synthetic HTML roundtrip
+
+The converter produces a well-formed `<!doctype html>…</html>` string containing a single `<article>` with the extracted structure (h1..h6, p, ul/ol/li, table, strong/em, a, img). `PageLoader.LoadAsync` feeds that string back through `HtmlTreeBuilder.Parse` exactly as if the origin server had served it — `ContentExtractor.Extract`, `JsonFormatter`, `MarkdownFormatter` all see a normal article-shaped document and run unchanged.
+
+- **Pros:** zero duplicated rendering code. The full downstream pipeline (extractor heuristics, link collection, image discovery, markdown conversion, sandbox IPC serialization) works for docs automatically the moment the converter emits a structurally-sane article. New formats only implement `byte[] → HTML`.
+- **Cons:** pays an HTML parse pass per doc (tens of microseconds — inconsequential against the network fetch and the doc parse itself). Converters that emit invalid HTML would surface as quiet extraction misses rather than loud failures; mitigated by treating the converter output as the trusted boundary (`HtmlWriter.EscapeText` is the only way user-controlled text enters the output, and it's audited centrally).
+
+#### Representation B — New `DocContent` model alongside `ArticleContent`
+
+Introduce a parallel data type that doc converters populate directly. The CLI and the formatters branch on doc-type: HTML goes through `ContentExtractor`, docs go through a separate emitter path.
+
+- **Pros:** keeps doc conversion strictly separate from the HTML heuristic layer. No risk of extractor heuristics (link density, noise-class penalties) mis-scoring a well-formed synthetic article.
+- **Cons:** duplicates every formatter (JSON, Markdown, HTML-for-sandbox) for a second content model. Doubles the surface area of `SkimResponse` and `BrowserSession.SkimAsync`. Every new output format (e.g., a future reader-mode HTML renderer) has to be implemented twice.
+
+#### Representation C — Direct markdown emission
+
+Converters emit markdown directly into `ArticleContent.PlainText`; JSON wraps it; HTML formatter re-parses the markdown back to HTML on demand.
+
+- **Pros:** skips the HTML-parser roundtrip.
+- **Cons:** loses the image/link/nav-link arrays `JsonFormatter` populates from the DOM tree. Re-parsing markdown back to HTML for the HTML output mode needs a markdown parser — which we don't have and shouldn't build just for this.
+
+#### PDF X — Minimal text extract (BCL, 1500 lines)
+
+Hand-roll a lexer, xref reader, Flate filter, and text-showing-operator interpreter targeting uncompressed + Flate-compressed single-font ASCII PDFs. Covers ~40% of real-world text PDFs.
+
+- **Pros:** ships fast. Correct against the dominant "simple digitally-created PDF" case.
+- **Cons:** silently wrong on CID fonts (every pdflatex-produced PDF, all CJK, emoji), encrypted PDFs, and the 30% of modern PDFs that use object-stream xrefs. Users debug "why did my PDF extract come out blank".
+
+#### PDF Y — Full parser (BCL, 4000 lines, phased)
+
+Full spec-level parser: traditional + compressed xref, Flate + LZW + ASCIIHex + ASCII85 + RunLength filters, text operators, simple + composite (CID) fonts with `ToUnicode` CMap, object streams, basic V1/V2/V4 encryption. Phased across milestones (lexer+Flate → text extractor → object streams → CID+CMap → encryption → metadata).
+
+- **Pros:** correct against the full "text PDF" population, not a subset. No silent misses on modern PDFs.
+- **Cons:** large commitment (~4000 lines + fuzzing). Multi-week build.
+
+#### PDF Z — Third-party PDF library (e.g., PdfPig)
+
+Add a NuGet reference. Fastest path to working PDF.
+
+- **Pros:** ships in hours.
+- **Cons:** violates the repo's core constraint (README line 8: "No third-party NuGet packages in the product code"). Would require explicit policy revision and a careful licensing review — the BCL-only rule is a load-bearing part of the architecture (the sandbox story relies on the narrow attack surface of BCL + our own code).
+
+### Decision
+
+**Representation A** (synthetic HTML roundtrip) and **PDF Y** (full parser, phased).
+
+The synthetic-HTML path is the obviously right choice: every consequence of the "all roads lead through `HtmlTreeBuilder`" shape is beneficial, and the one conceivable drawback (extractor heuristics mis-scoring a synthesized article) doesn't happen in practice because the converters emit articles that are by construction well-formed and high-signal. The elegance of shipping a new doc format by writing only `byte[] → HTML` is exactly the kind of reuse we want.
+
+For PDF, the full parser commitment is consistent with the project's stated design goal ("doing what is hard is usually right" — see `daisi/CLAUDE.md`) and with the sandbox threat model (a third-party PDF library's parse surface is an attack boundary we'd have to audit; rolling our own means we own the attack surface). Phasing it into independent milestones (each shippable on its own) means we get incrementally-correct behavior and a detectable regression surface at every step, rather than a single 4000-line merge.
+
+**Milestone 1 shipped** in this PR: dispatch framework + DocxConverter + XlsxConverter + in-pipeline wiring. PDF is a stub that identifies the format, emits an unsupported-shell article, and slots into the same dispatcher as a future real converter drops in.
+
+### Revisit when
+
+- A real-world docx emits garbage text through the converter — usually means a wordprocessingml feature we haven't modeled (SmartArt, fields, SDT content controls, footnotes). Add a targeted fixture and either model the feature or acknowledge the fallback.
+- A user reports a PDF that produces empty output after the full parser lands. Build a minimal reproducer into `PdfConverterTests`; triage by sub-phase (lexer / xref / filter / font).
+- A compelling reason to add a non-OOXML doc format appears (RTF, ODT, EPUB). Each is its own converter; the dispatcher + HTML-roundtrip design scales to them with no framework change.
+- Someone proposes a pure-read-only third-party parser (e.g., for WOFF2 decompression or for PDF). Revisit only if there's both a clear reason BCL-only is untenable for that specific format *and* the third-party library has an audited-trust profile matching the sandbox threat model.

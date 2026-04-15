@@ -1,0 +1,70 @@
+@page "/admin"
+@layout MainLayout
+@rendermode RenderMode.InteractiveServer
+@inject Daisi.Broski.Web.Data.BroskiWebCosmo Cosmo
+@inject Daisi.Broski.Web.Services.ApiKeyService Keys
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>Dashboard · daisi-broski-skim admin</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Dashboard</MudText>
+<MudText Typo="Typo.body1" Class="mb-6">
+    Welcome. Create API keys on the <MudLink Href="/admin/keys">keys page</MudLink>
+    and monitor call volume on the <MudLink Href="/admin/usage">usage page</MudLink>.
+</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2">Active keys</MudText>
+            <MudText Typo="Typo.h4">@_activeKeys</MudText>
+            <MudText Typo="Typo.caption">non-revoked, non-expired</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2">Skims today</MudText>
+            <MudText Typo="Typo.h4">@_todayCount</MudText>
+            <MudText Typo="Typo.caption">since UTC midnight</MudText>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" md="4">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.subtitle2">Avg latency</MudText>
+            <MudText Typo="Typo.h4">@_avgLatency ms</MudText>
+            <MudText Typo="Typo.caption">across the last 100 calls</MudText>
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private int _activeKeys;
+    private int _todayCount;
+    private int _avgLatency;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var (accountId, userId, _) = CurrentUser();
+        if (accountId is null || userId is null) return;
+
+        var keys = await Keys.ListKeysAsync(accountId, userId);
+        _activeKeys = keys.Count(k => !k.IsRevoked
+            && (!k.ExpiresUtc.HasValue || k.ExpiresUtc > DateTime.UtcNow));
+
+        var recent = await Cosmo.GetRecentUsageAsync(accountId, userId, top: 100);
+        var utcMidnight = DateTime.UtcNow.Date;
+        _todayCount = recent.Count(r => r.TimestampUtc >= utcMidnight);
+        _avgLatency = recent.Count == 0 ? 0
+            : (int)recent.Average(r => r.DurationMs);
+    }
+
+    private (string? accountId, string? userId, string? userName) CurrentUser()
+    {
+        var u = HttpContextAccessor.HttpContext?.User;
+        if (u is null) return (null, null, null);
+        return (
+            u.FindFirst(System.Security.Claims.ClaimTypes.GroupSid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Sid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value);
+    }
+}

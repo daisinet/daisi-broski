@@ -63,9 +63,31 @@ public sealed class PageLoader : IDisposable
 
         var fetchResult = await _fetcher.FetchAsync(url, ct).ConfigureAwait(false);
 
-        var encoding = EncodingSniffer.Sniff(fetchResult.Body, fetchResult.ContentType);
-        var html = encoding.GetString(fetchResult.Body);
-        var document = HtmlTreeBuilder.Parse(html);
+        // If the response is a document format we know how to
+        // convert (docx / xlsx / pdf), swap in a synthetic article
+        // HTML string and skip the charset-sniff + HTML-parse path
+        // below (the bytes aren't HTML). The rest of the page-load
+        // pipeline — external stylesheets, images, fonts — runs
+        // against the synthetic document; since it contains no
+        // external references by construction, those passes are
+        // trivial no-ops rather than a source of surprise.
+        System.Text.Encoding encoding;
+        string html;
+        Document document;
+        if (Daisi.Broski.Docs.DocDispatcher.TryConvert(
+                fetchResult.Body, fetchResult.ContentType,
+                fetchResult.FinalUrl, out var syntheticHtml))
+        {
+            encoding = System.Text.Encoding.UTF8;
+            html = syntheticHtml!;
+            document = HtmlTreeBuilder.Parse(html);
+        }
+        else
+        {
+            encoding = EncodingSniffer.Sniff(fetchResult.Body, fetchResult.ContentType);
+            html = encoding.GetString(fetchResult.Body);
+            document = HtmlTreeBuilder.Parse(html);
+        }
 
         // Phase 6g: fetch external stylesheets referenced by
         // `<link rel="stylesheet" href>` so the cascade has

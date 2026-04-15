@@ -12,9 +12,17 @@
            placeholder="Type a URL (https://example.com)..."
            disabled="@Session.IsLoading" />
 
-    <button class="go-btn" @onclick="Go" disabled="@(string.IsNullOrWhiteSpace(_urlInput) || Session.IsLoading)">
-        @(Session.IsLoading ? "..." : "Go")
-    </button>
+    @if (Session.IsLoading)
+    {
+        <button class="cancel-btn" @onclick="Cancel"
+                title="Cancel the in-flight fetch">Cancel</button>
+    }
+    else
+    {
+        <button class="go-btn" @onclick="Go" disabled="@string.IsNullOrWhiteSpace(_urlInput)">
+            Go
+        </button>
+    }
 
     <div class="format-toggle">
         @foreach (var f in Formats)
@@ -519,6 +527,14 @@ else
     private async Task Go()
     {
         await Navigate(_urlInput);
+    }
+
+    /// <summary>Abort the in-flight skim. The session's
+    /// NavigateAsync catches the cancellation silently so the UI
+    /// just drops back to idle without an error banner.</summary>
+    private void Cancel()
+    {
+        Session.CancelCurrent();
     }
 
     private async Task Navigate(string url)

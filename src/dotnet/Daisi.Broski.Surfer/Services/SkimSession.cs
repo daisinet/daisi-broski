@@ -91,9 +91,16 @@ public sealed class SkimSession
 
     public event Action? StateChanged;
 
+    /// <summary>Backs the current in-flight skim. Replaced on every
+    /// new navigation; cancelled (then replaced) if the user clicks
+    /// the Cancel button or kicks off a second navigation before
+    /// the first finishes. Null when nothing is in flight.</summary>
+    private CancellationTokenSource? _currentFetch;
+
     /// <summary>Navigate to <paramref name="rawUrl"/> — fetch + parse +
     /// optionally run scripts + extract + push onto the history stack.
-    /// Safe to call concurrently; later calls win. The
+    /// Safe to call concurrently; a new call cancels any in-flight
+    /// one so only the latest navigation lands. The
     /// <see cref="StateChanged"/> event fires twice: once when loading
     /// begins, once when it ends.</summary>
     public async Task NavigateAsync(string rawUrl)
@@ -120,6 +127,16 @@ public sealed class SkimSession
             History.Add(CurrentRequestUrl);
         }
 
+        // Abort any in-flight skim so a new URL doesn't stall
+        // behind the old one's timeout. The cancelled Task faults
+        // with OperationCanceledException, which the catch below
+        // quietly ignores — only the outcome of THIS navigation
+        // should show in the UI.
+        var previous = _currentFetch;
+        var cts = new CancellationTokenSource();
+        _currentFetch = cts;
+        previous?.Cancel();
+
         CurrentRequestUrl = rawUrl;
         IsLoading = true;
         Error = null;
@@ -136,8 +153,15 @@ public sealed class SkimSession
             Current = await SkimmerApi.SkimAsync(url, new SkimmerOptions
             {
                 ScriptingEnabled = ScriptingEnabled,
-            });
+            }, cts.Token);
             CurrentRequestUrl = Current.Url.AbsoluteUri;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // User clicked Cancel (or a newer navigation started).
+            // Leave Error null — the UI should feel instant,
+            // not surface a scary message.
+            Error = null;
         }
         catch (Exception ex)
         {
@@ -146,8 +170,21 @@ public sealed class SkimSession
         finally
         {
             IsLoading = false;
+            // Only clear the CTS reference if it's still the one
+            // we owned — a later navigation may have swapped it.
+            if (ReferenceEquals(_currentFetch, cts)) _currentFetch = null;
+            cts.Dispose();
             StateChanged?.Invoke();
         }
+    }
+
+    /// <summary>Cancel the current in-flight skim (if any). No-op
+    /// when nothing is loading. Wired to the Cancel button in the
+    /// address bar; also fires on Surfer shutdown if the
+    /// <see cref="SkimSession"/> instance is disposed.</summary>
+    public void CancelCurrent()
+    {
+        _currentFetch?.Cancel();
     }
 
     /// <summary>Pop the most recent history entry and re-navigate to

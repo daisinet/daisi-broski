@@ -1,0 +1,158 @@
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+@* Interactive sidebar + appbar + theme provider for the admin
+   shell. Lives as a sibling of @Body in MainLayout so the
+   layout itself stays static — RenderFragments can't cross
+   the interactive boundary, but standalone interactive
+   siblings can. MudThemeProvider applies CSS variables
+   globally, so it doesn't need to wrap @Body to take effect. *@
+
+<MudThemeProvider Theme="_theme" IsDarkMode="_isDarkMode" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<style>
+    .broski-sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 1300;
+        width: @(_drawerOpen ? "240px" : "56px");
+        background: #14141c; color: #ccc;
+        transition: width 0.2s ease;
+        display: flex; flex-direction: column;
+        overflow: hidden;
+        border-right: 1px solid rgba(255,255,255,0.06);
+    }
+    .broski-sidebar-header {
+        height: 64px; display: flex; align-items: center;
+        padding: 0 @(_drawerOpen ? "16px" : "0");
+        justify-content: @(_drawerOpen ? "space-between" : "center");
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .broski-sidebar .mud-nav-link { color: #adb5bd !important; justify-content: @(_drawerOpen ? "flex-start" : "center"); padding: @(_drawerOpen ? "8px 16px" : "8px 0"); }
+    .broski-sidebar .mud-nav-link:hover { background: rgba(255,255,255,0.06) !important; color: #fff !important; }
+    .broski-sidebar .mud-nav-link.active { background: rgba(247,140,29,0.18) !important; color: #f78c1d !important; }
+    .broski-sidebar .mud-nav-link .mud-icon-root { color: inherit !important; }
+    .broski-sidebar .mud-navmenu { padding: @(_drawerOpen ? "8px" : "8px 0"); }
+    .broski-sidebar .mud-divider { border-color: rgba(255,255,255,0.1) !important; }
+    .broski-sidebar .mud-nav-link .mud-nav-link-text { display: @(_drawerOpen ? "inline" : "none"); }
+    .broski-sidebar-footer { padding: 8px; display: flex; justify-content: center; border-top: 1px solid rgba(255,255,255,0.08); }
+    .broski-appbar {
+        position: fixed; top: 0; right: 0; height: 64px; z-index: 1200;
+        left: @(_drawerOpen ? "240px" : "56px");
+        transition: left 0.2s ease;
+        display: flex; align-items: center; padding: 0 16px;
+        background: var(--mud-palette-surface); color: var(--mud-palette-text-primary);
+        border-bottom: 1px solid var(--mud-palette-divider);
+    }
+    .broski-main {
+        margin-left: @(_drawerOpen ? "240px" : "56px");
+        margin-top: 64px;
+        transition: margin-left 0.2s ease;
+        padding: 24px;
+        min-height: calc(100vh - 64px);
+        background: var(--mud-palette-background);
+        color: var(--mud-palette-text-primary);
+    }
+</style>
+
+<div class="broski-sidebar">
+    <div class="broski-sidebar-header">
+        @if (_drawerOpen)
+        {
+            <div class="d-flex align-center gap-2">
+                <img src="img/daisi-logo-color-white.svg" alt="Daisi" style="height: 22px;" />
+                <span style="font-family: 'Anta', sans-serif; font-size: 1.1rem; color: #f78c1d; letter-spacing: 0.08em;">BROSKI</span>
+            </div>
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Size="Size.Small"
+                           Style="color: #adb5bd;" OnClick="ToggleDrawer" />
+        }
+        else
+        {
+            <MudIconButton Icon="@Icons.Material.Filled.Menu" Size="Size.Small"
+                           Style="color: #adb5bd;" OnClick="ToggleDrawer" />
+        }
+    </div>
+    <MudNavMenu Dense="true">
+        <MudNavLink Href="/admin" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">Dashboard</MudNavLink>
+        <MudNavLink Href="/admin/keys" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key">API keys</MudNavLink>
+        <MudNavLink Href="/admin/usage" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BarChart">Usage</MudNavLink>
+        <MudDivider Class="my-2" />
+        <MudNavLink Href="/docs" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.MenuBook">API docs</MudNavLink>
+        <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Public">Public site</MudNavLink>
+    </MudNavMenu>
+    <div style="flex: 1;"></div>
+    <div class="broski-sidebar-footer">
+        <MudTooltip Text="@(_isDarkMode ? "Switch to light mode" : "Switch to dark mode")" Placement="Placement.Top">
+            <MudIconButton Icon="@(_isDarkMode ? Icons.Material.Filled.LightMode : Icons.Material.Filled.DarkMode)"
+                           Style="color: #adb5bd;" OnClick="ToggleDarkMode" Size="Size.Small" />
+        </MudTooltip>
+    </div>
+</div>
+
+<div class="broski-appbar">
+    <MudSpacer />
+    @if (!string.IsNullOrEmpty(UserName))
+    {
+        <MudText Typo="Typo.body2" Class="mr-2">@UserName</MudText>
+    }
+    <MudTooltip Text="Sign out" Placement="Placement.Bottom">
+        <MudIconButton Icon="@Icons.Material.Filled.Logout" OnClick="Logout" />
+    </MudTooltip>
+</div>
+
+@code {
+    [Parameter] public string UserName { get; set; } = "";
+
+    bool _drawerOpen = true;
+    bool _isDarkMode = true;
+
+    MudTheme _theme = new()
+    {
+        PaletteLight = new PaletteLight()
+        {
+            Primary = "#f78c1d",
+            Secondary = "#424242",
+            AppbarBackground = "#ffffff",
+            AppbarText = "#1a1a22",
+        },
+        PaletteDark = new PaletteDark()
+        {
+            Primary = "#f78c1d",
+            Secondary = "#ce93d8",
+            Background = "#0a0a10",
+            Surface = "#111118",
+            AppbarBackground = "#14141c",
+            AppbarText = "#e6edf3",
+        }
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var stored = await JS.InvokeAsync<string?>("localStorage.getItem", "broski.dark");
+                if (bool.TryParse(stored, out var dark) && dark != _isDarkMode)
+                {
+                    _isDarkMode = dark;
+                    StateHasChanged();
+                }
+            }
+            catch { }
+        }
+    }
+
+    async Task ToggleDarkMode()
+    {
+        _isDarkMode = !_isDarkMode;
+        try { await JS.InvokeVoidAsync("localStorage.setItem", "broski.dark", _isDarkMode.ToString()); }
+        catch { }
+    }
+
+    void ToggleDrawer() => _drawerOpen = !_drawerOpen;
+
+    void Logout() => Nav.NavigateTo("/account/logout", true);
+}

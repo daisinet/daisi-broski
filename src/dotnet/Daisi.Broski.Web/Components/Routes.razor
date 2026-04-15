@@ -1,0 +1,23 @@
+@* Standard Blazor Router. DefaultLayout fires for every page
+   that doesn't specify its own @layout directive — /welcome
+   opts into PublicLayout explicitly; /admin/* pages inherit
+   MainLayout. *@
+
+<Router AppAssembly="@typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(Layout.PublicLayout)" />
+        @* Intentionally no <FocusOnNavigate>: it draws the
+           browser's focus ring on the first <h1> after every
+           route change, which looks like a "highlight" on the
+           page heading. Screen readers still announce the page
+           change because MudLayout / PublicLayout flip the
+           <title> and the URL via the router's default
+           behavior. *@
+    </Found>
+    <NotFound>
+        <LayoutView Layout="@typeof(Layout.PublicLayout)">
+            <h1>Not found</h1>
+            <p>That page doesn't exist.</p>
+        </LayoutView>
+    </NotFound>
+</Router>
