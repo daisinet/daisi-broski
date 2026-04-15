@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Ipc\Daisi.Broski.Ipc.csproj" />
     <!-- Skimmer CLI optionally drives the sandboxed session so
          `daisi-broski-skim` gets the same Job-Object isolation as
          the top-level `daisi-broski` CLI. The Skimmer library itself
