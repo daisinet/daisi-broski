@@ -7,6 +7,9 @@
     <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski.Docs\Daisi.Broski.Docs.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Default sans-serif font used when no @font-face
          match is available — Roboto Regular (Apache 2.0).
          Embedded so renders from arbitrary sites have real

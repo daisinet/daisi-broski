@@ -310,6 +310,34 @@ At this point daisi-broski is a real browser engine, not just a headless DOM run
 - Stroke-to-path conversion for thick SVG strokes (current Bresenham brush is fine ≤ 3px).
 - ~~Mixed inline + block content~~ — shipped in 6as.
 
+## Phase 8 — Non-HTML doc conversion (docx / xlsx / pdf)
+
+**Goal:** let `daisi-broski-skim` handle direct links to Word, Excel, and PDF files through the same `--format json|md|both|html` CLI, with no format-specific branching above the converter layer. See [DD-06](design-decisions.md#dd-06--doc-conversion-representation-and-bcl-only-pdf) for the design rationale.
+
+**Architecture.** New `Daisi.Broski.Docs` project. `DocDispatcher.TryConvert(body, contentType, url, out html)` routes on Content-Type → magic bytes → URL suffix, short-circuits `PageLoader`'s HTML-decode path, and substitutes a synthetic article HTML string that feeds back through the existing `HtmlTreeBuilder → ContentExtractor → MarkdownFormatter / JsonFormatter` pipeline unchanged.
+
+### Milestone table
+
+| # | Status | Scope |
+|---|---|---|
+| M1 | ✅ | Dispatch framework + DocxConverter + XlsxConverter + PDF stub (identified-but-unsupported shell) |
+| M2 | ✅ | Real PDF parser — lexer, parser, traditional xref, FlateDecode + PNG predictor, simple fonts (Standard/WinAnsi/MacRoman + Differences + AGL), text extractor, document facade |
+| M3 | ✅ | Modern-PDF — cross-ref streams, object streams, ASCIIHex/ASCII85/LZW/RunLength filters, ToUnicode CMap parser, composite Type 0 / CID fonts |
+| M4 | ✅ | Standard Security decryption (V1/V2 RC4, V4 AES-128, empty password), CTM tracking, positioned text runs, layout analyzer, markdown table output |
+| M4 addendum | ✅ | Full Tm/Tlm affine-matrix model + glyph-advance via `/Widths` and `/W` — makes text land at true visual x so cluster-based table detection works on accessibility-tagged PDFs |
+| M5 | ✅ | Multi-line header-row consolidation — leading sparse rows with tight y-spacing merge into one header row until a full row is reached; W3C WCAG PDF renders as a single clean header + 4 data rows |
+| M6 | ✅ | Leading caption-row split + whole-table fullness check — a sparse (≤2 cells) leading row separated by > line-height from a wider next row splits off as a pre-table paragraph ("Table 1" no longer shows up inside the table body); and tables where no row has near-full column coverage get rejected so title-page runs don't become false-positive grids |
+| M7 | ✅ | Fuzzing extension to PDF lexer / parser / xref / CMap / filters — 8 new fact tests against the `FuzzingTests` harness. Found and fixed 4 real hardening bugs: lexer stall on stray delimiters, lexer throw on degenerate numeric tokens, lexer throw on integer overflow, LZW unbounded output on hostile input. Also made `PdfCMap.Parse` swallow malformed-input exceptions silently, matching its best-effort design |
+| M8 | ✅ | PDF image extraction — new `PdfPage.GetImages()` walks `/Resources/XObject`, filters to `/Subtype /Image` + `/Filter /DCTDecode`. JPEG-only scope (DCTDecode's raw stream bytes are directly a JPEG file, no encoder needed). Emitted as `data:image/jpeg;base64,…` URIs in the synthetic HTML — first image becomes `og:image` → `article.HeroImage`, all images land in `article.Images` via the existing `<img>` walker |
+| M9 | ✅ | PDF inline hyperlinks — `PdfPage.GetLinkAnnotations()` walks `/Annots`, filters to `/Subtype /Link` with a `/A /S /URI` action. The converter overlays the annotation rects on extracted text runs; runs whose baseline-left falls inside a rect get their `Href` set. The layout analyzer pre-renders cells as escaped HTML with `<a href="…">…</a>` wrappers around linked runs. End result: markdown output gets inline `[text](url)` syntax and the JSON's `links[]` array populates automatically via the existing `ContentExtractor` image/link walker |
+| — | ⏳ | Layout heuristic tuning driven by more real-world PDFs |
+| — | ⏳ | Predefined CMap tables (GBK-EUC-H, UniJIS-H, ...) for CJK fonts without `/ToUnicode` |
+| — | ⏳ | Non-empty-password decryption + CLI `--password` knob |
+
+**Explicitly out of scope:** form fields, annotations, digital signatures, scanned-PDF OCR. (Image extraction moved in-scope as of M8 — JPEG only; FlateDecode-compressed raw pixels, JPEG2000, and CCITTFax would need encoders we don't ship.)
+
+**Running test count:** 2212/2212.
+
 ## Phase 7 — Performance
 
 - Bytecode VM optimizations: inline caches, shape-based property access, constant folding.

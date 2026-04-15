@@ -1,0 +1,154 @@
+@page "/admin/keys"
+@layout MainLayout
+@rendermode RenderMode.InteractiveServer
+@inject Daisi.Broski.Web.Services.ApiKeyService Keys
+@inject IHttpContextAccessor HttpContextAccessor
+@inject ISnackbar Snackbar
+
+<PageTitle>API keys · daisi-broski-skim admin</PageTitle>
+
+<MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween"
+          Class="mb-4">
+    <MudText Typo="Typo.h4">API keys</MudText>
+    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Add" OnClick="OpenCreate">
+        Create key
+    </MudButton>
+</MudStack>
+
+@if (_newRawToken is not null)
+{
+    <MudAlert Severity="Severity.Warning" Class="mb-4" ShowCloseIcon="true"
+              CloseIconClicked="() => _newRawToken = null">
+        <MudText Typo="Typo.body1"><b>Copy this token now — it won't be shown again.</b></MudText>
+        <MudText Typo="Typo.body2" Class="mt-1">
+            <code style="word-break: break-all;">@_newRawToken</code>
+        </MudText>
+    </MudAlert>
+}
+
+@if (_loading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+}
+else if (_keys.Count == 0)
+{
+    <MudAlert Severity="Severity.Info">
+        You haven't created any API keys yet. Click <b>Create key</b> to make one
+        for the <code>/api/v1/skim</code> endpoint.
+    </MudAlert>
+}
+else
+{
+    <MudTable Items="_keys" Hover="true" Bordered="false" Striped="false"
+              Elevation="1">
+        <HeaderContent>
+            <MudTh>Name</MudTh>
+            <MudTh>Prefix</MudTh>
+            <MudTh>Created</MudTh>
+            <MudTh>Last used</MudTh>
+            <MudTh>Expires</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@context.Name</MudTd>
+            <MudTd><code>@context.TokenPrefix…</code></MudTd>
+            <MudTd>@context.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</MudTd>
+            <MudTd>
+                @(context.LastUsedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+            </MudTd>
+            <MudTd>
+                @(context.ExpiresUtc?.ToLocalTime().ToString("yyyy-MM-dd") ?? "never")
+            </MudTd>
+            <MudTd>
+                <MudButton Variant="Variant.Text" Color="Color.Error" Size="Size.Small"
+                           OnClick="@(() => RevokeAsync(context))">Revoke</MudButton>
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+<MudDialog @bind-Visible="_createOpen" Options="@(new DialogOptions
+           { CloseButton = true, MaxWidth = MaxWidth.Small, FullWidth = true })">
+    <TitleContent>Create API key</TitleContent>
+    <DialogContent>
+        <MudTextField @bind-Value="_newName" Label="Label"
+                      Placeholder="laptop, CI pipeline, …"
+                      HelperText="A human-readable name so you can tell your keys apart."
+                      Immediate="true" />
+        <MudDatePicker Label="Expires (optional)" @bind-Date="_newExpires"
+                       Class="mt-4" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="() => _createOpen = false">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@string.IsNullOrWhiteSpace(_newName)"
+                   OnClick="CreateAsync">Create</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private List<Data.ApiKey> _keys = new();
+    private bool _loading = true;
+    private bool _createOpen;
+    private string _newName = "";
+    private DateTime? _newExpires;
+    private string? _newRawToken;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            var (accountId, userId, _) = CurrentUser();
+            if (accountId is null || userId is null) { _keys = new(); return; }
+            _keys = await Keys.ListKeysAsync(accountId, userId);
+        }
+        finally { _loading = false; }
+    }
+
+    private void OpenCreate()
+    {
+        _newName = "";
+        _newExpires = null;
+        _createOpen = true;
+    }
+
+    private async Task CreateAsync()
+    {
+        var (accountId, userId, userName) = CurrentUser();
+        if (accountId is null || userId is null) return;
+        var (_, raw) = await Keys.CreateKeyAsync(
+            accountId, userId, userName ?? "", _newName.Trim(),
+            _newExpires is null ? null : DateTime.SpecifyKind(
+                _newExpires.Value, DateTimeKind.Utc));
+        _newRawToken = raw;
+        _createOpen = false;
+        await RefreshAsync();
+        Snackbar.Add("API key created", Severity.Success);
+    }
+
+    private async Task RevokeAsync(Data.ApiKey key)
+    {
+        var (accountId, _, _) = CurrentUser();
+        if (accountId is null) return;
+        await Keys.RevokeKeyAsync(key.id, accountId, key.UserId);
+        await RefreshAsync();
+        Snackbar.Add($"Revoked {key.Name}", Severity.Info);
+    }
+
+    private (string? accountId, string? userId, string? userName) CurrentUser()
+    {
+        var u = HttpContextAccessor.HttpContext?.User;
+        if (u is null) return (null, null, null);
+        return (
+            u.FindFirst(System.Security.Claims.ClaimTypes.GroupSid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Sid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value);
+    }
+}

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Daisi.Broski.Web</RootNamespace>
+    <AssemblyName>daisi-broski-web</AssemblyName>
+    <!-- Shares the daisi-git dev secrets store so the Cosmos
+         connection string + SSO signing key don't need to be
+         duplicated across projects. Dev machines run both
+         apps against the same Cosmos dev database. -->
+    <UserSecretsId>daisigit-web-2026</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MudBlazor" Version="8.15.0" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.58.0" />
+    <!-- Cosmos SDK 3.58 enforces an explicit Newtonsoft reference
+         at build time (see Microsoft.Azure.Cosmos.targets). We
+         exclude compile assets so product code can't accidentally
+         take a direct dependency on it — the DLL still lands in
+         bin/ for Cosmos's internal reflection. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" ExcludeAssets="compile" PrivateAssets="none" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <!-- Daisi SDK (peer repo) for SSO + API bearer auth. -->
+    <ProjectReference Include="..\..\..\..\daisi-sdk-dotnet\Daisi.SDK\Daisi.SDK.csproj" />
+    <ProjectReference Include="..\..\..\..\daisi-sdk-dotnet\Daisi.SDK.Web\Daisi.SDK.Web.csproj" />
+  </ItemGroup>
+
+</Project>

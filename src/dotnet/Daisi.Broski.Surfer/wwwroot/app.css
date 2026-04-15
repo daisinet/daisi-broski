@@ -55,7 +55,8 @@ html, body {
 }
 
 .address-bar .back-btn,
-.address-bar .go-btn {
+.address-bar .go-btn,
+.address-bar .cancel-btn {
     padding: 6px 14px;
     border: 1px solid #d0d7de;
     border-radius: 6px;
@@ -66,9 +67,12 @@ html, body {
 }
 .address-bar .back-btn { font-size: 18px; padding: 4px 10px; }
 .address-bar .back-btn:hover:not([disabled]),
-.address-bar .go-btn:hover:not([disabled]) { background: #eef2f6; }
+.address-bar .go-btn:hover:not([disabled]),
+.address-bar .cancel-btn:hover { background: #eef2f6; }
 .address-bar .go-btn { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 .address-bar .go-btn:hover:not([disabled]) { background: #1858c4; }
+.address-bar .cancel-btn { background: #da3633; color: #fff; border-color: #da3633; }
+.address-bar .cancel-btn:hover { background: #b7292a; }
 .address-bar button[disabled] { opacity: 0.4; cursor: not-allowed; }
 
 .address-bar input.url {

@@ -1,0 +1,25 @@
+@inherits LayoutComponentBase
+@inject IHttpContextAccessor HttpContextAccessor
+
+@* Authenticated admin shell. Stays static-rendered so the
+   @Body RenderFragment can flow through (RenderFragments
+   can't cross the interactive boundary). The interactive
+   chrome — MudThemeProvider, sidebar, appbar, dark-mode
+   toggle — lives in AdminChrome as a sibling component
+   that self-declares @rendermode InteractiveServer. *@
+
+<AdminChrome UserName="@_userName" />
+
+<div class="broski-main">
+    @Body
+</div>
+
+@code {
+    private string _userName = "";
+
+    protected override void OnInitialized()
+    {
+        _userName = HttpContextAccessor.HttpContext?.User
+            ?.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "";
+    }
+}
