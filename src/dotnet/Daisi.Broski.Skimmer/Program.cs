@@ -105,12 +105,14 @@ public static class Program
 
         try
         {
+#if WINDOWS_BUILD
             if (useSandbox && OperatingSystem.IsWindows())
             {
                 return await SkimInSandbox(
                     url, scriptingEnabled, userAgent, maxRedirects,
                     format, outPath, quiet);
             }
+#endif
 
             var fetcher = new HttpFetcherOptions
             {
@@ -147,6 +149,7 @@ public static class Program
         }
     }
 
+#if WINDOWS_BUILD
     /// <summary>Sandboxed skim path — the entire
     /// fetch+parse+JS+extract pipeline runs in
     /// <c>Daisi.Broski.Sandbox.exe</c> under a Win32 Job Object.
@@ -313,6 +316,7 @@ public static class Program
             NavLinks = nav,
         };
     }
+#endif
 
     /// <summary>Render the article in the requested format(s) and
     /// write to <paramref name="outPath"/> (or stdout when null).
