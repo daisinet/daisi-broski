@@ -1,0 +1,116 @@
+@* Public marketing landing. Reachable at / and /welcome so
+   SSO-first users and typed URLs both land here. Container-
+   aligned grid matches the CRM's PublicLayout conventions —
+   Bootstrap 5.3.3 is loaded in the layout. *@
+
+@page "/"
+@page "/welcome"
+@layout PublicLayout
+
+<PageTitle>daisi-broski-skim · article extraction API</PageTitle>
+
+<section class="hero-section">
+    <div class="container">
+        <div class="hero-grid">
+            <div class="hero-copy">
+                <span class="hero-kicker">daisi-broski-skim</span>
+                <h1 class="hero-title">URL in. Clean article out.</h1>
+                <p class="hero-lede">
+                    A production-grade content extraction API for Markdown,
+                    JSON, and reader-mode HTML. Feed it any public URL and
+                    get back the article body, metadata, inline links,
+                    hero image, and tables — without a browser or a
+                    headless Chrome. Works on HTML pages, Word documents,
+                    Excel workbooks, and PDFs.
+                </p>
+                <div class="hero-cta-row">
+                    <a href="/admin" class="btn-cta-primary">Get an API key</a>
+                    <a href="/docs" class="btn-cta-secondary">View API docs</a>
+                </div>
+            </div>
+            <aside class="hero-sample" aria-label="Sample Markdown output">
+                <div class="hero-sample-chrome">
+                    <span class="dot red"></span>
+                    <span class="dot amber"></span>
+                    <span class="dot green"></span>
+                    <span class="hero-sample-label">output.md</span>
+                </div>
+<pre class="hero-sample-body"><code><span class="md-h"># JavaScript - Wikipedia</span>
+
+on _en.wikipedia.org_ • <span class="md-link">[source]</span>
+
+JavaScript (/ˈdʒɑːvəskrɪpt/), often abbreviated as JS, is a
+programming language and core technology of the Web...
+
+<span class="md-h2">## History</span>
+
+### Creation at Netscape
+...</code></pre>
+            </aside>
+        </div>
+    </div>
+</section>
+
+<section class="features-section">
+    <div class="container">
+        <h2 class="section-title">What you get</h2>
+        <p class="section-subtitle">
+            Every skim returns the same structured payload,
+            ready to render or index.
+        </p>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">📝</div>
+                <h3>Article body</h3>
+                <p>Readability-style scoring identifies the main content
+                root and strips the navigation, ads, and comment rails.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🏷️</div>
+                <h3>Metadata</h3>
+                <p>Title, byline, published date, language, site name,
+                and description — merged from Open Graph, Twitter
+                cards, JSON-LD, and semantic HTML.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🔗</div>
+                <h3>Inline links</h3>
+                <p>Hyperlinks flow through from HTML anchors AND from
+                PDF <code>/Link</code> annotations, landing in
+                <code>article.Links</code> with their anchor text.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🖼️</div>
+                <h3>Hero image</h3>
+                <p>Open Graph image, Twitter card image, or the first
+                in-body image. JPEG XObjects inside PDFs surface too.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h3>Real tables</h3>
+                <p>HTML tables, docx / xlsx tables, and PDF
+                coordinate-grid tables all render as Markdown pipe
+                tables with merged-header consolidation.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📄</div>
+                <h3>Docs &amp; PDFs</h3>
+                <p>The same API unpacks Word documents via OOXML,
+                Excel workbooks as per-sheet tables, and PDFs with
+                encryption + CID fonts via a from-scratch BCL-only
+                parser.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="cta-section">
+    <div class="container">
+        <h2>Ready to ship?</h2>
+        <p>Create a key, paste the curl example, get JSON back. Takes a minute.</p>
+        <div class="hero-cta-row">
+            <a href="/admin" class="btn-cta-primary">Get an API key</a>
+            <a href="/docs" class="btn-cta-secondary">Read the docs</a>
+        </div>
+    </div>
+</section>

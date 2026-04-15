@@ -1,0 +1,123 @@
+@page "/docs"
+@layout PublicLayout
+
+<PageTitle>API docs · daisi-broski-skim</PageTitle>
+
+<section class="docs-section">
+    <div class="container docs-container">
+        <h1 class="docs-title">API reference</h1>
+        <p class="docs-lede">
+            The <code>/api/v1/skim</code> endpoint takes a URL and returns
+            an article in the format you ask for. Authenticate with a
+            personal access token you create on the
+            <a href="/admin/keys">keys page</a>.
+        </p>
+
+        <h2 id="auth">Authentication</h2>
+        <p>
+            Every call to <code>/api/v1/skim</code> needs a key. Pass it
+            any of three ways:
+        </p>
+        <ul>
+            <li><code>X-Api-Key: db_...</code> (header)</li>
+            <li><code>Authorization: Bearer db_...</code> (header)</li>
+            <li><code>?api_key=db_...</code> (query string — handy for
+                browser-address-bar GETs; keep in mind URLs land in
+                server logs, so prefer headers for production)</li>
+        </ul>
+        <p>
+            Keys are SHA-256 hashed on the server — only the 7-char
+            prefix is recoverable after creation. Revoke a key from the
+            admin UI at any time; the next call using it returns
+            <code>401 Unauthorized</code>.
+        </p>
+
+        <h2 id="skim">POST /api/v1/skim</h2>
+        <p>Request body (JSON):</p>
+<pre class="docs-code"><code>{
+  "url":       "https://en.wikipedia.org/wiki/JavaScript",
+  "format":    "json" | "md" | "markdown" | "html",
+  "scripting": true
+}</code></pre>
+
+        <p>curl (Markdown out):</p>
+<pre class="docs-code"><code>curl -X POST https://broski.daisi.ai/api/v1/skim \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer db_YOUR_KEY_HERE" \
+  -d '{"url":"https://en.wikipedia.org/wiki/JavaScript","format":"md"}'</code></pre>
+
+        <h2 id="skim-get">GET /api/v1/skim</h2>
+        <p>
+            Same service, query-string arguments. Every field of the
+            POST body maps to a query param of the same name. Pass the
+            API key as <code>api_key</code> or via the usual headers.
+        </p>
+<pre class="docs-code"><code>GET https://broski.daisi.ai/api/v1/skim?url=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FJavaScript
+    &amp;format=md&amp;scripting=true&amp;api_key=db_YOUR_KEY_HERE</code></pre>
+        <p>curl:</p>
+<pre class="docs-code"><code>curl "https://broski.daisi.ai/api/v1/skim?url=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FJavaScript&amp;format=md" \
+  -H "Authorization: Bearer db_YOUR_KEY_HERE"</code></pre>
+
+        <p>Response (200, <code>text/markdown</code>):</p>
+<pre class="docs-code"><code># JavaScript - Wikipedia
+
+on _en.wikipedia.org_ • [source](https://en.wikipedia.org/wiki/JavaScript)
+
+JavaScript (/ˈdʒɑːvəskrɪpt/), often abbreviated as JS, is a
+programming language and core technology of the Web...</code></pre>
+
+        <h2 id="format">Response format</h2>
+        <p>Pick your output with the <code>format</code> field:</p>
+        <ul>
+            <li><code>json</code> (default) — structured <code>ArticleContent</code>
+                with <code>title</code>, <code>byline</code>, <code>publishedAt</code>,
+                <code>lang</code>, <code>siteName</code>, <code>description</code>,
+                <code>heroImage</code>, <code>plainText</code>, <code>images[]</code>,
+                <code>links[]</code>, <code>navLinks[]</code>.</li>
+            <li><code>md</code> / <code>markdown</code> — CommonMark with inline
+                links, tables, and hero-image reference.</li>
+            <li><code>html</code> — reader-mode HTML, just the article subtree.</li>
+        </ul>
+
+        <h2 id="scripting">The scripting flag</h2>
+        <p>
+            When <code>scripting</code> is <code>true</code> (the default),
+            the engine executes the page's inline + external scripts before
+            extraction. This is required for SPAs (Next.js, Nuxt, Remix)
+            where the interesting content is client-rendered. Set it to
+            <code>false</code> for static-HTML pages — it's both faster and
+            more deterministic.
+        </p>
+
+        <h2 id="errors">Error responses</h2>
+        <dl class="docs-dl">
+            <dt><code>400 Bad Request</code></dt>
+            <dd>Missing or malformed <code>url</code>. Body is
+                <code>{ "error": "..." }</code>.</dd>
+            <dt><code>401 Unauthorized</code></dt>
+            <dd>No credentials, or a revoked / expired key.</dd>
+            <dt><code>502 Bad Gateway</code></dt>
+            <dd>Upstream fetch failed — DNS, TLS, the site refused, or the
+                content stream was malformed. Details in the
+                <code>application/problem+json</code> body.</dd>
+            <dt><code>499 Client Closed Request</code></dt>
+            <dd>The HTTP client disconnected mid-skim; the skim was
+                cancelled and nothing was billed.</dd>
+        </dl>
+
+        <h2 id="health">GET /api/v1/health</h2>
+        <p>
+            Unauthenticated heartbeat. Returns <code>200</code> with
+            <code>{ "status": "ok" }</code>. Use for uptime probes.
+        </p>
+
+        <h2 id="limits">Limits</h2>
+        <p>
+            Request body capped at 50 KiB; response streaming capped at
+            50 MiB per skim. PDFs that require features outside our
+            shipped scope (non-empty passwords, CID fonts without
+            <code>/ToUnicode</code>, image-only scans) return a short
+            article explaining the fallback — they don't 500.
+        </p>
+    </div>
+</section>

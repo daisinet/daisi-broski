@@ -1,0 +1,135 @@
+@page "/admin/usage"
+@layout MainLayout
+@rendermode RenderMode.InteractiveServer
+@inject Daisi.Broski.Web.Data.BroskiWebCosmo Cosmo
+@inject Daisi.Broski.Web.Services.ApiKeyService Keys
+@inject IHttpContextAccessor HttpContextAccessor
+
+<PageTitle>Usage · daisi-broski-skim admin</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Usage</MudText>
+
+@if (_loading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" />
+}
+else
+{
+    <MudText Typo="Typo.h6" Class="mb-2">Per-key totals</MudText>
+    <MudTable Items="_perKey" Elevation="1" Class="mb-6" Hover="true">
+        <HeaderContent>
+            <MudTh>Key</MudTh>
+            <MudTh>Prefix</MudTh>
+            <MudTh>Calls</MudTh>
+            <MudTh>Last call</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@context.Name</MudTd>
+            <MudTd><code>@context.Prefix…</code></MudTd>
+            <MudTd>@context.Calls</MudTd>
+            <MudTd>
+                @(context.LastCall?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+
+    <MudText Typo="Typo.h6" Class="mb-2">Recent calls</MudText>
+    @if (_recent.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">
+            No skim requests recorded yet. Make a call with one of your API keys
+            — it'll show up here within a few seconds.
+        </MudAlert>
+    }
+    else
+    {
+        <MudTable Items="_recent" Elevation="1" Hover="true" Dense="true">
+            <HeaderContent>
+                <MudTh>When</MudTh>
+                <MudTh>Host</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh>Duration</MudTh>
+                <MudTh>Bytes</MudTh>
+                <MudTh>Key</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd>@context.TimestampUtc.ToLocalTime().ToString("HH:mm:ss")</MudTd>
+                <MudTd>@context.UrlHost</MudTd>
+                <MudTd>
+                    <MudChip T="string" Size="Size.Small"
+                             Color="@StatusColor(context.Status)">
+                        @context.Status
+                    </MudChip>
+                </MudTd>
+                <MudTd>@context.DurationMs ms</MudTd>
+                <MudTd>@FormatBytes(context.ResponseBytes)</MudTd>
+                <MudTd>@KeyLabelFor(context.KeyId)</MudTd>
+            </RowTemplate>
+        </MudTable>
+    }
+}
+
+@code {
+    private bool _loading = true;
+    private List<KeyRow> _perKey = new();
+    private List<Data.ApiKeyUsage> _recent = new();
+    private Dictionary<string, Data.ApiKey> _keysById = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loading = true;
+        try
+        {
+            var (accountId, userId, _) = CurrentUser();
+            if (accountId is null || userId is null) return;
+            // All the user's keys so we can show names + prefixes
+            // next to aggregate counts and recent-call rows.
+            var keys = await Keys.ListKeysAsync(accountId, userId);
+            _keysById = keys.ToDictionary(k => k.id);
+            var agg = await Cosmo.GetUsageAggregatesAsync(accountId, userId);
+            _perKey = keys.Select(k => new KeyRow(
+                k.Name,
+                k.TokenPrefix,
+                agg.TryGetValue(k.id, out var a) ? a.Calls : 0,
+                agg.TryGetValue(k.id, out var b) ? b.LastCall : null))
+                .OrderByDescending(r => r.Calls)
+                .ToList();
+            _recent = await Cosmo.GetRecentUsageAsync(accountId, userId, top: 100);
+        }
+        finally { _loading = false; }
+    }
+
+    private static Color StatusColor(int status) => status switch
+    {
+        >= 200 and < 300 => Color.Success,
+        >= 400 and < 500 => Color.Warning,
+        _ => Color.Error,
+    };
+
+    private static string FormatBytes(long bytes) =>
+        bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+            _ => $"{bytes / (1024.0 * 1024.0):F2} MB",
+        };
+
+    private string KeyLabelFor(string keyId)
+    {
+        return _keysById.TryGetValue(keyId, out var k)
+            ? k.Name : keyId;
+    }
+
+    private (string? accountId, string? userId, string? userName) CurrentUser()
+    {
+        var u = HttpContextAccessor.HttpContext?.User;
+        if (u is null) return (null, null, null);
+        return (
+            u.FindFirst(System.Security.Claims.ClaimTypes.GroupSid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Sid)?.Value,
+            u.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value);
+    }
+
+    private readonly record struct KeyRow(
+        string Name, string Prefix, int Calls, DateTime? LastCall);
+}
