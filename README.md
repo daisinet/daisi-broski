@@ -82,6 +82,49 @@ $ daisi-broski-skim https://example.com/whitepaper.pdf --format md --quiet
 
 Everything runs BCL-only — no third-party NuGet packages. OOXML (docx, xlsx) unpacks via `System.IO.Compression.ZipArchive` + `System.Xml.XmlReader`. PDF parsing is a from-scratch implementation of the PDF 1.7 spec §7 — a hand-rolled lexer, indirect-object parser, traditional + PDF 1.5+ cross-reference-stream readers, object-stream (`/Type /ObjStm`) expansion, five filters (`FlateDecode` with PNG-predictor support, `ASCIIHexDecode`, `ASCII85Decode`, `LZWDecode`, `RunLengthDecode`), a full `/ToUnicode` CMap parser (codespaceranges, bfchar, bfrange), and a content-stream interpreter for the text-showing operator set (`BT`/`ET`/`Tf`/`Tj`/`TJ`/`'`/`"`/`Td`/`TD`/`Tm`/`T*`) with CTM (`q`/`Q`/`cm`) tracking so every run's position is captured in a single consistent user-space frame. Font decoding covers both simple fonts (Type1/TrueType with `StandardEncoding` / `WinAnsiEncoding` / `MacRomanEncoding` + `/Differences` overlays, routed through an Adobe Glyph List table to Unicode) and composite Type 0 / CID fonts with 2-byte codes driven by the embedded `/ToUnicode` CMap. **Encryption** support handles the Adobe Standard Security Handler in V1 (RC4-40), V2 (RC4-128), and V4 (AES-128 via `/CFM /AESV2`) — the empty-user-password case, which is what Office, Adobe, and most enterprise doc-management systems produce by default when an author sets permissions without a real password. RC4 is inlined; AES uses the BCL. **Layout reconstruction**: positioned text runs flow through a layout analyzer (`PdfLayoutAnalyzer`) that clusters by y into rows, 1-D-linkage-clusters x-positions into column anchors, and emits markdown tables when it finds a rectangular grid of ≥3 rows / ≥2 columns with substantive content. This covers what Word 2016+, Chrome's PDF printer, LaTeX (including CJK content via CID fonts), Google Docs, and password-"protected" Office exports actually emit. **Known limitations:** tight-column two-column "actor : role" lists may fall inside our cluster tolerance and render as paragraphs instead of tables; composite fonts that rely on a predefined CMap (e.g., `GBK-EUC-H`) without shipping their own `/ToUnicode` produce empty text for their runs; and non-empty-password encryption needs a user-provided password which isn't yet wired through the CLI. See [docs/roadmap.md](docs/roadmap.md) for remaining work and [docs/design-decisions.md §DD-06](docs/design-decisions.md#dd-06--doc-conversion-representation-and-bcl-only-pdf) for the architecture.
 
+### `Daisi.Broski.Gofer` — parallel crawler library
+
+`Gofer` is a library crawler built for LLM-research pipelines. Give it a seed URL (or a list), it walks the site in parallel across N workers, and hands you back a stream of `GoferResult` records — each one has the page's URL, title, byline, description, out-links, the article body as markdown, and plain text. Three output sinks ship in the box (JSONL file / console / null); implement `IGoferOutput` for anything else.
+
+```csharp
+var opts = new GoferOptions {
+    DegreeOfParallelism = 16,
+    MaxDepth = 2,
+    MaxPages = 500,
+    Output = new FileOutput("crawl.jsonl"),
+};
+opts.Headers["Authorization"] = "Bearer ...";       // headers ride on every request
+opts.Selectors.Add("article.post-body");            // honed content (optional)
+
+await using var gofer = new GoferCrawler(opts);
+gofer.PageScraped += (_, e) => Console.WriteLine($"{e.Result.Url} {e.Result.DurationMs}ms");
+await gofer.RunAsync(new Uri("https://example.com"));
+```
+
+Built on a single shared `HttpClient` + `Channel<T>` frontier + per-host politeness semaphore. Reuses the Engine's DOM + Skimmer's `ContentExtractor`/`MarkdownFormatter` so article extraction is the same quality you get from `daisi-broski-skim`. URL dedup strips fragments. Links outside the seed's host are ignored by default (toggle with `StayOnHost`).
+
+#### Multi-search + crawl
+
+Gofer also ships 14 search providers behind a single `ISearchProvider` interface — eight JSON APIs (Wikipedia, arXiv, GitHub, Hacker News, Stack Exchange, CrossRef, OpenLibrary, Reddit), three HTML SERPs (DuckDuckGo, Brave Search, Mojeek), and three news aggregators (GDELT, Guardian, Bing News RSS). The `SearchPipeline` runs the selected providers concurrently, dedupes the merged hit list by normalized URL, and feeds the winners straight into Gofer as seeds — one call, search + crawl, every page's markdown back in the result.
+
+```csharp
+// Pick any combination via the SearchSource flag enum.
+// Pre-composed bundles: Scholarly, Community, Web, News, All.
+var pipeline = SearchPipeline.FromSources(
+    SearchSource.Scholarly | SearchSource.News);   // wiki+arxiv+crossref+oldb + gdelt+guardian+bingnews
+
+var results = await pipeline.SearchAndCrawlAsync(
+    "quantum error correction",
+    new GoferOptions { DegreeOfParallelism = 8, PerHostDelay = TimeSpan.FromMilliseconds(100) },
+    perProviderLimit: 10,
+    maxCrawled: 20);
+
+foreach (var r in results)
+    Console.WriteLine($"[{r.Search?.Source}] {r.Crawl.Url} · {r.Crawl.Markdown.Length} chars");
+```
+
+Each `ISearchProvider` is usable on its own too — construct one directly if you only care about the hit list (no crawl) or want to feed URLs into a different consumer.
+
 ### `daisi-broski-surfer` — MAUI Blazor Hybrid reader app
 
 A native Windows desktop app (`Daisi.Broski.Surfer`, .NET MAUI Blazor Hybrid, target `net10.0-windows10.0.19041.0`) wraps the Skimmer in a UI: address bar at the top, four content views (Reader / Markdown / JSON / Links) toggleable on the right, back button that walks the visit history. Type a URL, hit Enter — the Surfer fetches it through the local broski engine, runs `ContentExtractor.Extract`, and renders the chosen view in a `BlazorWebView`. The Links view turns every extracted outbound link into a one-click in-app navigation.
@@ -125,6 +168,7 @@ daisi-broski/
 │   ├── Daisi.Broski.Docs/           ✅ docx / xlsx converters + dispatch (PDF stub, parser WIP)
 │   ├── Daisi.Broski.Skimmer/        ✅ daisi-broski-skim: article extractor (JSON / Markdown)
 │   ├── Daisi.Broski.Surfer/         ✅ daisi-broski-surfer: MAUI Blazor Hybrid reader app (Windows)
+│   ├── Daisi.Broski.Gofer/          ✅ Gofer: parallel crawler with selector honing + pluggable outputs
 │   ├── Daisi.Broski.slnx            Solution file
 │   └── tests/
 │       └── Daisi.Broski.Engine.Tests/ ✅ xunit.v3: 180 tests across Engine / Ipc / Sandbox / Cli

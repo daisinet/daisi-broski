@@ -29,5 +29,7 @@
     <!-- Skimmer is a library + CLI; tests consume the library types
          directly to exercise extraction without going through stdout. -->
     <ProjectReference Include="..\..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
+    <!-- Gofer: crawler end-to-end tests. -->
+    <ProjectReference Include="..\..\Daisi.Broski.Gofer\Daisi.Broski.Gofer.csproj" />
   </ItemGroup>
 </Project>
