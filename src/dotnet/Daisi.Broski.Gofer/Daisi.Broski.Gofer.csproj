@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Daisi.Broski.Gofer</RootNamespace>
+    <AssemblyName>Daisi.Broski.Gofer</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Engine for HtmlTreeBuilder + Dom + EncodingSniffer.
+         Skimmer for ContentExtractor + MarkdownFormatter — the
+         path that turns a page into LLM-ready content. -->
+    <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Daisi.Broski.Engine.Tests" />
+  </ItemGroup>
+</Project>
