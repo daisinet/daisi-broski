@@ -1,0 +1,19 @@
+{
+  "name": "@daisinet/broski-win32-x64",
+  "version": "0.1.0",
+  "description": "Windows x64 binary for @daisinet/broski. Pulled automatically by `npm install @daisinet/broski` on matching hosts; do not install directly.",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": [
+    "daisi-broski-skim.exe"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daisinet/daisi-broski.git",
+    "directory": "npm/platforms/win32-x64"
+  },
+  "license": "SEE LICENSE IN LICENSE"
+}
