@@ -179,26 +179,38 @@ html, body {
 .hero-sample-chrome {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.75rem 1rem;
-    background: #15151d;
+    justify-content: space-between;
+    padding: 0 0 0 0.9rem;
+    background: #1e1e1e;
     border-bottom: 1px solid var(--border);
+    height: 32px;
 }
-.hero-sample-chrome .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    display: inline-block;
-}
-.hero-sample-chrome .dot.red { background: #ff5f56; }
-.hero-sample-chrome .dot.amber { background: #ffbd2e; }
-.hero-sample-chrome .dot.green { background: #27c93f; }
 .hero-sample-label {
-    margin-left: 0.5rem;
-    color: var(--subtle);
-    font-size: 0.8rem;
-    font-family: 'SF Mono', Consolas, Menlo, monospace;
+    color: #cccccc;
+    font-size: 0.78rem;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    letter-spacing: 0.01em;
 }
+.win-btns {
+    display: inline-flex;
+    align-items: stretch;
+    height: 100%;
+}
+.win-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 100%;
+    color: #cccccc;
+    font-family: 'Segoe Fluent Icons', 'Segoe UI Symbol', system-ui, sans-serif;
+    font-size: 0.78rem;
+    line-height: 1;
+    user-select: none;
+}
+.win-btn.close { color: #e8e8e8; }
+.win-btn.close:hover { background: #c42b1c; color: #ffffff; }
+.win-btn:hover { background: #2d2d2d; }
 .hero-sample-body {
     margin: 0;
     padding: 1.25rem 1.5rem;
@@ -211,6 +223,8 @@ html, body {
 .hero-sample-body .md-h { color: var(--accent); font-weight: 700; }
 .hero-sample-body .md-h2 { color: #ffb870; font-weight: 700; }
 .hero-sample-body .md-link { color: #58a6ff; }
+.hero-sample-body .ps-prompt { color: #ffff00; font-weight: 600; }
+.hero-sample-body .ps-dim { color: #8a8a8a; }
 
 /* ==== FEATURES ==== */
 .features-section { padding: 5rem 0; }
