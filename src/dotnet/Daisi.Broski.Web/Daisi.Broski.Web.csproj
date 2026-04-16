@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
     <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
+    <ProjectReference Include="..\Daisi.Broski.Gofer\Daisi.Broski.Gofer.csproj" />
     <!-- Daisi SDK (peer repo) for SSO + API bearer auth. -->
     <ProjectReference Include="..\..\..\..\daisi-sdk-dotnet\Daisi.SDK\Daisi.SDK.csproj" />
     <ProjectReference Include="..\..\..\..\daisi-sdk-dotnet\Daisi.SDK.Web\Daisi.SDK.Web.csproj" />
