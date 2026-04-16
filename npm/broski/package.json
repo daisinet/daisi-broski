@@ -1,0 +1,44 @@
+{
+  "name": "@daisinet/broski",
+  "version": "0.1.0",
+  "description": "Extract clean article content from any URL (html, docx, xlsx, pdf) as JSON, Markdown, or reader-mode HTML.",
+  "bin": {
+    "broski": "bin/broski.js"
+  },
+  "main": "bin/broski.js",
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@daisinet/broski-linux-x64":    "0.1.0",
+    "@daisinet/broski-darwin-x64":   "0.1.0",
+    "@daisinet/broski-darwin-arm64": "0.1.0",
+    "@daisinet/broski-win32-x64":    "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daisinet/daisi-broski.git",
+    "directory": "npm/broski"
+  },
+  "homepage": "https://broski.daisi.ai",
+  "bugs": "https://github.com/daisinet/daisi-broski/issues",
+  "license": "SEE LICENSE IN LICENSE",
+  "keywords": [
+    "crawler",
+    "scraper",
+    "readability",
+    "article-extraction",
+    "markdown",
+    "pdf",
+    "docx",
+    "llm",
+    "ai",
+    "content-extraction"
+  ]
+}

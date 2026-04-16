@@ -1,0 +1,19 @@
+{
+  "name": "@daisinet/broski-darwin-arm64",
+  "version": "0.1.0",
+  "description": "macOS Apple Silicon (arm64) binary for @daisinet/broski. Pulled automatically by `npm install @daisinet/broski` on matching hosts; do not install directly.",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": [
+    "daisi-broski-skim"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daisinet/daisi-broski.git",
+    "directory": "npm/platforms/darwin-arm64"
+  },
+  "license": "SEE LICENSE IN LICENSE"
+}

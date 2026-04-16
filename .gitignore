@@ -430,3 +430,9 @@ src/Daisi.Llogos.WebGpu/test/*.gguf
 # Re-include it here so NativeMethods.cs and friends are tracked.
 !src/dotnet/Daisi.Broski/Win32/
 !src/dotnet/Daisi.Broski/Win32/**
+
+
+# npm publish artifacts (binaries land here on `publish.ps1` runs)
+npm/platforms/*/daisi-broski-skim
+npm/platforms/*/daisi-broski-skim.exe
+npm/**/*.tgz
