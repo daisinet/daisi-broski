@@ -1,0 +1,292 @@
+@page "/search"
+@using Daisi.Broski.Gofer.Search
+@inject SkimSession Session
+@inject SearchSession SearchState
+@inject NavigationManager Nav
+@implements IDisposable
+
+@* Multi-source search page. Type a query, pick the providers
+   (or one of the five pre-composed bundles), hit Go. Each hit
+   renders as a compact card with a Reader button that loads it
+   in the existing Skimmer pipeline (Home page). *@
+
+<div class="search-shell">
+    <div class="address-bar">
+        <button class="back-btn" @onclick="BackToReader"
+                title="Back to Reader">←</button>
+        <input class="url" type="text" value="@_query" @oninput="OnQueryInput"
+               @onkeydown="OnQueryKeyDown"
+               placeholder="Search across Wikipedia, arXiv, GitHub, HN, news, …"
+               disabled="@_running" />
+        @if (_running)
+        {
+            <button class="cancel-btn" @onclick="Cancel"
+                    title="Cancel the in-flight search">Cancel</button>
+        }
+        else
+        {
+            <button class="go-btn" @onclick="Run"
+                    disabled="@(string.IsNullOrWhiteSpace(_query) || _selected == SearchSource.None)">
+                Search
+            </button>
+        }
+    </div>
+
+    <div class="search-config">
+        <div class="bundle-row">
+            <span class="bundle-label">Bundles:</span>
+            @foreach (var b in BundleButtons)
+            {
+                <button class="bundle-btn @(_selected == b.Value ? "active" : "")"
+                        @onclick="@(() => SetSelection(b.Value))"
+                        title="@b.Tooltip">@b.Label</button>
+            }
+            <button class="bundle-btn clear-btn"
+                    @onclick="@(() => SetSelection(SearchSource.None))"
+                    title="Clear all sources">Clear</button>
+        </div>
+        <div class="source-row">
+            @foreach (var src in AllSources)
+            {
+                <label class="source-chip @(_selected.HasFlag(src) ? "on" : "")">
+                    <input type="checkbox" checked="@_selected.HasFlag(src)"
+                           @onchange="@(e => ToggleSource(src, e.Value is bool b && b))" />
+                    <span>@FriendlyName(src)</span>
+                </label>
+            }
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="error">⚠ @_error</div>
+    }
+
+    @if (_running)
+    {
+        <div class="loading">Querying @_runningProviderCount provider(s) for “@_query” …</div>
+    }
+    else if (_hits is { Count: 0 })
+    {
+        <div class="empty">
+            <h2>No results</h2>
+            <p>Try a different query, or expand the selected sources.</p>
+        </div>
+    }
+    else if (_hits is { Count: > 0 })
+    {
+        <div class="search-meta">
+            <strong>@_hits.Count</strong> result@(_hits.Count == 1 ? "" : "s")
+            across
+            <strong>@_hits.Select(h => h.Source).Distinct().Count()</strong>
+            source@(_hits.Select(h => h.Source).Distinct().Count() == 1 ? "" : "s")
+            for <em>@_lastQuery</em>
+        </div>
+        <ol class="hits">
+            @foreach (var hit in _hits)
+            {
+                <li class="hit">
+                    <div class="hit-head">
+                        <span class="hit-source">@hit.Source</span>
+                        <button class="hit-title" title="Open in Reader"
+                                @onclick="@(() => OpenInReader(hit.Url))">
+                            @(hit.Title ?? hit.Url.AbsoluteUri)
+                        </button>
+                    </div>
+                    <div class="hit-url">@hit.Url.Host@hit.Url.AbsolutePath</div>
+                    @if (!string.IsNullOrWhiteSpace(hit.Snippet))
+                    {
+                        <p class="hit-snippet">@TrimSnippet(hit.Snippet)</p>
+                    }
+                    @if (hit.Extra is { Count: > 0 })
+                    {
+                        <div class="hit-extra">
+                            @foreach (var kv in hit.Extra)
+                            {
+                                <span class="hit-tag">@kv.Key: @kv.Value</span>
+                            }
+                        </div>
+                    }
+                </li>
+            }
+        </ol>
+    }
+    else
+    {
+        <div class="empty">
+            <h2>Search the web from one box</h2>
+            <p>Type a query above, pick one or more sources, and press <kbd>Enter</kbd>.
+               Each hit opens in the Reader using the existing Skimmer pipeline.</p>
+            <p class="hint">Scholarly: Wikipedia, arXiv, CrossRef, OpenLibrary ·
+               Community: GitHub, HN, Stack Exchange, Reddit ·
+               Web: DuckDuckGo, Brave, Mojeek ·
+               News: GDELT, Guardian, Bing News</p>
+        </div>
+    }
+</div>
+
+@code {
+    private string _query = "";
+    private string _lastQuery = "";
+    private bool _running;
+    private int _runningProviderCount;
+    private string? _error;
+    private IReadOnlyList<SearchResult>? _hits;
+    private CancellationTokenSource? _cts;
+
+    // Bound directly to the session so every change persists to
+    // SurferSettings.SearchSources without needing an explicit
+    // save call. First paint reflects whatever was stored the
+    // last time the app ran (see SurferSettings.DefaultSearchSources
+    // for the first-ever launch).
+    private SearchSource _selected
+    {
+        get => SearchState.Selected;
+        set => SearchState.Selected = value;
+    }
+
+    protected override void OnInitialized()
+    {
+        // Restore prior-run query + hits (_selected is already
+        // a live read-through to the session).
+        _query = SearchState.Query;
+        _lastQuery = SearchState.Query;
+        _hits = SearchState.Hits;
+    }
+
+    private static readonly SearchSource[] AllSources = new[]
+    {
+        SearchSource.Wikipedia, SearchSource.Arxiv, SearchSource.CrossRef, SearchSource.OpenLibrary,
+        SearchSource.GitHub, SearchSource.HackerNews, SearchSource.StackExchange, SearchSource.Reddit,
+        SearchSource.DuckDuckGo, SearchSource.Brave, SearchSource.Mojeek,
+        SearchSource.Gdelt, SearchSource.Guardian, SearchSource.BingNews,
+    };
+
+    private record Bundle(string Label, SearchSource Value, string Tooltip);
+    private static readonly Bundle[] BundleButtons = new[]
+    {
+        new Bundle("Scholarly", SearchSource.Scholarly, "Wikipedia, arXiv, CrossRef, OpenLibrary"),
+        new Bundle("Community", SearchSource.Community, "GitHub, Hacker News, Stack Exchange, Reddit"),
+        new Bundle("Web",       SearchSource.Web,       "DuckDuckGo, Brave, Mojeek"),
+        new Bundle("News",      SearchSource.News,      "GDELT, Guardian, Bing News"),
+        new Bundle("All",       SearchSource.All,       "Every built-in provider"),
+    };
+
+    private static string FriendlyName(SearchSource s) => s switch
+    {
+        SearchSource.HackerNews    => "Hacker News",
+        SearchSource.StackExchange => "Stack Exchange",
+        SearchSource.DuckDuckGo    => "DuckDuckGo",
+        SearchSource.OpenLibrary   => "OpenLibrary",
+        SearchSource.BingNews      => "Bing News",
+        SearchSource.Gdelt         => "GDELT",
+        _                          => s.ToString(),
+    };
+
+    private void SetSelection(SearchSource s) => _selected = s;
+
+    private void ToggleSource(SearchSource src, bool on)
+    {
+        _selected = on ? (_selected | src) : (_selected & ~src);
+    }
+
+    private void OnQueryInput(ChangeEventArgs e) => _query = e.Value as string ?? "";
+
+    private async Task OnQueryKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_running
+            && !string.IsNullOrWhiteSpace(_query)
+            && _selected != SearchSource.None)
+        {
+            await Run();
+        }
+    }
+
+    private async Task Run()
+    {
+        if (string.IsNullOrWhiteSpace(_query)) return;
+        if (_selected == SearchSource.None) return;
+
+        _error = null;
+        _hits = null;
+        _running = true;
+        _lastQuery = _query;
+        _runningProviderCount = CountFlags(_selected);
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        StateHasChanged();
+
+        try
+        {
+            var pipeline = SearchPipeline.FromSources(_selected);
+            _hits = await pipeline.SearchAsync(_query, perProviderLimit: 8, _cts.Token);
+            // Persist so routing back in restores what the user
+            // just ran. (_selected already rides the session
+            // via the read-through property.)
+            SearchState.Query = _lastQuery;
+            SearchState.Hits = _hits;
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            _error = null;
+            _hits = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _running = false;
+            StateHasChanged();
+        }
+    }
+
+    private void Cancel()
+    {
+        _cts?.Cancel();
+    }
+
+    /// <summary>Load a search hit into the Reader via the
+    /// shared singleton SkimSession, then navigate to the Home
+    /// page which already knows how to render whatever Session
+    /// is holding.</summary>
+    private async Task OpenInReader(Uri url)
+    {
+        // Mark that the "previous page" in the back-button's
+        // mental model is /search, not a URL in the skim
+        // history. Home's back button reads this flag to route
+        // back here instead of treating the stack as empty.
+        Session.HasSearchFallback = true;
+
+        // Kick off the skim before routing — Home's
+        // OnInitialized sees Session.IsLoading / Session.Current
+        // and renders the right state immediately on arrival.
+        _ = Session.NavigateAsync(url.AbsoluteUri);
+        Nav.NavigateTo("/");
+        await Task.CompletedTask;
+    }
+
+    private void BackToReader() => Nav.NavigateTo("/");
+
+    private static string TrimSnippet(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        s = s.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return s.Length <= 280 ? s : s[..280] + "…";
+    }
+
+    private static int CountFlags(SearchSource s)
+    {
+        int n = 0;
+        var v = (int)s;
+        while (v != 0) { n += v & 1; v >>= 1; }
+        return n;
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}

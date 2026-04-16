@@ -25,6 +25,15 @@ public static class SurferSettings
     private const string KeyFormat = "surfer.format";
     private const string KeyJs = "surfer.js-enabled";
     private const string KeyWideReader = "surfer.wide-reader";
+    private const string KeySearchSources = "surfer.search.sources";
+
+    /// <summary>Default = Scholarly + Community (matches
+    /// <see cref="SearchSession"/>'s opening selection).
+    /// Stored as the underlying int32 so the enum can grow
+    /// without breaking older stored values.</summary>
+    private const int DefaultSearchSources = (int)(
+        Daisi.Broski.Gofer.Search.SearchSource.Scholarly
+      | Daisi.Broski.Gofer.Search.SearchSource.Community);
 
     /// <summary>Active format tab — "Reader" / "Snapshot"
     /// / "Markdown" / "JSON" / "Links". Default: Reader.</summary>
@@ -50,5 +59,16 @@ public static class SurferSettings
     {
         get => Preferences.Default.Get(KeyWideReader, false);
         set => Preferences.Default.Set(KeyWideReader, value);
+    }
+
+    /// <summary>Last-selected multi-search source bitmask
+    /// (the <c>SearchSource</c> flag enum as an int). Default:
+    /// Scholarly | Community. Persists across restarts so a
+    /// research session doesn't have to re-toggle the same
+    /// provider set every time.</summary>
+    public static int SearchSources
+    {
+        get => Preferences.Default.Get(KeySearchSources, DefaultSearchSources);
+        set => Preferences.Default.Set(KeySearchSources, value);
     }
 }
