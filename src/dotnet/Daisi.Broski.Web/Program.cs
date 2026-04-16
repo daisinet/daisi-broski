@@ -102,6 +102,7 @@ app.Use(async (context, next) =>
 });
 
 SkimApiEndpoints.MapSkimApi(app.MapGroup("/api/v1"));
+GoferApiEndpoints.MapGoferApi(app.MapGroup("/api/v1/gofer"));
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

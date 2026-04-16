@@ -105,6 +105,80 @@ programming language and core technology of the Web...</code></pre>
                 cancelled and nothing was billed.</dd>
         </dl>
 
+        <h2 id="gofer">Gofer — multi-source search + crawl</h2>
+        <p>
+            Three endpoints under <code>/api/v1/gofer</code> wrap the
+            Gofer crawler + 14 built-in search providers (Wikipedia,
+            arXiv, GitHub, Hacker News, Stack Exchange, CrossRef,
+            OpenLibrary, Reddit, DuckDuckGo, Brave, Mojeek, GDELT,
+            Guardian, Bing News). Every endpoint accepts both
+            <code>POST</code> (JSON body) and <code>GET</code> (query
+            string) — every JSON field maps to a query param of the
+            same name. Array params on GET use repeated keys
+            (<code>?seeds=a&amp;seeds=b</code>).
+        </p>
+
+        <h3 id="gofer-search"><code>POST /api/v1/gofer/search</code></h3>
+        <p>Query → hit list (no crawl).</p>
+<pre class="docs-code"><code>{
+  "query":              "quantum error correction",
+  "sources":            "Scholarly, Community",     // SearchSource flags
+  "perProviderLimit":   10
+}</code></pre>
+        <p>GET equivalent:</p>
+<pre class="docs-code"><code>GET /api/v1/gofer/search?query=quantum+error+correction
+    &amp;sources=Scholarly,Community&amp;perProviderLimit=10&amp;api_key=db_…</code></pre>
+
+        <h3 id="gofer-crawl"><code>POST /api/v1/gofer/crawl</code></h3>
+        <p>Seed URLs → crawled articles (no search).</p>
+<pre class="docs-code"><code>{
+  "seeds":              ["https://en.wikipedia.org/wiki/JavaScript"],
+  "maxDepth":           0,                          // clamped to [0,5]
+  "maxPages":           50,                         // clamped to [1,500]
+  "degreeOfParallelism": 8,                         // clamped to [1,32]
+  "stayOnHost":         false,
+  "followLinks":        false,
+  "selectors":          ["article.post-body"],      // optional CSS honing
+  "headers":            { "Accept-Language": "en-US" }
+}</code></pre>
+
+        <h3 id="gofer-research"><code>POST /api/v1/gofer/research</code></h3>
+        <p>Full pipeline: search → dedup → crawl. The headline
+           endpoint for LLM research — one call back, markdown
+           plus search attribution for every page.</p>
+<pre class="docs-code"><code>{
+  "query":              "rust programming language",
+  "sources":            "Scholarly, News",
+  "perProviderLimit":   10,                         // hits per provider
+  "maxCrawled":         20,                         // crawl the top N unique URLs
+  "degreeOfParallelism": 8,
+  "selectors":          ["article"],                // optional
+  "headers":            { "Accept-Language": "en-US" }
+}</code></pre>
+        <p>Response: array of <code>{ search, crawl }</code> pairs —
+           <code>search</code> is the originating <code>SearchResult</code>
+           (which provider found it + snippet + extras), <code>crawl</code>
+           is the <code>GoferResult</code> with <code>title</code>,
+           <code>markdown</code>, <code>plainText</code>, <code>links</code>,
+           and fetch timing.</p>
+
+        <h3 id="gofer-sources">Available sources</h3>
+        <p>
+            Individual: <code>Wikipedia</code>, <code>Arxiv</code>,
+            <code>GitHub</code>, <code>HackerNews</code>, <code>StackExchange</code>,
+            <code>CrossRef</code>, <code>OpenLibrary</code>, <code>Reddit</code>,
+            <code>DuckDuckGo</code>, <code>Brave</code>, <code>Mojeek</code>,
+            <code>Gdelt</code>, <code>Guardian</code>, <code>BingNews</code>.
+        </p>
+        <p>
+            Bundles: <code>Scholarly</code> (wiki + arxiv + crossref + oldb),
+            <code>Community</code> (gh + hn + se + reddit),
+            <code>Web</code> (ddg + brave + mojeek),
+            <code>News</code> (gdelt + guardian + bingnews),
+            <code>All</code>.
+            Mix with commas: <code>Scholarly, News</code>.
+        </p>
+
         <h2 id="health">GET /api/v1/health</h2>
         <p>
             Unauthenticated heartbeat. Returns <code>200</code> with
