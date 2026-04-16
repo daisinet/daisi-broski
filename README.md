@@ -125,6 +125,28 @@ await gofer.RunAsync(new Uri("https://example.com"));
 
 Built on a single shared `HttpClient` + `Channel<T>` frontier + per-host politeness semaphore. Reuses the Engine's DOM + Skimmer's `ContentExtractor`/`MarkdownFormatter` so article extraction is the same quality you get from `daisi-broski-skim`. URL dedup strips fragments. Links outside the seed's host are ignored by default (toggle with `StayOnHost`).
 
+#### Multi-search + crawl
+
+Gofer also ships 14 search providers behind a single `ISearchProvider` interface — eight JSON APIs (Wikipedia, arXiv, GitHub, Hacker News, Stack Exchange, CrossRef, OpenLibrary, Reddit), three HTML SERPs (DuckDuckGo, Brave Search, Mojeek), and three news aggregators (GDELT, Guardian, Bing News RSS). The `SearchPipeline` runs the selected providers concurrently, dedupes the merged hit list by normalized URL, and feeds the winners straight into Gofer as seeds — one call, search + crawl, every page's markdown back in the result.
+
+```csharp
+// Pick any combination via the SearchSource flag enum.
+// Pre-composed bundles: Scholarly, Community, Web, News, All.
+var pipeline = SearchPipeline.FromSources(
+    SearchSource.Scholarly | SearchSource.News);   // wiki+arxiv+crossref+oldb + gdelt+guardian+bingnews
+
+var results = await pipeline.SearchAndCrawlAsync(
+    "quantum error correction",
+    new GoferOptions { DegreeOfParallelism = 8, PerHostDelay = TimeSpan.FromMilliseconds(100) },
+    perProviderLimit: 10,
+    maxCrawled: 20);
+
+foreach (var r in results)
+    Console.WriteLine($"[{r.Search?.Source}] {r.Crawl.Url} · {r.Crawl.Markdown.Length} chars");
+```
+
+Each `ISearchProvider` is usable on its own too — construct one directly if you only care about the hit list (no crawl) or want to feed URLs into a different consumer.
+
 ### `daisi-broski-surfer` — MAUI Blazor Hybrid reader app
 
 A native Windows desktop app (`Daisi.Broski.Surfer`, .NET MAUI Blazor Hybrid, target `net10.0-windows10.0.19041.0`) wraps the Skimmer in a UI: address bar at the top, four content views (Reader / Markdown / JSON / Links) toggleable on the right, back button that walks the visit history. Type a URL, hit Enter — the Surfer fetches it through the local broski engine, runs `ContentExtractor.Extract`, and renders the chosen view in a `BlazorWebView`. The Links view turns every extracted outbound link into a one-click in-app navigation.
