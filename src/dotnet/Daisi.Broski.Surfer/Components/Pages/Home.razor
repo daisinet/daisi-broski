@@ -1,11 +1,17 @@
 @page "/"
 @inject SkimSession Session
 @inject IJSRuntime JS
+@inject NavigationManager Nav
 @implements IDisposable
 
 <div class="address-bar">
-    <button class="back-btn" @onclick="GoBack" disabled="@(!Session.History.Any())"
+    <button class="back-btn" @onclick="GoBack"
+            disabled="@(!Session.History.Any() && !Session.HasSearchFallback)"
             title="Back to previous page">←</button>
+
+    <button class="search-btn" @onclick='@(() => Nav.NavigateTo("/search"))'
+            title="Multi-source search (Wikipedia, arXiv, GitHub, news, …)"
+            disabled="@Session.IsLoading">🔍</button>
 
     <input class="url" type="text" value="@_urlInput" @oninput="OnUrlInput"
            @onkeydown="OnUrlKeyDown" @ref="_urlInputRef"
@@ -557,7 +563,23 @@ else
         StateHasChanged();
     }
 
-    private async Task GoBack() => await Session.GoBackAsync();
+    private async Task GoBack()
+    {
+        if (Session.History.Any())
+        {
+            await Session.GoBackAsync();
+        }
+        else if (Session.HasSearchFallback)
+        {
+            // End of the URL history — the step before the first
+            // opened hit was the /search page. Clear the fallback
+            // and route back to it so the user sees their prior
+            // query + hits (restored by Search.razor from
+            // SearchSession).
+            Session.HasSearchFallback = false;
+            Nav.NavigateTo("/search");
+        }
+    }
 
     private async Task OnScriptingToggle(ChangeEventArgs e)
     {

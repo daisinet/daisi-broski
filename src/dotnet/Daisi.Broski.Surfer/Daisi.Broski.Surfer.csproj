@@ -47,6 +47,8 @@
     <ItemGroup>
         <ProjectReference Include="..\Daisi.Broski.Engine\Daisi.Broski.Engine.csproj" />
         <ProjectReference Include="..\Daisi.Broski.Skimmer\Daisi.Broski.Skimmer.csproj" />
+        <!-- Search + crawl backend: powers the /search page. -->
+        <ProjectReference Include="..\Daisi.Broski.Gofer\Daisi.Broski.Gofer.csproj" />
     </ItemGroup>
 
 </Project>

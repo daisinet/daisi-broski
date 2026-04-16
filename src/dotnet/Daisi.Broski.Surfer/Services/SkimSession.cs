@@ -41,6 +41,15 @@ public sealed class SkimSession
     /// order. Excludes the current page.</summary>
     public List<string> History { get; } = new();
 
+    /// <summary>True when the previous "page" was the /search route
+    /// rather than a URL. The Home page's back button reads this
+    /// to decide whether an empty URL history means "dead end"
+    /// (disable the button) or "route back to search" (re-render
+    /// the /search page with its last query + hits intact). Set
+    /// by the Search page when the user opens a hit; cleared by
+    /// the Home back button when it routes back to /search.</summary>
+    public bool HasSearchFallback { get; set; }
+
     /// <summary>True while a skim is in flight. Components use this
     /// to show a spinner / disable the address bar.</summary>
     public bool IsLoading { get; private set; }
